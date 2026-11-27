@@ -1,0 +1,85 @@
+# expect-exit: 0
+program blocks, 0.1.0
+{
+    extends blocks {
+        # f is a bare 'block': inferred as 'block takes: [int32] returns: int32' from the body
+        @[static] msg apply: f:block to: x:int32 [int32] {
+            return f value: x;
+        }
+
+        # inferred as 'block takes: [int32]' (the result is never used)
+        @[static] msg upTo: n:int32 each: f:block {
+            for i in 1 to: n {
+                f value: i;
+            }
+        }
+
+        # inferred by passing it on to apply:to:
+        @[static] msg twice: f:block on: x:int32 [int32] {
+            return self apply: f to: (self apply: f to: x);
+        }
+
+        @[static] msg combine: a:int32 with: b:int32 using: f:[block takes: [int32, int32] returns: int32] [int32] {
+            return f value: a value: b;
+        }
+
+        @[static] msg firstAbove: limit:int32 [int32] {
+            1 to: 100 do: { :i |
+                (i * i > limit) ifTrue: {
+                    return i;
+                };
+            };
+            return -1;
+        }
+
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            failures := failures + (self check: (self apply: { :n | n * 2 } to: 21) = 42 id: 1);
+
+            total := 0;
+            self upTo: 4 each: { :k | total := total + k; };
+            failures := failures + (self check: total = 10 id: 2);
+
+            failures := failures + (self check: (self twice: { :n | n + 3 } on: 1) = 7 id: 3);
+            failures := failures + (self check: (self combine: 6 with: 7 using: { :a :b | a * b }) = 42 id: 4);
+
+            sq := { :i: int32 | i * i };
+            failures := failures + (self check: (sq value: 9) = 81 id: 5);
+
+            counter := 0;
+            bump: block := { counter := counter + 1; };
+            bump value;
+            bump value;
+            failures := failures + (self check: counter = 2 id: 6);
+
+            outer := 5;
+            nested := { :x: int32 | ({ :y: int32 | y + outer } value: x) * 2 };
+            failures := failures + (self check: (nested value: 1) = 12 id: 7);
+
+            m := (outer > 3) ifTrue: { 100 } ifFalse: { 200 };
+            failures := failures + (self check: m = 100 id: 8);
+
+            failures := failures + (self check: (self firstAbove: 50) = 8 id: 9);
+
+            reps := 0;
+            3 timesRepeat: { reps := reps + 2; };
+            failures := failures + (self check: reps = 6 id: 10);
+
+            hits := 0;
+            1 to: 10 do: { :i |
+                (i > 4) ifTrue: {
+                    break;
+                };
+                hits := hits + 1;
+            };
+            failures := failures + (self check: hits = 4 id: 11);
+
+            return failures;
+        }
+    }
+}
