@@ -1,0 +1,97 @@
+# expect-exit: 0
+program polymorphism, 0.1.0
+{
+    @[protocol] class Shape {
+        msg area [int32];
+        msg name [int32];
+        msg describe [int32] {
+            return self area * 100 + self name;
+        }
+    }
+
+    @[protocol] class Scalable inherits Shape {
+        msg scaleBy: factor:int32;
+    }
+
+    class Square implements Scalable {
+        private { side: int32 := 2; }
+        msg area [int32] { return side * side; }
+        msg name [int32] { return 1; }
+        msg scaleBy: factor:int32 { side := side * factor; }
+    }
+
+    class Circle implements Shape {
+        private { radius: int32 := 1; }
+        msg area [int32] { return 3 * radius * radius; }
+        msg name [int32] { return 2; }
+        msg describe [int32] { return 999; }
+    }
+
+    class Animal {
+        msg sound [int32] { return 0; }
+        msg legs [int32] { return 4; }
+        msg report [int32] { return self sound * 10 + self legs; }
+    }
+
+    class Dog inherits Animal {
+        msg sound [int32] { return 1; }
+    }
+
+    class Puppy inherits Dog {
+        msg sound [int32] { return super sound + 1; }
+    }
+
+    class Bird inherits Animal {
+        msg sound [int32] { return 3; }
+        msg legs [int32] { return 2; }
+    }
+
+    extends polymorphism {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg describe: s:Shape [int32] {
+            return s describe;
+        }
+
+        @[static] msg grow: s:Scalable [int32] {
+            s scaleBy: 3;
+            return s area;
+        }
+
+        @[static] msg total: a:Animal [int32] {
+            return a report;
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            square := Square new;
+            circle := Circle new;
+            failures := failures + (self check: (self describe: square) = 401 id: 1);
+            failures := failures + (self check: (self describe: circle) = 999 id: 2);
+            failures := failures + (self check: (self grow: square) = 36 id: 3);
+            failures := failures + (self check: (self describe: square) = 3601 id: 4);
+
+            shape: Shape := circle;
+            failures := failures + (self check: shape area = 3 id: 5);
+            shape := square;
+            failures := failures + (self check: shape area = 36 id: 6);
+
+            failures := failures + (self check: (self total: Animal new) = 4 id: 7);
+            failures := failures + (self check: (self total: Dog new) = 14 id: 8);
+            failures := failures + (self check: (self total: Puppy new) = 24 id: 9);
+            failures := failures + (self check: (self total: Bird new) = 32 id: 10);
+
+            d: Dog := Puppy new;
+            failures := failures + (self check: d sound = 2 and d legs = 4 id: 11);
+
+            for i in 1 to: 200 {
+                s: Shape := Square new;
+                failures := failures + (self check: s area = 4 id: 12);
+            }
+            return failures;
+        }
+    }
+}

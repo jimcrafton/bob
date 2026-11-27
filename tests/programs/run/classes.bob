@@ -1,0 +1,138 @@
+# expect-exit: 0
+program classes, 0.1.0
+{
+    class Counter {
+        private { count: int64; }
+        msg increment { count := count + 1; }
+        msg count [int64] { return count; }
+        msg addAll: n:int32 {
+            n timesRepeat: { self increment; };
+        }
+        msg each: n:int32 do: f:block {
+            for i in 1 to: n {
+                f value: i;
+            }
+        }
+        msg sumWithBlock: n:int32 [int64] {
+            self each: n do: { :i | count := count + i asInt64; };
+            return count;
+        }
+    }
+
+    class Point {
+        public {
+            x: int32;
+            y: int32 := 7;
+        }
+        @[static] msg x: px:int32 y: py:int32 [Point] {
+            p := Point new;
+            p.x := px;
+            p.y := py;
+            return p;
+        }
+        msg plus: other:Point [Point] {
+            return Point x: x + other.x y: y + other.y;
+        }
+    }
+
+    class Animal {
+        private { legs: int32 := 4; }
+        msg legs [int32] { return legs; }
+        msg describe [int32] { return legs * 10; }
+    }
+
+    class Bird inherits Animal {
+        msg init2 { }
+        msg describe [int32] { return super describe + 1; }
+    }
+
+    class Node {
+        public {
+            value: int32;
+            next: Node?;
+        }
+    }
+
+    class Holder {
+        private {
+            counter: Counter := Counter new;
+            spare: Counter?;
+        }
+        msg bump [int64] {
+            counter increment;
+            spare := Counter new;
+            spare := counter;
+            return counter count;
+        }
+    }
+
+    extends classes {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg listSum: head:Node? [int32] {
+            total := 0;
+            current := head;
+            loop {
+                found := false;
+                current ifNotNil: { :node |
+                    total := total + node value;
+                    current := node next;
+                    found := true;
+                };
+                if found not {
+                    break;
+                }
+            }
+            return total;
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            c := Counter new;
+            c increment;
+            c increment;
+            c addAll: 3;
+            failures := failures + (self check: c count = 5 id: 1);
+            failures := failures + (self check: (c sumWithBlock: 4) = 15 id: 2);
+
+            p := Point x: 1 y: 2;
+            q := p plus: (Point x: 10 y: 20);
+            failures := failures + (self check: q x = 11 and q y = 22 id: 3);
+            fresh := Point new;
+            failures := failures + (self check: fresh x = 0 and fresh y = 7 id: 4);
+            fresh x: 5;
+            failures := failures + (self check: fresh x = 5 id: 5);
+
+            b := Bird new;
+            failures := failures + (self check: b describe = 41 and b legs = 4 id: 6);
+            a: Animal := b;
+            failures := failures + (self check: a describe = 41 id: 7);
+
+            head: Node? := nil;
+            for i in 1 to: 5 {
+                n := Node new;
+                n value: i;
+                n next: head;
+                head := n;
+            }
+            failures := failures + (self check: (self listSum: head) = 15 id: 8);
+            failures := failures + (self check: head <> nil id: 9);
+            head := nil;
+            failures := failures + (self check: head = nil id: 10);
+
+            h := Holder new;
+            h bump;
+            failures := failures + (self check: h bump = 2 id: 11);
+
+            for k in 1 to: 1000 {
+                temp := Counter new;
+                temp increment;
+                Counter new increment;
+            }
+            return failures;
+        }
+    }
+}

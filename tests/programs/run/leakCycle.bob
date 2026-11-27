@@ -1,0 +1,20 @@
+# expect-exit: 0
+# expect-stderr: bob: leak: 2 object(s)
+program leakCycle, 0.1.0
+{
+    # A reference cycle: ARC can't free it (there's no cycle collector), and the
+    # runtime's exit report must say so. 'weak' references will break such cycles.
+    class Node {
+        public { other: Node?; }
+    }
+
+    extends leakCycle {
+        @[static] msg main: args:array [int32] {
+            a := Node new;
+            b := Node new;
+            a other: b;
+            b other: a;
+            return 0;
+        }
+    }
+}
