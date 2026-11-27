@@ -1,0 +1,60 @@
+# expect-exit: 42
+program loops, 0.1.0
+{
+    extends loops {
+        @[static] msg sumTo: n:int32 [int32] {
+            total := 0;
+            for i in 1 to: n {
+                total := total + i;
+            }
+            return total;
+        }
+
+        @[static] msg evensBelow: limit:int32 [int32] {
+            count := 0;
+            i := 0;
+            loop {
+                i := i + 1;
+                if i >= limit {
+                    break;
+                }
+                if i % 2 = 1 {
+                    continue;
+                }
+                count := count + 1;
+            }
+            return count;
+        }
+
+        @[static] msg nested [int32] {
+            hits := 0;
+            for row in 1 to: 5 {
+                for column in 1 to: 5 {
+                    if column > row {
+                        break;
+                    }
+                    hits := hits + 1;
+                }
+            }
+            return hits;
+        }
+
+        @[static] msg fullRange [int32] {
+            count := 0;
+            for b: uint8 in 250u8 to: 255u8 {
+                count := count + 1;
+            }
+            for e in 5 to: 1 {
+                count := count + 100;
+            }
+            return count;
+        }
+
+        @[static] msg main: args:array [int32] {
+            if (self sumTo: 10) = 55 and (self evensBelow: 10) = 4 and self nested = 15 and self fullRange = 6 {
+                return 42;
+            }
+            return 1;
+        }
+    }
+}

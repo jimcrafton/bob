@@ -191,9 +191,24 @@ TEST_F(EndToEnd, DumpAstJson)
     EXPECT_NE(output.find("\"variable\": \"i\""), std::string::npos);
 }
 
-TEST_F(EndToEnd, BobSourceNotYetSupported)
+TEST_F(EndToEnd, ProgramWithoutMainIsRejected)
 {
     std::string diagnostics;
     EXPECT_NE(compile("notYet.bob", workPath("notYet.exe"), diagnostics), 0);
-    EXPECT_NE(diagnostics.find("not implemented"), std::string::npos) << diagnostics;
+    EXPECT_NE(diagnostics.find("sema.noMain"), std::string::npos) << diagnostics;
+}
+
+TEST_F(EndToEnd, DumpLlvmPrintsTheModule)
+{
+    bob::driver::DriverOptions options;
+    options.inputPath = std::string(BOB_TEST_PROGRAMS_DIR) + "/run/factorial.bob";
+    options.dumpLlvm = true;
+    std::string output;
+    std::string diagnostics;
+    llvm::raw_string_ostream out(output);
+    llvm::raw_string_ostream err(diagnostics);
+    bob::driver::Driver driver(out, err);
+    EXPECT_EQ(driver.run(options), 0) << diagnostics;
+    EXPECT_NE(output.find("define i32 @bobMain()"), std::string::npos) << output;
+    EXPECT_NE(output.find("llvm.smul.with.overflow.i32"), std::string::npos) << output;
 }

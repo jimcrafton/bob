@@ -31,6 +31,7 @@ endif()
 
 add_subdirectory(src/runtime)
 add_subdirectory(src/syntax)
+add_subdirectory(src/semantic)
 add_subdirectory(src/compiler)
 add_subdirectory(src/tools/bobc)
 

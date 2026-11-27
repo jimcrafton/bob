@@ -10,4 +10,6 @@ void bobStart();
 
 void bobRuntimeWrite(int32_t stream, const uint8_t* bytes, uint64_t count);
 
+[[noreturn]] void bobRuntimeTrap(int32_t reason);
+
 }

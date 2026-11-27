@@ -52,6 +52,12 @@ std::optional<std::string> parseDriverArguments(std::span<const std::string> arg
         else if (arg == "--dump-tokens") {
             options.dumpTokens = true;
         }
+        else if (arg == "--dump-llvm") {
+            options.dumpLlvm = true;
+        }
+        else if (arg.size() == 3 && arg.starts_with("-O") && arg[2] >= '0' && arg[2] <= '3') {
+            options.optLevel = arg[2] - '0';
+        }
         else if (arg == "--syntax-only") {
             options.syntaxOnly = true;
         }
@@ -100,15 +106,17 @@ const char* driverUsage()
     return "usage: bobc [options] <input>\n"
            "\n"
            "inputs:\n"
-           "  <file>.bob              bob source (phase 1: parsed and checked for syntax; no code generation yet)\n"
+           "  <file>.bob              bob source: a 'program' is compiled and linked into an executable\n"
            "  <file>.ll               LLVM IR, compiled and linked against the bob runtime\n"
            "\n"
            "options:\n"
            "  -o <path>               output file (default: input name with .exe/.obj)\n"
            "  -c                      compile to an object file only, do not link\n"
+           "  -O0 .. -O3              optimization level (default -O0)\n"
            "  --syntax-only           parse a .bob file and report errors, nothing else\n"
            "  --dump-tokens           print the token stream of a .bob file\n"
            "  --dump-ast[=text|json]  print the syntax tree of a .bob file\n"
+           "  --dump-llvm             print the generated LLVM IR of a .bob file instead of compiling it\n"
            "  -v, --verbose           print the link command\n"
            "  --linker=<path>         lld-link to use (default: found at build time, then PATH)\n"
            "  --runtime-dir=<dir>     directory holding bobrt.lib and kernel32.lib (default: bobc's directory)\n"

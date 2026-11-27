@@ -81,8 +81,19 @@ TEST(Lexer, BadNumberSuffixIsReported)
 
 TEST(Lexer, Operators)
 {
-    EXPECT_EQ(texts("a<<b>=c~=d==e??f|g*-1"),
-              (std::vector<std::string>{"a", "<<", "b", ">=", "c", "~=", "d", "==", "e", "??", "f", "|", "g", "*", "-", "1"}));
+    EXPECT_EQ(texts("a<=b>=c=d<e>f|g^h&i%j*-1<>k"),
+              (std::vector<std::string>{"a", "<=", "b", ">=", "c", "=", "d", "<", "e", ">", "f", "|", "g", "^", "h", "&", "i", "%",
+                                        "j", "*", "-", "1", "<>", "k"}));
+    EXPECT_EQ(kinds("x shl 2 shr 1"), (std::vector<TokenKind>{TokenKind::identifier, TokenKind::kwShl, TokenKind::integerLiteral,
+                                                               TokenKind::kwShr, TokenKind::integerLiteral, TokenKind::endOfFile}));
+}
+
+TEST(Lexer, RemovedOperatorsAreNotSingleTokens)
+{
+    EXPECT_EQ(texts("a<<b>>c==d??e"), (std::vector<std::string>{"a", "<", "<", "b", ">", ">", "c", "=", "=", "d", "?", "?", "e"}));
+    DiagnosticEngine diagnostics;
+    kinds("a ~= b", &diagnostics);
+    EXPECT_EQ(diagnostics.errorCount(), 1u);
 }
 
 TEST(Lexer, AttributeOpenAndPunctuation)
@@ -148,6 +159,8 @@ TEST(Lexer, InvalidCharactersDontStopLexing)
 {
     DiagnosticEngine diagnostics;
     std::vector<TokenKind> result = kinds("a $ b ~ c \xE2\x82\xAC d", &diagnostics);
+    ASSERT_EQ(diagnostics.diagnostics().size(), 3u);
+    EXPECT_EQ(diagnostics.diagnostics()[1].message, "unexpected character '~'");
     EXPECT_EQ(result, (std::vector<TokenKind>{TokenKind::identifier, TokenKind::invalid, TokenKind::identifier, TokenKind::invalid,
                                               TokenKind::identifier, TokenKind::invalid, TokenKind::identifier, TokenKind::endOfFile}));
     EXPECT_EQ(diagnostics.errorCount(), 3u);

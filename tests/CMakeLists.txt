@@ -16,6 +16,8 @@ add_executable(bobTests
     endToEndTests.cpp
     lexerTests.cpp
     parserTests.cpp
+    runProgramTests.cpp
+    semanticTests.cpp
     syntaxCorpusTests.cpp
 )
 target_link_libraries(bobTests PRIVATE bobCompiler GTest::gtest_main)

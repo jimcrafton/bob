@@ -1,0 +1,33 @@
+# expect-exit: 55
+program fib, 0.1.0
+{
+    extends fib {
+        @[static] msg recursive: n:int32 [int32] {
+            if n < 2 {
+                return n;
+            }
+            return (self recursive: n - 1) + (self recursive: n - 2);
+        }
+
+        @[static] msg iterative: n:int32 [int32] {
+            a := 0;
+            b := 1;
+            i := 0;
+            while i < n {
+                next := a + b;
+                a := b;
+                b := next;
+                i := i + 1;
+            }
+            return a;
+        }
+
+        @[static] msg main: args:array [int32] {
+            r := fib recursive: 10;
+            if r <> (fib iterative: 10) {
+                return 1;
+            }
+            return r;
+        }
+    }
+}

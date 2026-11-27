@@ -161,10 +161,9 @@ import core.collections, 2.0.0;
             t := 2 + 3 * 4;
             u := (4 + 5) toString + " yes";
             ok := x & 1 = 0 and y < 10 or z >= 3;
-            s := a << 2 | b ^ k % 3;
-            def := next ?? self;
-            eq := a == b;
-            ne := a ~= b;
+            s := a shl 2 | b ^ k % 3 shr 1;
+            eq := a = b;
+            ne := a <> b;
 
             # 3.5 control statements (braces always required)
             if a > b {

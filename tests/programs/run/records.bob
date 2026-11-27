@@ -1,0 +1,53 @@
+# expect-exit: 79
+program records, 0.1.0
+{
+    record Point {
+        x: int32;
+        y: int32;
+    }
+
+    record Header { kind: uint16; length: uint16; }
+
+    record Packet inherits Header {
+        source: uint16;
+        target: uint16;
+    }
+
+    record Segment {
+        start: Point;
+        finish: Point;
+    }
+
+    extends records {
+        @[static] msg add: a:Point to: b:Point [Point] {
+            return Point x: a.x + b.x y: a.y + b.y;
+        }
+
+        @[static] msg length: s:Segment [int32] {
+            dx := (s.finish.x - s.start.x) abs;
+            dy := (s.finish.y - s.start.y) abs;
+            return dx + dy;
+        }
+
+        @[static] msg main: args:array [int32] {
+            p := Point x: 3 y: 4;
+            q: Point;
+            q.x := 10;
+            q.y := 20;
+            r := records add: p to: q;
+
+            s: Segment;
+            s.start := p;
+            s.finish.x := 13;
+            s.finish.y := -6;
+
+            packet: Packet;
+            packet.kind := 7u16;
+            packet.target := 9u16;
+
+            total := r.x + r.y + (self length: s) + (self add: p to: p).x;
+            total := total + (packet.kind + packet.target) asInt32 - packet.source asInt32;
+            return total;
+        }
+    }
+}

@@ -1,0 +1,15 @@
+# expect-exit: 101
+# expect-stderr: bob: runtime trap: shift amount out of range
+program trapShift, 0.1.0
+{
+    extends trapShift {
+        @[static] msg shift: x:uint32 by: n:int32 [uint32] {
+            return x shl n;
+        }
+
+        @[static] msg main: args:array [int32] {
+            v := self shift: 1u32 by: 32;
+            return v asInt32;
+        }
+    }
+}

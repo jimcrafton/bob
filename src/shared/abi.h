@@ -14,4 +14,18 @@ enum class StreamId : int32_t {
     error = 2,
 };
 
+inline constexpr const char* trapSymbol = "bobRuntimeTrap";
+
+// Process exit code for every runtime trap (the same code Rust uses for panics);
+// the reason is printed to stderr.
+inline constexpr int32_t trapExitCode = 101;
+
+enum class TrapReason : int32_t {
+    integerOverflow = 1,
+    divideByZero = 2,
+    conversionOutOfRange = 3,
+    shiftOutOfRange = 4,
+    unreachable = 5,
+};
+
 }

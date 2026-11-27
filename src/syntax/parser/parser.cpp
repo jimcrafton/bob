@@ -44,25 +44,19 @@ std::string stripColon(std::string_view keyword)
 
 int binaryPrecedence(std::string_view op)
 {
-    if (op == "??") {
+    if (op == "or") {
         return 1;
     }
-    if (op == "or") {
+    if (op == "and") {
         return 2;
     }
-    if (op == "and") {
+    if (op == "=" || op == "<>" || op == "<" || op == "<=" || op == ">" || op == ">=") {
         return 3;
     }
-    if (op == "=" || op == "~=" || op == "==" || op == "<" || op == "<=" || op == ">" || op == ">=") {
-        return 4;
+    if (op == "*" || op == "/" || op == "%" || op == "&" || op == "shl" || op == "shr") {
+        return 5;
     }
-    if (op == "*" || op == "/" || op == "%" || op == "&") {
-        return 6;
-    }
-    if (op == "<<" || op == ">>") {
-        return 7;
-    }
-    return 5;
+    return 4;
 }
 
 ParsedUnit parseSource(std::string_view text, DiagnosticEngine& diagnostics)
@@ -806,7 +800,7 @@ bool Parser::continuesExpression() const
         return false;
     }
     return at(TokenKind::identifier) || at(TokenKind::keywordSelector) || at(TokenKind::binaryOperator) ||
-           at(TokenKind::kwAnd) || at(TokenKind::kwOr) || at(TokenKind::dot);
+           at(TokenKind::kwAnd) || at(TokenKind::kwOr) || at(TokenKind::kwShl) || at(TokenKind::kwShr) || at(TokenKind::dot);
 }
 
 Node* Parser::parseBlockStatement(uint32_t begin)
@@ -1038,6 +1032,12 @@ Node* Parser::parseBinaryExpression(int minPrecedence)
         }
         else if (at(TokenKind::kwOr)) {
             op = "or";
+        }
+        else if (at(TokenKind::kwShl)) {
+            op = "shl";
+        }
+        else if (at(TokenKind::kwShr)) {
+            op = "shr";
         }
         else {
             break;

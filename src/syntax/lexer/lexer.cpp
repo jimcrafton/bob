@@ -38,7 +38,8 @@ TokenKind reservedWordKind(std::string_view word)
         {"and", TokenKind::kwAnd},           {"or", TokenKind::kwOr},       {"if", TokenKind::kwIf},
         {"else", TokenKind::kwElse},         {"while", TokenKind::kwWhile}, {"for", TokenKind::kwFor},
         {"in", TokenKind::kwIn},             {"loop", TokenKind::kwLoop},   {"break", TokenKind::kwBreak},
-        {"continue", TokenKind::kwContinue}, {"case", TokenKind::kwCase},
+        {"continue", TokenKind::kwContinue}, {"case", TokenKind::kwCase},   {"shl", TokenKind::kwShl},
+        {"shr", TokenKind::kwShr},
     };
     for (const Entry& entry : reserved) {
         if (entry.word == word) {
@@ -344,7 +345,7 @@ Token Lexer::lexQuoted(uint32_t begin, char quote)
 
 Token Lexer::lexOperator(uint32_t begin)
 {
-    static constexpr std::string_view twoCharOperators[] = {"<<", ">>", "<=", ">=", "==", "~=", "??"};
+    static constexpr std::string_view twoCharOperators[] = {"<=", ">=", "<>"};
     std::string_view rest = text_.substr(pos_);
     for (std::string_view op : twoCharOperators) {
         if (rest.starts_with(op)) {
@@ -355,7 +356,7 @@ Token Lexer::lexOperator(uint32_t begin)
     char c = peek();
     ++pos_;
     if (c == '~') {
-        diagnostics_.error({begin, pos_}, "lex.unexpectedCharacter", "'~' is only valid as part of '~='");
+        diagnostics_.error({begin, pos_}, "lex.unexpectedCharacter", "unexpected character '~'");
         return makeToken(TokenKind::invalid, begin);
     }
     return makeToken(TokenKind::binaryOperator, begin);

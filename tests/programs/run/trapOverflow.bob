@@ -1,0 +1,15 @@
+# expect-exit: 101
+# expect-stderr: bob: runtime trap: integer overflow
+program trapOverflow, 0.1.0
+{
+    extends trapOverflow {
+        @[static] msg bump: x:int8 [int8] {
+            return x + 1;
+        }
+
+        @[static] msg main: args:array [int32] {
+            v := self bump: 127;
+            return v asInt32;
+        }
+    }
+}

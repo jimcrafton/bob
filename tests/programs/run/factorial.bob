@@ -1,0 +1,16 @@
+# expect-exit: 120
+program factorial, 0.1.0
+{
+    extends factorial {
+        @[static] msg fact: n:int32 [int32] {
+            if n <= 1 {
+                return 1;
+            }
+            return n * (self fact: n - 1);
+        }
+
+        @[static] msg main: args:array [int32] {
+            return factorial fact: 5;
+        }
+    }
+}

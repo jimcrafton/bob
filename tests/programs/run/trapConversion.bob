@@ -1,0 +1,16 @@
+# expect-exit: 101
+# expect-stderr: bob: runtime trap: conversion out of range
+program trapConversion, 0.1.0
+{
+    extends trapConversion {
+        @[static] msg narrow: x:int32 [int8] {
+            return x asInt8;
+        }
+
+        @[static] msg main: args:array [int32] {
+            ok := self narrow: -128;
+            bad := self narrow: 300;
+            return (ok + bad) asInt32;
+        }
+    }
+}

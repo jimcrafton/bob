@@ -40,6 +40,29 @@ TEST(Parser, BitwiseBindsTighterThanComparison)
               "    argument: Int value=0\n");
 }
 
+TEST(Parser, ShiftsBindLikeMultiplication)
+{
+    EXPECT_EQ(expectClean("v := 1 + x shl 2;"),
+              "Assign\n"
+              "  target: Ident name=v\n"
+              "  value: Binary selector=+\n"
+              "    receiver: Int value=1\n"
+              "    argument: Binary selector=shl\n"
+              "      receiver: Ident name=x\n"
+              "      argument: Int value=2\n");
+}
+
+TEST(Parser, NotEqualIsAComparison)
+{
+    EXPECT_EQ(expectClean("a + 1 <> b;"),
+              "ExprStmt\n"
+              "  expression: Binary selector=<>\n"
+              "    receiver: Binary selector=+\n"
+              "      receiver: Ident name=a\n"
+              "      argument: Int value=1\n"
+              "    argument: Ident name=b\n");
+}
+
 TEST(Parser, LogicalOperatorsAreLowest)
 {
     EXPECT_EQ(expectClean("a < 1 or b and c;"),

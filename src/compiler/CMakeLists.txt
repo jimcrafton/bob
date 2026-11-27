@@ -1,9 +1,10 @@
 llvm_map_components_to_libnames(bobLlvmLibs
-    core irreader support target mc
+    core irreader support target mc passes
     x86codegen x86asmparser x86desc x86info
 )
 
 add_library(bobCompiler STATIC
+    codegen/codeGenerator.cpp
     driver/driver.cpp
     driver/driverOptions.cpp
     driver/linker.cpp
@@ -27,4 +28,6 @@ if(BOB_LLD_LINK)
 endif()
 
 target_compile_options(bobCompiler PUBLIC /W4 /permissive- /utf-8 /Zc:__cplusplus)
-target_link_libraries(bobCompiler PUBLIC bobSyntax ${bobLlvmLibs})
+# C4702 fires inside inlined LLVM headers (llvm/ADT/bit.h); /external:W0 doesn't cover backend warnings.
+target_compile_options(bobCompiler PRIVATE /wd4702)
+target_link_libraries(bobCompiler PUBLIC bobSemantic ${bobLlvmLibs})

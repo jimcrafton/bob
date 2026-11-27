@@ -1,0 +1,14 @@
+# expect-exit: 101
+# expect-stderr: bob: runtime trap: division by zero
+program trapDivideByZero, 0.1.0
+{
+    extends trapDivideByZero {
+        @[static] msg divide: a:int32 by: b:int32 [int32] {
+            return a / b;
+        }
+
+        @[static] msg main: args:array [int32] {
+            return self divide: 10 by: 0;
+        }
+    }
+}

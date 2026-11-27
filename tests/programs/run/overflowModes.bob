@@ -1,0 +1,48 @@
+# expect-exit: 0
+program overflowModes, 0.1.0
+{
+    extends overflowModes {
+        @[static, overflow: wrap] msg wrapped: x:int8 [int8] {
+            return x + 1;
+        }
+
+        @[static, overflow: saturate] msg saturated: x:int8 [int8] {
+            return x * 2;
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+            if (self wrapped: 127) = -128 {
+            } else {
+                failures := failures + 1;
+            }
+            if (self saturated: -100) = -128 {
+            } else {
+                failures := failures + 2;
+            }
+
+            h: uint8 := 200;
+            h := @[overflow: wrap] (h * 3);
+            if h <> 88 {
+                failures := failures + 4;
+            }
+
+            g: int16 := 32000;
+            @[overflow: saturate] {
+                g := g + 1000;
+            }
+            if (g = 32767) not {
+                failures := failures + 8;
+            }
+
+            m: int32 := -2147483648;
+            @[overflow: wrap] {
+                m := m / -1;
+            }
+            if (m = -2147483648) not {
+                failures := failures + 16;
+            }
+            return failures;
+        }
+    }
+}

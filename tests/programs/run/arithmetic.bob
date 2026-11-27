@@ -1,0 +1,58 @@
+# expect-exit: 0
+program arithmetic, 0.1.0
+{
+    extends arithmetic {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            if ok {
+                return 0;
+            }
+            return id;
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            failures := failures + (self check: 2 + 3 * 4 = 14 id: 1);
+            failures := failures + (self check: (2 + 3) * 4 = 20 id: 2);
+            failures := failures + (self check: 7 / 2 = 3 id: 3);
+            failures := failures + (self check: -7 / 2 = -3 id: 4);
+            failures := failures + (self check: -7 % 3 = -1 id: 5);
+            failures := failures + (self check: (6 & 3) = 2 and (6 | 3) = 7 and (6 ^ 3) = 5 id: 6);
+            failures := failures + (self check: 1 shl 10 = 1024 id: 7);
+            failures := failures + (self check: -16 shr 2 = -4 id: 8);
+            failures := failures + (self check: 200u8 shr 3 = 25u8 id: 9);
+            failures := failures + (self check: 1 + 1 shl 3 = 9 id: 26);
+            failures := failures + (self check: 3 <> 4 and (3 <> 3) not and true <> false id: 27);
+            failures := failures + (self check: (3 max: 9) = 9 and (3 min: 9) = 3 id: 10);
+            failures := failures + (self check: -5 abs = 5 and 5 negated = -5 id: 11);
+
+            small: int8 := 100;
+            big: int64 := small;
+            big := big * 1000000000;
+            failures := failures + (self check: big = 100000000000 id: 12);
+
+            u: uint32 := 4000000000;
+            failures := failures + (self check: u > 3000000000 id: 13);
+            w: uint64 := u;
+            failures := failures + (self check: w + 1 = 4000000001 id: 14);
+
+            half := 7.5;
+            failures := failures + (self check: half asInt32 = 7 id: 15);
+            failures := failures + (self check: (half * 2.0) = 15.0 id: 16);
+            f: real32 := 1.5;
+            d: real64 := f;
+            failures := failures + (self check: d + 0.5 = 2.0 id: 17);
+            failures := failures + (self check: (-2.75) asInt32 = -2 id: 18);
+            failures := failures + (self check: 3 asReal64 / 2.0 = 1.5 id: 19);
+            failures := failures + (self check: 255 asUInt8 = 255u8 id: 20);
+            failures := failures + (self check: (1 < 2) = true and (true = false) not id: 21);
+            failures := failures + (self check: 1.5 <> 2.5 id: 28);
+
+            failures := failures + (self check: (100i8 wrapAdd: 100i8) = -56i8 id: 22);
+            failures := failures + (self check: (100i8 satAdd: 100i8) = 127i8 id: 23);
+            failures := failures + (self check: (-100i8 satMul: 2i8) = -128i8 id: 24);
+            failures := failures + (self check: (10u8 satSub: 20u8) = 0u8 id: 25);
+            return failures;
+        }
+    }
+}

@@ -1,0 +1,29 @@
+# expect-exit: 0
+program caseStatement, 0.1.0
+{
+    extends caseStatement {
+        @[static] msg classify: n:int32 [int32] {
+            case n of {
+                0:            { return 10; }
+                1, 2, 3:      { return 20; }
+                (4 to: 9):    { return 30; }
+                (-5 to: -1):  { return 40; }
+            } else {
+                return 50;
+            }
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+            if (self classify: 0) = 10 and (self classify: 2) = 20 and (self classify: 9) = 30 {
+            } else {
+                failures := failures + 1;
+            }
+            if (self classify: -3) = 40 and (self classify: 100) = 50 and (self classify: -6) = 50 {
+            } else {
+                failures := failures + 2;
+            }
+            return failures;
+        }
+    }
+}
