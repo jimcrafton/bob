@@ -16,6 +16,8 @@ public:
 
 private:
     int fail(const std::string& message);
+    int runBobSource(const DriverOptions& options);
+    int runLlvmIr(const DriverOptions& options);
 
     llvm::raw_ostream& out_;
     llvm::raw_ostream& err_;

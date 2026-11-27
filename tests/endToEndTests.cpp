@@ -160,6 +160,36 @@ TEST_F(EndToEnd, FallsBackToSdkKernel32WhenGeneratedLibIsMissing)
     EXPECT_EQ(runExe(options.outputPath).stdOut, "hello from bob\n");
 }
 
+TEST_F(EndToEnd, SyntaxOnlyReportsAllErrors)
+{
+    bob::driver::DriverOptions options;
+    options.inputPath = std::string(BOB_TEST_PROGRAMS_DIR) + "/syntaxError.bob";
+    options.syntaxOnly = true;
+    std::string output;
+    std::string diagnostics;
+    llvm::raw_string_ostream out(output);
+    llvm::raw_string_ostream err(diagnostics);
+    bob::driver::Driver driver(out, err);
+    EXPECT_EQ(driver.run(options), 1);
+    EXPECT_NE(diagnostics.find("syntaxError.bob:4:34: error: expected an expression"), std::string::npos) << diagnostics;
+    EXPECT_NE(diagnostics.find("syntaxError.bob:7:11: error: expected ';'"), std::string::npos) << diagnostics;
+    EXPECT_NE(diagnostics.find("2 errors"), std::string::npos) << diagnostics;
+}
+
+TEST_F(EndToEnd, DumpAstJson)
+{
+    bob::driver::DriverOptions options;
+    options.inputPath = std::string(BOB_TEST_PROGRAMS_DIR) + "/syntax/designExample.bob";
+    options.dumpAst = bob::driver::AstDumpFormat::json;
+    std::string output;
+    std::string diagnostics;
+    llvm::raw_string_ostream out(output);
+    llvm::raw_string_ostream err(diagnostics);
+    bob::driver::Driver driver(out, err);
+    EXPECT_EQ(driver.run(options), 0) << diagnostics;
+    EXPECT_NE(output.find("\"selector\": \"to:do:\""), std::string::npos);
+}
+
 TEST_F(EndToEnd, BobSourceNotYetSupported)
 {
     std::string diagnostics;

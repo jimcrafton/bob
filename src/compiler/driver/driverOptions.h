@@ -6,8 +6,17 @@
 
 namespace bob::driver {
 
+enum class AstDumpFormat {
+    none,
+    text,
+    json,
+};
+
 struct DriverOptions {
     std::string inputPath;
+    AstDumpFormat dumpAst = AstDumpFormat::none;
+    bool dumpTokens = false;
+    bool syntaxOnly = false;
     std::string outputPath;
     std::string linkerPath;
     std::string runtimeDir;

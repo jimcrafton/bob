@@ -56,6 +56,8 @@ Non-goals (for now)
 
 ## 3. Syntax
 
+The exact grammar the parser implements, including the disambiguation rules settled in phase 1 (contextual keywords, `;` optional before `}`, same-line rule for block receivers, bracketed parameter types), is in `docs/grammar.md`.
+
 ### 3.1 Compilation units (unchanged from scratch-lang)
 ```
 program hello, 0.1.0          # executable
@@ -756,15 +758,19 @@ The semantic model (modules, types, classes, messages, send sites) is designed s
 - Plain accessors, no deep template APIs on the public surface.
 - One "query" API that both Python and `compiler` bind to.
 
+### 11.4a Tooling **[Decided]**
+The lexer, parser and AST are a separate library, `bobSyntax`, with no LLVM dependency, so tools for bob code (formatters, linters, language servers, doc generators, refactoring tools, Python bindings) can be built on the same front end as the compiler. The library is lossless (tokens plus trivia reproduce the source), error-tolerant (always a complete tree, with `Error` nodes), position-precise (node and name ranges), and generically walkable (`childrenOf` / `propertiesOf` / parent links / stable ids). It also has a JSON dump for tools in other languages. The contract is in `docs/tooling.md`. Later phases (semantic model, compile-time `compiler` object) follow the same rules.
+
 ### 11.5 Repository layout
-As built in phase 0 (build instructions: `docs/building.md`):
+As built through phase 1 (build instructions: `docs/building.md`):
 ```
 CMakeLists.txt, CMakePresets.json
 src/shared/abi.h          compiler/runtime shared symbol names & ids
-src/compiler/driver/      driver options, IR → object (LLVM), toolchain lookup, lld-link job → bobCompiler
+src/syntax/               bobSyntax (no LLVM): source/, diagnostics/, lexer/, ast/, parser/
+src/compiler/driver/      driver options, .bob front end, IR → object (LLVM), toolchain lookup, lld-link → bobCompiler
 src/runtime/              bobrt: crt/ (mem*, _fltused), platform/win64/ (bobStart, console, chkstk.asm, kernel32.def)
 src/tools/bobc/           bobc.exe (thin main over bobCompiler)
-tests/                    bobTests: driverOptionsTests, endToEndTests; tests/programs/*.ll
+tests/                    bobTests: lexer, parser, ast, syntax corpus, driver, end-to-end; tests/programs/
 ```
 Planned additions:
 ```
@@ -787,7 +793,7 @@ Runtime unit tests: gtest needs the CRT, so `bobTests` compiles the runtime sour
 | Phase | Deliverable | Exit criterion |
 |---|---|---|
 | 0 ✅ | CMake skeleton, LLVM found, gtest `bobTests`, `bobc` stub; `bobrt` freestanding with `bobStart`, console write, exit; link with lld-link | A hand-written LLVM IR "hello" links against bobrt with no CRT and runs. **Done 2026-11-27:** 16/16 tests pass in Debug and Release; exes import only kernel32 |
-| 1 | Lexer + parser for §3 (all constructs), AST, `--dump-ast` | Parses all of scratch-lang's tests (converted) and the §3.8 example |
+| 1 ✅ | Lexer + parser for §3 (all constructs), AST, `--dump-ast` | Parses all of scratch-lang's tests (converted) and the §3.8 example. **Done 2026-11-27:** `bobSyntax` library (lossless, error-tolerant, tool-reusable); 17 converted scratch tests + §3.8 example + a file of every §3–4 construct parse cleanly; 67/67 tests in Debug and Release |
 | 2 | Sema + codegen for primitives, locals, records, intrinsic sends, `main:`, `return` | `factorial`/`fib` programs compile, run and return correct exit codes |
 | 3 | Blocks: inlined `ifTrue:`/`whileTrue:`/`to:do:`; non-escaping closures | Loops/conditionals programs; dispatch report shows tier 0/1 |
 | 4 | Classes: layout, `new`, ARC insertion, static dispatch + CHA, class objects, selectors, `bob_msgSend` + cache, protocols | Polymorphism tests; leak report shows 0 bytes at exit |

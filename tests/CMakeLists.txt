@@ -11,8 +11,12 @@ FetchContent_Declare(googletest
 FetchContent_MakeAvailable(googletest)
 
 add_executable(bobTests
+    astTests.cpp
     driverOptionsTests.cpp
     endToEndTests.cpp
+    lexerTests.cpp
+    parserTests.cpp
+    syntaxCorpusTests.cpp
 )
 target_link_libraries(bobTests PRIVATE bobCompiler GTest::gtest_main)
 target_compile_definitions(bobTests PRIVATE

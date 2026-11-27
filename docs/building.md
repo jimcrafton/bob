@@ -38,8 +38,18 @@ Visual Studio opens the folder directly and picks up the presets.
 
 `bobc` looks for `bobrt.lib` and `kernel32.lib` next to itself by default (`--runtime-dir=` overrides this). If the generated `kernel32.lib` is missing, it falls back to the newest Windows SDK `kernel32.lib`, or to `--sdk-lib-path=`.
 
-## Using bobc (phase 0)
-Phase 0 accepts hand-written LLVM IR that defines `i32 @bobMain()`:
+## Using bobc on bob source (phase 1)
+`.bob` files are lexed and parsed. Code generation comes in phase 2.
+```
+bobc --syntax-only prog.bob        # report syntax errors (exit 1 if any)
+bobc --dump-tokens prog.bob        # token stream
+bobc --dump-ast prog.bob           # syntax tree, text
+bobc --dump-ast=json prog.bob      # syntax tree, JSON (see docs/tooling.md)
+```
+The grammar is in `docs/grammar.md`.
+
+## Using bobc on LLVM IR (phase 0)
+`bobc` accepts hand-written LLVM IR that defines `i32 @bobMain()`:
 ```
 bobc hello.ll                  # → hello.exe
 bobc -c hello.ll -o hello.obj  # object only

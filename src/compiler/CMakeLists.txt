@@ -27,4 +27,4 @@ if(BOB_LLD_LINK)
 endif()
 
 target_compile_options(bobCompiler PUBLIC /W4 /permissive- /utf-8 /Zc:__cplusplus)
-target_link_libraries(bobCompiler PUBLIC ${bobLlvmLibs})
+target_link_libraries(bobCompiler PUBLIC bobSyntax ${bobLlvmLibs})
