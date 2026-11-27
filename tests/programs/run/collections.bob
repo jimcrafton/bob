@@ -1,0 +1,122 @@
+# expect-exit: 0
+program collections, 0.1.0
+{
+    enum Opcode { load; store; jump; }
+
+    class Part {
+        public { weight: int32; }
+    }
+
+    class Inventory {
+        private { items: array; }
+        msg add: p:Part { items add: p; }
+        msg totalWeight [int32] {
+            total := 0;
+            for p in items {
+                total := total + p weight;
+            }
+            return total;
+        }
+    }
+
+    extends collections {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg sum: nums:[array of: int32] [int32] {
+            total := 0;
+            nums do: { :n | total := total + n; };
+            return total;
+        }
+
+        @[static] msg names [array] {
+            n := [];
+            n add: "a";
+            n add: "b";
+            return n;
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            a := [1, 2, 3];
+            failures := failures + (self check: a count = 3 and (a at: 0) = 1 and a last = 3 id: 1);
+            a add: 4;
+            a at: 0 put: 10;
+            failures := failures + (self check: (self sum: a) = 19 and (a includes: 4) id: 2);
+
+            # value semantics: copies don't see later changes
+            b := a;
+            b add: 5;
+            failures := failures + (self check: a count = 4 and b count = 5 id: 3);
+            popped := b removeLast;
+            failures := failures + (self check: popped = 5 and b count = 4 id: 4);
+
+            # element type from first use
+            words: array;
+            words add: "x";
+            words add: "yz";
+            letters := 0;
+            for w in words {
+                letters := letters + w bytes count asInt32;
+            }
+            failures := failures + (self check: letters = 3 and (self names) count = 2 id: 5);
+            failures := failures + (self check: args count = 0 id: 6);
+
+            inventory := Inventory new;
+            p := Part new;
+            p weight: 7;
+            inventory add: p;
+            inventory add: p;
+            failures := failures + (self check: inventory totalWeight = 14 id: 7);
+
+            # dictionary: string keys
+            ages: dictionary;
+            ages at: "ann" put: 31;
+            ages at: "bob" put: 42;
+            ages at: "ann" put: 32;
+            failures := failures + (self check: ages count = 2 and (ages includesKey: "bob") id: 8);
+            (ages at: "ann") ifNil: { failures := failures + 9; } ifNotNil: { :v | failures := failures + (self check: v = 32 id: 9); };
+            failures := failures + (self check: (ages at: "zed") = nil and (ages at: "zed" ifAbsent: { -1 }) = -1 id: 10);
+            older := 0;
+            ages keysAndValuesDo: { :k :v | older := older + v; };
+            failures := failures + (self check: older = 74 and ages keys count = 2 id: 11);
+            ages removeKey: "ann";
+            failures := failures + (self check: ages count = 1 id: 12);
+
+            # hashtable with inferred integer keys, set of strings
+            squares: hashtable;
+            for i in 1 to: 100 {
+                squares at: i put: i * i;
+            }
+            failures := failures + (self check: squares count = 100 and (squares at: 12 ifAbsent: { 0 }) = 144 id: 13);
+            seen: set of: string := ["a", "b"];
+            seen add: "a";
+            seen add: "c";
+            failures := failures + (self check: seen count = 3 and (seen includes: "c") and (seen includes: "d") not id: 14);
+            seen remove: "a";
+            failures := failures + (self check: seen count = 2 id: 15);
+
+            # fixed arrays indexed by an enum and by a subrange
+            costs: array of: int32 by: Opcode;
+            costs at: Opcode jump put: 3;
+            costs at: Opcode load put: 1;
+            failures := failures + (self check: (costs at: Opcode jump) = 3 and costs count = 3 id: 16);
+            names: array of: string by: Opcode := ["ld", "st", "jmp"];
+            failures := failures + (self check: (names at: Opcode store) = "st" id: 17);
+            sector: array of: uint8 by: [0 to: 511];
+            sector at: 511 put: 9u8;
+            checksum := 0;
+            for value in sector {
+                checksum := checksum + value asInt32;
+            }
+            failures := failures + (self check: checksum = 9 id: 18);
+
+            # nested containers
+            grid := [[1, 2], [3]];
+            failures := failures + (self check: (grid at: 1) count = 1 and ((grid at: 0) at: 1) = 2 id: 19);
+            return failures;
+        }
+    }
+}

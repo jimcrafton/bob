@@ -1,0 +1,91 @@
+# expect-exit: 0
+program strings, 0.1.0
+{
+    enum Color { red; green; }
+
+    class Greeter {
+        private { name: string := "world"; }
+        msg name: n:string { name := n; }
+        msg greeting [string] { return "hello, " + name; }
+    }
+
+    extends strings {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            s := "héllo";
+            failures := failures + (self check: s bytes count = 6 and s codepoints count = 5 and s graphemes count = 5 id: 1);
+            failures := failures + (self check: (s bytes at: 0) = 104u8 and (s bytes at: 1) = 195u8 id: 2);
+
+            t := s + ", " + "wörld";
+            failures := failures + (self check: t = "héllo, wörld" and t <> s id: 3);
+            failures := failures + (self check: "abc" < "abd" and "ab" < "abc" and "b" > "abc" id: 4);
+            failures := failures + (self check: (t startsWith: "hé") and (t endsWith: "rld") and (t includesSubstring: ", w") id: 5);
+            failures := failures + (self check: "" isEmpty and t isEmpty not id: 6);
+
+            # grapheme clusters: e + combining acute, a family emoji (ZWJ sequence), two flags
+            accent := "e\u{301}";
+            family := "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+            flags := "\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}";
+            failures := failures + (self check: accent codepoints count = 2 and accent graphemes count = 1 id: 7);
+            failures := failures + (self check: family codepoints count = 5 and family graphemes count = 1 id: 8);
+            failures := failures + (self check: flags codepoints count = 4 and flags graphemes count = 2 id: 9);
+            failures := failures + (self check: "\r\n" graphemes count = 1 and "क्ष" graphemes count = 1 id: 10);
+
+            pieces := 0;
+            for g in (accent + "x" + family) graphemes {
+                pieces := pieces + 1;
+                if pieces = 1 {
+                    failures := failures + (self check: g = accent id: 11);
+                }
+            }
+            failures := failures + (self check: pieces = 3 id: 12);
+
+            sum := 0;
+            for b in "AB" bytes {
+                sum := sum + b asInt32;
+            }
+            "AB" codepoints do: { :c | sum := sum + c value asInt32; };
+            failures := failures + (self check: sum = 262 id: 13);
+
+            c := 'é';
+            failures := failures + (self check: c value = 233u32 and c asString = "é" and 'a' < 'b' id: 14);
+
+            failures := failures + (self check: 42 printString = "42" and -7 printString = "-7" and 255u8 printString = "255" id: 15);
+            failures := failures + (self check: true printString = "true" and 2.5 printString = "2.5" and Color green printString = "green" id: 16);
+            failures := failures + (self check: Color red name = "red" and 0.1 printString = "0.1" and 1e20 printString = "1.0e20" id: 17);
+
+            parts := "a,b,,c" split: ",";
+            failures := failures + (self check: parts count = 4 and (parts at: 2) = "" and (parts at: 3) = "c" id: 18);
+            failures := failures + (self check: ("-" join: parts) = "a-b--c" id: 19);
+
+            bytes := "hé" toUtf8;
+            failures := failures + (self check: bytes count = 3 id: 20);
+            (string fromUtf8: bytes) ifNil: { failures := failures + 21; } ifNotNil: { :back |
+                failures := failures + (self check: back = "hé" id: 21);
+            };
+            bad := [104u8, 255u8];
+            failures := failures + (self check: (string fromUtf8: bad) = nil and (string fromUtf8Lossy: bad) = "h\u{FFFD}" id: 22);
+
+            g := Greeter new;
+            failures := failures + (self check: g greeting = "hello, world" id: 23);
+            g name: "bob";
+            failures := failures + (self check: g greeting = "hello, bob" id: 24);
+
+            built := "";
+            for i in 1 to: 100 {
+                built := built + i printString;
+            }
+            failures := failures + (self check: built bytes count = 192 id: 25);
+            maybe: string? := nil;
+            failures := failures + (self check: maybe = nil id: 26);
+            maybe := "x";
+            failures := failures + (self check: maybe <> nil id: 27);
+            return failures;
+        }
+    }
+}

@@ -1,0 +1,69 @@
+# expect-exit: 0
+program subranges, 0.1.0
+{
+    type Percent := 0 to: 100;
+    type Port : uint16 := 1 to: 65535;
+    type PhysAddr := uint64;
+    type VirtAddr := uint64;
+    @[alias] type Handle := uint64;
+
+    record Setting {
+        level: Percent;
+        port: Port;
+    }
+
+    extends subranges {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg grade: p:Percent [int32] {
+            case p of {
+                (0 to: 49):   { return 1; }
+                (50 to: 89):  { return 2; }
+                (90 to: 100): { return 3; }
+            }
+        }
+
+        @[static] msg map: v:VirtAddr to: p:PhysAddr [uint64] {
+            return v value + p value;
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            pct: Percent := 40;
+            n := pct + 1;
+            failures := failures + (self check: n = 41 id: 1);
+            wide: int32 := pct;
+            failures := failures + (self check: wide = 40 id: 2);
+            x := pct;
+            x := 75;
+            failures := failures + (self check: (self grade: x) = 2 and (self grade: 100) = 3 id: 3);
+
+            raw := 99;
+            pct := raw;
+            failures := failures + (self check: pct = 99 id: 4);
+            failures := failures + (self check: (Percent fromValue: 150) = nil id: 5);
+            (Percent fromValue: 7) ifNotNil: { :p | failures := failures + (self check: p = 7 id: 6); };
+
+            s: Setting;
+            failures := failures + (self check: s.port = 1 and s.level = 0 id: 7);
+
+            total := 0;
+            for i in Percent {
+                total := total + i;
+            }
+            failures := failures + (self check: total = 5050 and Percent count = 101 id: 8);
+
+            phys := PhysAddr fromValue: 4096u64;
+            phys := phys + 4096;
+            virt := VirtAddr fromValue: 1u64;
+            failures := failures + (self check: (self map: virt to: phys) = 8193u64 id: 9);
+            h: Handle := 5u64;
+            plain: uint64 := h;
+            failures := failures + (self check: plain = 5u64 id: 10);
+            return failures;
+        }
+    }
+}

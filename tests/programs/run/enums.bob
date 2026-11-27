@@ -1,0 +1,114 @@
+# expect-exit: 0
+program enums, 0.1.0
+{
+    enum Color { red; green; blue; }
+
+    enum PciClass : uint8 {
+        storage := 0x01;
+        network := 0x02;
+        display := 0x03;
+    }
+
+    enum Sparse { low := 2; middle := 10; high; }
+
+    enum Perm : uint32 { read; write; exec; }
+
+    type Weekday := Day mon to: Day fri;
+    enum Day { mon; tue; wed; thu; fri; sat; sun; }
+
+    class Light {
+        public { color: Color := Color green; }
+        private { seen: set of: Color; }
+        msg see: c:Color { seen add: c; }
+        msg seenCount [int32] { return seen count; }
+    }
+
+    extends enums {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg describe: c:Color [int32] {
+            case c of {
+                Color red:               { return 1; }
+                Color green, Color blue: { return 2; }
+            }
+        }
+
+        @[static] msg isWeekend: d:Day [bool] {
+            case d of {
+                (Day mon to: Day fri): { return false; }
+                Day sat, Day sun:      { return true; }
+            }
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            c := Color green;
+            failures := failures + (self check: c value = 1 and c ordinal = 1 id: 1);
+            failures := failures + (self check: c succ = Color blue and c pred = Color red id: 2);
+            failures := failures + (self check: Color first = Color red and Color last = Color blue and Color count = 3 id: 3);
+            failures := failures + (self check: Color red < Color blue and c <> Color red id: 4);
+
+            k: PciClass := PciClass network;
+            failures := failures + (self check: k value = 2u8 id: 5);
+            (PciClass fromValue: 3u8) ifNil: { failures := failures + 6; } ifNotNil: { :p |
+                failures := failures + (self check: p = PciClass display id: 6);
+            };
+            failures := failures + (self check: (PciClass fromValue: 9u8) = nil id: 7);
+
+            # sparse values: ordinal and value differ
+            s := Sparse high;
+            failures := failures + (self check: s value = 11 and s ordinal = 2 and s pred = Sparse middle id: 8);
+            total := 0;
+            for x in Sparse {
+                total := total + x value;
+            }
+            failures := failures + (self check: total = 23 id: 9);
+
+            # loops over enums and intervals of members
+            count := 0;
+            for col in Color red to: Color green {
+                count := count + 1;
+            }
+            Color do: { :each | count := count + 10; };
+            failures := failures + (self check: count = 32 id: 10);
+
+            failures := failures + (self check: (self describe: Color blue) = 2 and (self describe: Color red) = 1 id: 11);
+            failures := failures + (self check: (self isWeekend: Day sun) and (self isWeekend: Day tue) not id: 12);
+
+            # enum subranges
+            w: Weekday := Day wed;
+            days := 0;
+            for d in Weekday {
+                days := days + 1;
+            }
+            failures := failures + (self check: days = 5 and Weekday last = Day fri and w succ = Day thu id: 13);
+
+            # sets of enums are bitmasks
+            p: set of: Perm := [Perm read, Perm write];
+            failures := failures + (self check: (p includes: Perm write) and (p includes: Perm exec) not id: 14);
+            p := p + [Perm exec];
+            p := p - [Perm write];
+            failures := failures + (self check: p value = 5u32 and p count = 2 id: 15);
+            p remove: Perm read;
+            p add: Perm write;
+            failures := failures + (self check: p = [Perm write, Perm exec] and p isEmpty not id: 16);
+            q := (set of: Perm) fromValue: 8u32;
+            failures := failures + (self check: q = nil id: 17);
+            bits := 0;
+            for m in p {
+                bits := bits + m ordinal;
+            }
+            failures := failures + (self check: bits = 3 id: 18);
+
+            light := Light new;
+            light see: Color red;
+            light see: Color red;
+            light see: Color blue;
+            failures := failures + (self check: light color = Color green and light seenCount = 2 id: 19);
+            return failures;
+        }
+    }
+}

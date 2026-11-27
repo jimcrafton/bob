@@ -1,0 +1,15 @@
+# expect-exit: 101
+# expect-stderr: bob: runtime trap: value out of range
+program trapSubrange, 0.1.0
+{
+    type Percent := 0 to: 100;
+
+    extends trapSubrange {
+        @[static] msg main: args:array [int32] {
+            pct: Percent := 10;
+            n := 200;
+            pct := n;
+            return 0;
+        }
+    }
+}
