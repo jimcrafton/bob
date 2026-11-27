@@ -1,0 +1,219 @@
+#{
+Every construct decided in docs/design.md sections 3-4, in one file.
+Parsed (not type-checked) by bobTests.
+}#
+@[overflow: trap] module geometry.shapes, 1.4.11
+import core.io;
+import core.collections, 2.0.0;
+{
+    # 3.6 classes, protocols, records, extends
+    @[protocol] class Shape {
+        msg area [real64];
+        msg describe [string] {
+            return "shape with area " + self area printString;
+        }
+    }
+
+    @[protocol] class Printable {
+        msg printOn: s:Stream;
+    }
+
+    class Man {
+    }
+
+    class Bob inherits Man implements Printable, Shape {
+        public {
+            x: int32;
+            y: int32 := 4;
+        }
+        private {
+            name: string;
+            @[volatile] status: uint32;
+        }
+
+        msg toString: t:int32 isFat:bool [string] {
+            return "my name is " + name;
+        }
+
+        msg at: i:int64 put: value:int32 [int32] {
+            return value;
+        }
+
+        msg pos [int32, int32] {
+            return x, y;
+        }
+
+        msg stats [count: int32, label: string] {
+            return 1, "one";
+        }
+
+        msg sum: nums:[array of: int32] [int64] {
+            total := 0;
+            nums do: { :n | total := total + n; };
+            return total;
+        }
+
+        @[static] msg named: n:string [Bob] {
+            b: Bob := Bob new;
+            b.name := n;
+            return b;
+        }
+
+        msg printOn: s:Stream {
+            s print: name;
+        }
+
+        msg area [real64] {
+            return 0.0;
+        }
+    }
+
+    record Point {
+        x: uint32;
+        y: uint32;
+    }
+
+    record PacketHeader { kind: uint16; len: uint16; }
+
+    @[packed] record TcpPacket inherits PacketHeader {
+        srcPort: uint16;
+        dstPort: uint16;
+    }
+
+    @[align: 16] record TcpPacketTrailer {
+        srcPort: uint16;
+        dstPort: uint16;
+        hdr: PacketHeader;
+    }
+
+    extends Point {
+        msg + other:Point [Point] {
+            return Point x: x + other.x y: y + other.y;
+        }
+    }
+
+    extends Bob implements Printable {
+        msg shout [string] { return name; }
+    }
+
+    # 4.6 enums, 4.7 subranges and named types
+    enum Color { red; green; blue; }
+
+    enum PciClass : uint8 {
+        storage := 0x01;
+        network := 0x02;
+        display := 0x03;
+    }
+
+    enum Perm : uint32 { read; write; exec; }
+
+    enum Day { mon; tue; wed; thu; fri; sat; sun; }
+
+    type Percent := 0 to: 100;
+    type Port : uint16 := 1 to: 65535;
+    type Weekday := Day mon to: Day fri;
+    type PhysAddr := uint64;
+    @[alias] type Handle := uint64;
+
+    namespace kernel.mm {
+        @[overflow: wrap] class PageTable {
+            msg map: v:VirtAddr to: p:PhysAddr;
+        }
+    }
+
+    class Demo {
+        private {
+            items: array of: Part;
+            d: dictionary of: int32;
+            h: hashtable keys: int32 values: Part;
+            sector: array of: uint8 by: [0 to: 511];
+            grid: array of: [array of: real32 by: [0 to: 7]] by: [0 to: 7];
+            handlers: array of: Handler by: Opcode;
+            perms: set of: Perm;
+            next: Demo?;
+            p: pointer to: uint32;
+        }
+
+        msg run: c:Color v:Value [int32] {
+            # 3.3 declarations
+            x: int32;
+            y: int32 := 4;
+            z := 4;
+            z := z + 1;
+            pct: 0 to: 100;
+
+            # 3.2 literals
+            a := 123;
+            b := 0x7F;
+            k := 0b1010;
+            m := 1_000_000;
+            r := 3.25;
+            e := 1e-9;
+            w := 10u8;
+            q := 3.0r32;
+            ch := 'é';
+            esc := "tab\tnewline\n\u{1F600}";
+            neg := -1;
+            flags := [true, false, nil];
+            empty := [];
+
+            # 3.4 precedence
+            t := 2 + 3 * 4;
+            u := (4 + 5) toString + " yes";
+            ok := x & 1 = 0 and y < 10 or z >= 3;
+            s := a << 2 | b ^ k % 3;
+            def := next ?? self;
+            eq := a == b;
+            ne := a ~= b;
+
+            # 3.5 blocks and control flow
+            (a > b) ifTrue: { m := a; } ifFalse: { m := b; };
+            { x < 10 } whileTrue: { x := x + 1; };
+            1 to: 10 do: { :i | z := z + i; };
+            items do: { :each | io out println: each; };
+            sq := { :i: int32 | i * i };
+
+            # 4.1 overflow attributes
+            hh := @[overflow: wrap] (a * 31 + b);
+            @[overflow: wrap] {
+                a := a + b;
+                b := b * 3;
+            }
+
+            # 4.6 Pascal ordinals, sets, enum-indexed arrays
+            n := c ordinal;
+            c2 := c succ;
+            p2: set of: Perm := [Perm read, Perm write];
+            (p2 includes: Perm write) ifTrue: { x := 1; };
+            p2 := p2 + [Perm exec];
+            Color do: { :each | x := x + each value; };
+            (handlers at: Opcode nop) run;
+
+            # caseOf: with Pascal labels
+            c caseOf: {
+                Color red, Color green: { self go; };
+                Color blue:             { self wait; };
+            };
+            a caseOf: {
+                0:         { x := 0; };
+                (1 to: 9): { x := 1; };
+            } otherwise: { x := 2; };
+            v caseOf: {
+                int32:  { :n | z := z + n; };
+                string: { :s | io out println: s; };
+            };
+
+            # 8.3 meta
+            size := x meta size;
+            nameText := Point meta typeName;
+
+            return x;
+        }
+    }
+
+    # module-level statements
+    d: real32;
+    d := 0.00112;
+    pt: Point;
+    pt.x := 100;
+}

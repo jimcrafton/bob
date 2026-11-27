@@ -1,0 +1,25 @@
+
+
+module test_main
+
+{
+
+#test main here
+extends test_main  {
+	@[static] msg main: args:array  [int32] {
+
+		a: real32;
+		b: real64;
+		g: int64 ;
+		g := 12.234;
+		a := 3.5;
+
+
+		a := b + 3;
+
+		return 0x56;
+	}
+}
+
+
+}

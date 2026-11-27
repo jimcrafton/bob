@@ -1,0 +1,9 @@
+program broken, 0.1.0
+{
+    class Counter {
+        msg increment { count := ; }
+        msg ok { return 1; }
+    }
+    x := 1
+    y := 2;
+}

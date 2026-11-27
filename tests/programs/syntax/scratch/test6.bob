@@ -1,0 +1,15 @@
+
+
+module test1 , 99.4.11
+
+{
+
+extends test1 {
+	@[static] msg main: args:array [int32] {
+		runtime.system print: "hello"	;
+		return 0;
+	}
+}
+
+
+}

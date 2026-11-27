@@ -1,0 +1,18 @@
+program hello, 0.1.0
+import core.io;
+{
+    class Counter {
+        private { count: int64; }
+        msg increment { count := count + 1; }
+        msg count [int64] { return count; }
+    }
+
+    extends hello {
+        @[static] msg main: args:array [int32] {
+            c: Counter := Counter new;
+            1 to: 10 do: { :i | c increment; };
+            (c count > 5) ifTrue: { io out println: "big"; };
+            return 0;
+        }
+    }
+}

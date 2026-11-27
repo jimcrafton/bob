@@ -1,0 +1,13 @@
+{
+	namespace foo {
+		namespace bar {
+			b:real32;
+			jj:int32;
+		}
+	}
+
+
+	str: string;
+
+	str := "hello world";
+}

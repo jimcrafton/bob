@@ -1,0 +1,14 @@
+{
+
+namespace foo {
+	namespace bar {
+		b:real32;
+		jj:int32;
+	}
+}
+
+
+jj:int32;
+ss:real64;
+
+}

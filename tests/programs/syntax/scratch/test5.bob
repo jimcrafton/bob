@@ -1,0 +1,45 @@
+
+
+module test1 , 1.4.11
+
+{
+
+class foobar {
+
+}
+
+class Man {
+
+}
+
+class bob inherits Man {
+	public {
+		x: int32 ;
+		y: int32 ;
+	}
+
+
+	private {
+		name: string;
+	}
+
+	msg toString : t:int32 isFat:bool [string] {
+		return "my name is " + name ;
+	}
+}
+
+record Point {
+x : uint32;
+y : uint32;
+}
+
+d:real32;
+d := 0.00112;
+
+p:Point;
+#p.x := 100;
+
+f: foobar;
+f add: 3 num2:5;
+
+}
