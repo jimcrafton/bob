@@ -26,6 +26,12 @@ enum class TrapReason : int32_t {
     conversionOutOfRange = 3,
     shiftOutOfRange = 4,
     unreachable = 5,
+    // phase 5
+    valueOutOfRange = 6,   // assigning into a subrange
+    ordinalOutOfRange = 7, // `succ` past the last member, `pred` before the first
+    indexOutOfRange = 8,
+    keyNotFound = 9,
+    invalidUtf8 = 10,
 };
 
 }

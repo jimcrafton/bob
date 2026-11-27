@@ -191,11 +191,11 @@ TEST(Semantic, MainIsRequiredAndMessagesAreStatic)
 
 TEST(Semantic, UnsupportedFeaturesNameTheirPhase)
 {
-    auto a = analyzeMain("s := \"hi\";\nreturn 0;", "", "class Widget { }\nenum Color { red; }");
+    auto a = analyzeMain("p: pointer;\nreturn 0;", "", "class Widget { }\nnamespace n { }");
     EXPECT_TRUE(a->hasCode("sema.unsupported")) << a->text();
     std::string text = a->text();
-    EXPECT_NE(text.find("enums isn't supported yet (planned for phase 5)"), std::string::npos) << text;
-    EXPECT_NE(text.find("strings and characters isn't supported yet (planned for phase 5)"), std::string::npos) << text;
+    EXPECT_NE(text.find("the type 'pointer' isn't supported yet (planned for phase 9)"), std::string::npos) << text;
+    EXPECT_NE(text.find("namespaces isn't supported yet (planned for phase 7)"), std::string::npos) << text;
 }
 
 TEST(Semantic, BareBlockParameterIsInferredFromTheBody)
@@ -352,4 +352,59 @@ TEST(Semantic, MiscTypeRules)
     EXPECT_TRUE(a->hasCode("sema.intervalOutsideFor")) << a->text();
     EXPECT_TRUE(a->hasCode("sema.cannotInfer")) << a->text();
     EXPECT_TRUE(a->hasCode("sema.unsupported")) << a->text();
+}
+
+TEST(Semantic, EnumsAreDistinctAndCasesExhaustive)
+{
+    auto a = analyzeMain("c := Color red;\nn: int32 := c;\nd := Color purple;\ncase c of { Color red: { } }\nreturn 0;", "",
+                         "enum Color { red; green; }\nenum Bad : uint8 { a := 255; b; }\nenum Twice { x := 1; y := 1; }");
+    EXPECT_TRUE(a->hasCode("sema.typeMismatch")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.unknownMember")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.caseNotExhaustive")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.literalOutOfRange")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.duplicateEnumValue")) << a->text();
+    EXPECT_NE(a->text().find("missing: green"), std::string::npos) << a->text();
+}
+
+TEST(Semantic, SubrangesCheckConstantsAndDistinctTypesDontMix)
+{
+    auto a = analyzeMain("p: Percent := 150;\nq: Percent := 50;\nwide := q + 1;\nphys := PhysAddr fromValue: 1u64;\nv: VirtAddr := phys;\nreturn 0;", "",
+                         "type Percent := 0 to: 100;\ntype PhysAddr := uint64;\ntype VirtAddr := uint64;");
+    EXPECT_TRUE(a->hasCode("sema.literalOutOfRange")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.typeMismatch")) << a->text();
+    EXPECT_EQ(localNamed(*a, "wide")->type->name, "uint8");
+    EXPECT_EQ(localNamed(*a, "q")->type->name, "Percent");
+}
+
+TEST(Semantic, ContainerElementTypesAreInferred)
+{
+    auto a = analyzeMain("a := [1, 2];\nb: array;\nb add: \"x\";\nm := [7, \"s\", 1.5];\nd: dictionary;\nd at: \"k\" put: 2.5;\n"
+                         "unused: array;\nreturn 0;");
+    EXPECT_EQ(bob::sema::typeName(localNamed(*a, "a")->type), "array of: int32");
+    EXPECT_EQ(bob::sema::typeName(localNamed(*a, "b")->type), "array of: string");
+    EXPECT_EQ(bob::sema::typeName(localNamed(*a, "m")->type), "array of: [int32 | real64 | string]");
+    EXPECT_EQ(bob::sema::typeName(localNamed(*a, "d")->type), "dictionary of: real64");
+    EXPECT_TRUE(a->hasCode("sema.cannotInferElement")) << a->text();
+}
+
+TEST(Semantic, StringsHaveViewsNotLengths)
+{
+    auto a = analyzeMain("s := \"hi\";\nn := s count;\nb := s bytes count;\nk := s + 1;\nfor x in s { }\nreturn 0;");
+    EXPECT_TRUE(a->hasCode("sema.unknownMessage")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.typeMismatch")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.notIterable")) << a->text();
+    EXPECT_EQ(localNamed(*a, "b")->type->name, "int64");
+}
+
+TEST(Semantic, UnionsMustBeNarrowed)
+{
+    auto a = analyzeMain("m := [1, \"a\"];\nn := (m at: 0) + 1;\ncase m at: 0 of { int32: { :i | } }\nreturn 0;");
+    EXPECT_TRUE(a->hasCode("sema.unknownMessage")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.caseNotExhaustive")) << a->text();
+}
+
+TEST(Semantic, MutatingSendsNeedAVariable)
+{
+    auto a = analyzeMain("[1, 2] add: 3;\nreturn 0;", "@[static] msg make [array of: int32] { return [1]; }");
+    EXPECT_TRUE(a->hasCode("sema.notAssignable")) << a->text();
 }

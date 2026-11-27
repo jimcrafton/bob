@@ -27,6 +27,16 @@ const char* reasonText(int32_t reason)
         return "shift amount out of range";
     case bob::abi::TrapReason::unreachable:
         return "unreachable code reached";
+    case bob::abi::TrapReason::valueOutOfRange:
+        return "value out of range";
+    case bob::abi::TrapReason::ordinalOutOfRange:
+        return "no next or previous member";
+    case bob::abi::TrapReason::indexOutOfRange:
+        return "index out of range";
+    case bob::abi::TrapReason::keyNotFound:
+        return "key not found";
+    case bob::abi::TrapReason::invalidUtf8:
+        return "invalid UTF-8";
     }
     return "unknown trap";
 }

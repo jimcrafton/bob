@@ -1,10 +1,10 @@
 # bob semantics (as implemented)
 
-What the analyzer (`bobSemantic`, `src/semantic`) and code generator (`src/compiler/codegen`) accept and produce as of phase 2. `docs/design.md` is the intent; this file is the current behaviour. Anything not listed here is reported as `sema.unsupported`, with the phase it's planned for.
+What the analyzer (`bobSemantic`, `src/semantic`) and code generator (`src/compiler/codegen`) accept and produce as of phase 5. `docs/design.md` is the intent; this file is the current behaviour. Anything not listed here is reported as `sema.unsupported`, with the phase it's planned for.
 
 ## Programs and messages
 - An executable is a `program name, version { … }` unit with an `extends name { … }` block. Messages there are **class-side** and must be marked `@[static]`. Inside them `self` is the program, so `self fact: 5` and `factorial fact: 5` are the same direct call.
-- The entry point is `@[static] msg main: args:array [int32]` (or `msg main [int32]`). Its return value is the process exit code. `args` can be declared but not used until arrays exist (phase 5).
+- The entry point is `@[static] msg main: args:array [int32]` (or `msg main [int32]`). Its return value is the process exit code. `args` is an `array of: string` holding the command-line arguments after the program name.
 - Messages are compiled to internal LLVM functions named `bob.<program>.<selector>`. The runtime calls `bobMain`, which the compiler generates.
 - **Parameters and `for` loop variables are read-only.** Assigning to them is `sema.assignToReadOnly`.
 - A message with a return type must return on every path (`sema.missingReturn`). `loop { }` without a `break` counts as returning.
@@ -19,8 +19,13 @@ What the analyzer (`bobSemantic`, `src/semantic`) and code generator (`src/compi
 
 | blocks | closures, see [Blocks](#blocks-phase-3) |
 | classes, protocols, `C?` | references, see [Classes](#classes-protocols-and-arc-phase-4) |
+| enums, subranges, named types | see [Enums](#enums-subranges-and-named-types-phase-5) |
+| `T?` | optionals of any value type, see [Optionals](#optionals-phase-5) |
+| `string`, `char` | see [Strings](#strings-phase-5) |
+| `array`, `dictionary`, `hashtable`, `set`, fixed arrays | see [Containers](#containers-phase-5) |
+| `A \| B` | inferred unions, see [Unions](#inferred-unions-phase-5) |
 
-Not yet: `int128`, `char`, strings, arrays and other containers, optionals of non-class types, tuples, enums, subranges, named types.
+Not yet: `int128`, tuples, `slice`, `pointer`, distinct record and class types.
 
 ### Implicit conversions
 Only lossless ones: a wider integer of the same signedness, an unsigned integer to a strictly wider signed one, `real32` to `real64`. Everything else is explicit.
@@ -56,8 +61,8 @@ An untyped literal takes its type from context: the declared type, the parameter
 
 ## Statements
 `if`/`else if`/`else`, `while`, `loop`, `break`, `continue`, `return`, statement groups, and:
-- `for i in a to: b { … }` visits `a`…`b` inclusive (nothing if `a > b`), and it's correct up to the type's maximum (`250u8 to: 255u8`). The bounds must be integers. The loop variable has their common type, or the declared type (`for b: uint8 in …`). Intervals aren't values yet: `k := 1 to: 3` is `sema.intervalOutsideFor`.
-- `case x of { … } else { … }` on integers. Labels are integer literals or `(lo to: hi)` ranges and must not overlap. Because an integer can't be covered completely, `else` is required (`sema.caseNotExhaustive`). Enums and unions come in phase 5.
+- `for i in a to: b { … }` visits `a`…`b` inclusive (nothing if `a > b`), and it's correct up to the type's maximum (`250u8 to: 255u8`). The bounds must be integers. The loop variable has their common type, or the declared type (`for b: uint8 in …`). Intervals aren't values yet: `k := 1 to: 3` is `sema.intervalOutsideFor`. `for` also iterates enums, subranges, enum intervals (`Color red to: Color blue`), string views and containers (below).
+- `case x of { … } else { … }` on integers and `char`. Labels are integer literals or `(lo to: hi)` ranges and must not overlap. Because an integer can't be covered completely, `else` is required (`sema.caseNotExhaustive`). A `case` over an enum, a subrange or a union can cover every value and leave `else` out (below).
 
 ## Blocks (phase 3)
 - **Values.** `{ :a :b | statements }` is a closure. Its value is its last statement when that's an expression, so `{ :i: int32 | i * i }` returns `i * i`. Call it with `value`, `value:`, `value:value:` and so on.
@@ -140,18 +145,141 @@ An untyped literal takes its type from context: the declared type, the parameter
 - Cycles aren't collected. `weak`/`unowned` come with escaping closures in phase 8.
 - **Leak report:** at exit, the runtime prints `bob: leak: N object(s), M bytes still allocated at exit` to stderr if anything is still alive. The test harness requires every program to report nothing, except `leakCycle.bob`, which checks that the report works.
 
+## Enums, subranges and named types (phase 5)
+**Enums** (`enum Color { red; green; blue; }`, `enum PciClass : uint8 { storage := 0x01; … }`)
+- Storage is `int32` unless given. Values count up from 0 or from the previous explicit value. An explicit value must be an integer literal that fits the storage. Duplicate values are `sema.duplicateEnumValue`.
+- Members are always qualified (`Color red`). An enum is its own type with no conversion to or from integers. `=`, `<>`, `<` … compare values of the same enum.
+- Stored as the member's **value** (C layout). `ordinal` is the position, and differs from `value` when values are sparse.
+
+| Message | Result |
+|---|---|
+| `Color red`, `Color first`, `Color last` | compile-time constants |
+| `Color count` | `int32` constant |
+| `c value` / `c ordinal` | storage integer / `int32` |
+| `c succ`, `c pred` | next or previous member; traps past the ends (`no next or previous member`) |
+| `c name`, `c printString` | the member's name (an immortal string, nothing allocated) |
+| `Color fromValue: n` | `Color?`: nil when no member has that value |
+| `for c in Color { }`, `for c in Color red to: Color blue { }`, `Color do: { :c \| }` | loops over members in order |
+
+- A variable of an enum type with no initializer starts as the **first member**, not 0.
+
+**Sets of enums** (`p: set of: Perm := [Perm read, Perm write];`) are bitmasks: bit *n* is the member whose value is *n*. The width is the smallest of 8/16/32/64 bits that holds the largest value, or the storage if that's wider.
+- `+` union, `-` difference, `*` intersection, `=`, `<>`.
+- `includes:`, `count` (`int32`), `isEmpty`, and `value` (the raw mask, unsigned).
+- `add:`/`remove:` change a variable or field in place.
+- `(set of: Perm) fromValue: bits` gives a `set?`, nil when unknown bits are set.
+- `for m in p` visits members in ordinal order.
+
+**`case`** over an enum, an enum subrange or an integer subrange may leave out `else` if its labels cover every value. Otherwise it's `sema.caseNotExhaustive`, which names up to five missing members. Labels are members, constants or ranges `(Day mon to: Day fri)`, and must not overlap. A `case` that covers everything counts as returning when every entry returns.
+
+**Subranges** (`type Percent := 0 to: 100;`, `type Port : uint16 := 1 to: 65535;`, `type Weekday := Day mon to: Day fri;`, inline `pct: 0 to: 100`)
+- Bounds are integer literals or members of one enum.
+- Storage is the smallest of `uint8 … uint64` (or `int8 …` when the low bound is negative) unless given with `: T`.
+- **Out is free**: a subrange widens to its base like the base does. Arithmetic and comparisons use the base (`pct + 1` is `uint8`). `x := pct` keeps the subrange.
+- **In is checked**. A literal outside the range is a compile error. Any other integer (or member, for enum subranges) is checked at run time and traps with `value out of range`.
+- `Percent fromValue: n` gives `Percent?`.
+- `Percent first` / `last` / `count`, and `for i in Percent { }`.
+- A subrange variable with no initializer starts at the low bound. This includes fields of records and classes.
+
+**Named types** (`type PhysAddr := uint64;`)
+- A named numeric, `bool` or `char` type is **distinct**. It has the base's storage and operators, but mixes only with itself: `p + q` is a `PhysAddr`, untyped literals adopt it, and assigning a `uint64` or a `VirtAddr` is `sema.typeMismatch`.
+- `p value` gives the base, and `PhysAddr fromValue: n` makes one.
+- `@[alias] type Handle := uint64;` is just another name for `uint64`.
+- Distinct record and class types aren't supported yet.
+
+## Optionals (phase 5)
+- Any value type can be optional: `int32?`, `Color?`, `string?`, `[array of: int32]?`.
+- A class optional is still a nullable pointer. Every other optional is `{present, value}`, and an absent one holds the zero value.
+- `T` converts to `T?` implicitly, and `nil` converts to any optional. `x = nil` and `x <> nil` test it. Two optionals that aren't class references can't be compared with each other; unwrap first.
+- `ifNotNil:`, `ifNil:`, `ifNil:ifNotNil:` and `ifNotNil:ifNil:` unwrap any optional. The two-block forms produce a value when both blocks end in expressions of a common type: `n := (d at: "k") ifNil: { 0 } ifNotNil: { :v | v };`.
+
+## Strings (phase 5)
+- `string` is an immutable, reference-counted UTF-8 buffer, so copying is free and there's nothing to copy on write. Its bytes are always valid UTF-8.
+- The empty string is a null pointer. Literals are immortal constants in read-only data: no allocation and no refcount traffic.
+- `char` is a Unicode scalar value (`'é'`, stored as `uint32`): `c value`, `c asString`, `char fromValue: n` (`char?`), and comparisons.
+- There's no `size`, `length`, `count` or integer `at:` on a string (`sema.unknownMessage` says which view to use). Pick a view:
+
+| View | Elements | `count` | Indexing |
+|---|---|---|---|
+| `s bytes` | `uint8` | bytes | `s bytes at: n` (bounds-checked) |
+| `s codepoints` | `char` | Unicode scalars | — |
+| `s graphemes` | `string` | extended grapheme clusters (UAX #29, Unicode 16.0) | — |
+
+  Views are iterable with `for` and `do:`. A view is the same string, so no copy is made.
+- `+` concatenates two strings (`"n = " + n printString`; other types need `printString`).
+- `=` and `<` compare byte-wise, which for UTF-8 is codepoint order.
+- `startsWith:`, `endsWith:`, `includesSubstring:`, `isEmpty`.
+- `s split: ","` gives `array of: string` (empty pieces are kept), and `", " join: parts` joins one.
+- `x printString` works on numbers, `bool`, `char`, enums (the member name), strings and unions of these. Reals print up to 15 significant digits, so the output isn't yet the shortest form that round-trips.
+- `s toUtf8` gives `array of: uint8`. `string fromUtf8: bytes` gives `string?`, nil if the bytes aren't valid. `string fromUtf8Lossy: bytes` replaces each invalid byte with U+FFFD.
+- The grapheme tables are generated from the UCD by `tools/unicodegen` (see building.md). The runtime's segmenter passes all of Unicode's `GraphemeBreakTest.txt` (`Unicode.GraphemeBreakConformance`).
+
+## Containers (phase 5)
+Element types are inferred. You write `array of: T` (or a similar type message) only when the compiler asks for it.
+
+| Type | Written | Notes |
+|---|---|---|
+| `array` | `[1, 2, 3]`, `a: array;`, `array of: T` | 0-based, bounds-checked (`index out of range`) |
+| fixed array | `array of: T by: Opcode`, `array of: uint8 by: [0 to: 511]` | stored inline, `at:` takes the index type, so there's no bounds check |
+| `dictionary` | `d: dictionary;`, `dictionary of: V` | keys are always `string` |
+| `hashtable` | `h: hashtable;`, `hashtable keys: K values: V` | keys are integers, enums, `char`, `bool` or strings |
+| `set` | `s: set of: string := ["a"];`, `s: set;` | a bitmask when the element is an enum (above) |
+
+**Inference**
+- From a literal: `[1, 2]` is `array of: int32`. A typed element steers untyped literals, so `[1, 2.5]` is `real64`.
+- From the first store into a bare `array`/`dictionary`/`hashtable`/`set` local, field or `[array]` result: `add:`, `at:put:`, an assignment, or a returned value. Later stores must match.
+- Reading the elements before anything is stored is `sema.cannotInferElement`. So is never storing anything.
+- Message **parameters** must spell out the element type (`nums:[array of: int32]`). Specialising a message per element type at each call site (design §4.5) is still to come.
+- **Mixed literals**: classes that share a superclass or protocol give that type. Otherwise the element type is the closed union of the element types (see below).
+
+**Value semantics**
+- Containers are values. `b := a` shares one buffer until either variable changes it, which copies it first.
+- An empty container is a null pointer, so declaring one allocates nothing.
+- Mutating sends need a variable or field as the receiver (`sema.notAssignable`).
+- `for` and `do:` keep their own reference to the container while they run, so the body can reassign the variable safely.
+
+| Messages | Containers |
+|---|---|
+| `count` (`int64`), `isEmpty` | all |
+| `at:`, `at:put:` | arrays and fixed arrays (index), dictionaries and hashtables (key; `at:` gives `V?`) |
+| `add:`, `includes:`, `first`, `last`, `removeLast` | arrays (`first`/`last`/`removeLast` trap when empty) |
+| `at:ifAbsent: { default }`, `includesKey:`, `removeKey:`, `keys`, `values`, `keysDo:`, `keysAndValuesDo: { :k :v \| }` | dictionaries and hashtables |
+| `add:`, `remove:`, `includes:` | sets |
+| `do: { :each \| }`, `for x in c { }` | arrays, fixed arrays, sets; `do:` on dictionaries and hashtables visits values |
+
+- `for` over a dictionary or hashtable is `sema.notIterable`. Iterate `d keys` or `d values`, or use `keysAndValuesDo:`.
+- `main:`'s `args` is an `array of: string`: the command-line arguments after the program name, split by the Windows rules and converted to UTF-8.
+
+**Runtime representation**
+- Strings, arrays and tables are runtime buffers with an object header (`src/shared/objectModel.h`), counted by the leak report.
+- Generated code describes each element type to the runtime with a `BobElementType`: its size, retain/release callbacks, and whether equality and hashing use the raw bytes or string contents.
+
+## Inferred unions (phase 5)
+- A literal that mixes unrelated types, such as `[7, 8, "oiudf", 1.5]`, has a closed union as its element type (`int32 | real64 | string`).
+- Each value is stored as a tag plus the value inline, so primitives aren't boxed.
+- Messages every member understands: `printString` compiles to a switch on the tag with a direct call per member.
+- Anything else needs narrowing first:
+  - `u ifKindOf: int32 do: { :n | … }`
+  - `u isKindOf: string`
+  - `case u of { int32: { :n | … } string: { :s | … } }`, which binds the narrowed value when an entry has one label, and must cover every member or have an `else`.
+- Using a union where a specific type is needed is an error naming the union.
+- A union member can't be a class reference or optional.
+
 ## Overflow and traps
 - `+ - *`, `negated`, `abs` and `shl` follow the overflow mode: `trap` (default), `wrap` or `saturate`. It's set with `@[overflow: …]` on the unit, a message, a statement group or a parenthesised expression, and the innermost wins.
 - Division and remainder by zero always trap. Signed `MIN / -1` traps in `trap` mode, gives `MIN` in `wrap` and `MAX` in `saturate`. `MIN % -1` is `0` in the non-trapping modes.
 - A shift amount below 0 or at least the bit width always traps.
 - `asX` conversions trap when the value doesn't fit (including NaN and out-of-range reals). Real→integer truncates toward zero.
-- A trap calls the runtime's `bobRuntimeTrap(reason)`, which prints `bob: runtime trap: <reason>` to stderr and **exits with code 101** (the code Rust uses for panics). Reasons: `integer overflow`, `division by zero`, `conversion out of range`, `shift amount out of range`.
+- A trap calls the runtime's `bobRuntimeTrap(reason)`, which prints `bob: runtime trap: <reason>` to stderr and **exits with code 101** (the code Rust uses for panics). Reasons: `integer overflow`, `division by zero`, `conversion out of range`, `shift amount out of range`, `value out of range` (into a subrange), `no next or previous member` (`succ`/`pred`), `index out of range`.
 
 ## For tools
 `sema::SemanticModel` keeps every result keyed by AST node id:
 - `expressionTypes`: the type of every expression;
 - `localRefs`: the variable behind an identifier, declaration, implicit-declaring assignment or `for`;
 - `sends`: how each send is implemented (kind, operand type, target message or record, overflow mode);
-- `fieldRefs`, `caseRanges`, `implicitDeclarations`.
+- `fieldRefs`, `caseRanges`, `implicitDeclarations`, `exhaustiveCases` (a `case` that covers every value);
+- `enums` and `namedTypes`. A `for` over a collection records its `collectionRange` send on the `for` statement, because the iterable may itself be a send (`s bytes`).
+
+Containers declared bare (`b: array;`) start as *pending* types. Once the element type is inferred, `Type::resolved` points to the final type. `typeOf()` and `sema::canonical()` always return the final type.
 
 `analyze()` always completes and leaves a partial model even when there are errors. The library has no LLVM dependency.

@@ -1,13 +1,9 @@
-#include "analyzer.h"
+#include "analyzerInternal.h"
 
 #include <algorithm>
 #include <string_view>
 
-namespace bob::sema {
-
-namespace {
-
-using namespace bob::ast;
+namespace bob::sema::detail {
 
 std::string capitalize(const std::string& name)
 {
@@ -46,7 +42,6 @@ bool hasAttribute(const Node* node, std::string_view name)
     return false;
 }
 
-// Number of arguments for `value`, `value:`, `value:value:` ...; -1 otherwise.
 int valueSelectorArity(const std::string& selector)
 {
     if (selector == "value") {
@@ -63,122 +58,20 @@ int valueSelectorArity(const std::string& selector)
     return static_cast<int>(selector.size() / 6);
 }
 
-// Where the statements being checked run: the message body or a block function.
-// Inlined blocks keep the context of the code around them.
-struct FunctionContext {
-    MessageInfo* message = nullptr;
-    BlockInfo* block = nullptr;
-    std::vector<LocalInfo*>* locals = nullptr;
-    bool allowReturn = true;
-    int loopDepth = 0;
-};
-
-class Analyzer {
-public:
-    Analyzer(SemanticModel& model, DiagnosticEngine& diagnostics) : model_(model), types_(model.types), diagnostics_(diagnostics) {}
-
-    void run(const Unit* unit);
-
-private:
-    void error(SourceRange range, const char* code, const std::string& message) { diagnostics_.error(range, code, message); }
-    void error(const Node* node, const char* code, const std::string& message) { error(node->range, code, message); }
-    void unsupported(const Node* node, const std::string& what, const char* when)
-    {
-        error(node, "sema.unsupported", what + " isn't supported yet (planned for " + when + ")");
+std::vector<std::string> selectorParts(const std::string& selector)
+{
+    std::vector<std::string> parts;
+    for (size_t start = 0; start < selector.size();) {
+        size_t colon = selector.find(':', start);
+        if (colon == std::string::npos) {
+            parts.push_back(selector.substr(start));
+            break;
+        }
+        parts.push_back(selector.substr(start, colon - start + 1));
+        start = colon + 1;
     }
-
-    void collect(const Unit* unit);
-    void declareRecord(const RecordDecl* decl);
-    void resolveRecord(RecordInfo* record);
-    void declareProgramMessages(const ExtendsDecl* decl);
-    void declareMessage(const MessageDecl* decl);
-
-    void declareClass(const ClassDecl* decl);
-    void resolveClass(ClassInfo* info);
-    void declareClassMembers(ClassInfo* info, const std::vector<Node*>& members);
-    void addProtocols(ClassInfo* info, const std::vector<Node*>& names);
-    MessageInfo* declareMethod(ClassInfo* info, const MessageDecl* decl);
-    void declareParams(MessageInfo* message, const MessageDecl* decl);
-    void completeClasses();
-    void completeClass(ClassInfo* info);
-    void checkFieldInitializers(ClassInfo* info);
-    bool sameSignature(const MessageInfo* a, const MessageInfo* b) const;
-    const Type* checkInstanceSend(const Node* send, const Node* receiverNode, const Type* receiver, const std::string& selector,
-                                  const std::vector<Node*>& arguments, SourceRange selectorRange);
-    const Type* checkClassSideSend(const Node* send, const ClassInfo* info, const std::string& selector,
-                                   const std::vector<Node*>& arguments, SourceRange selectorRange);
-    const Type* checkReferenceComparison(const BinarySend* send, const Type* left);
-    const Type* checkInlinedIfNil(const KeywordSend* send, const Type* receiver);
-    const FieldInfo* selfField(const std::string& name);
-    bool canAccessField(const FieldInfo* field) const;
-    ClassInfo* currentClass() const { return context_.message != nullptr ? context_.message->owner : nullptr; }
-    const Type* resolveType(const Node* node);
-    const Type* resolveBlockType(const TypeMessage* message);
-    bool requireValueType(const Node* node, const Type* type);
-    bool rejectEscapingBlock(const Node* node, const Type* type, const char* where);
-    OverflowMode overflowFrom(const Node* node, OverflowMode inherited, std::initializer_list<std::string_view> allowed);
-
-    void ensureChecked(MessageInfo* message);
-    void checkMessage(MessageInfo* message);
-    void finalizeInferredBlocks(MessageInfo* message);
-    void checkStatements(const std::vector<Node*>& statements);
-    void checkGroup(const Node* group);
-    void checkStatement(const Node* statement);
-    void checkAssignment(const Assignment* assignment);
-    void checkReturn(const ReturnStmt* statement);
-    void checkFor(const ForStmt* statement);
-    void checkCase(const CaseStmt* statement);
-    void checkCondition(const Node* condition, const char* statement);
-
-    const Type* check(const Node* expression, const Type* expected);
-    const Type* checkIntegerLiteral(const IntegerLiteral* literal, const Type* expected);
-    const Type* checkRealLiteral(const RealLiteral* literal, const Type* expected);
-    const Type* checkIdentifier(const Identifier* identifier);
-    const Type* checkFieldAccess(const FieldAccess* access);
-    const Type* checkUnary(const UnarySend* send, const Type* expected);
-    const Type* checkBinary(const BinarySend* send, const Type* expected);
-    const Type* checkKeyword(const KeywordSend* send, const Type* expected);
-    const Type* checkOperandPair(const Node* lhs, const Node* rhs, const Type* expected, const char* what, const Node* site);
-    void checkArgument(const Node* argument, const Type* parameterType);
-    bool requireAssignable(const Node* node, const Type* from, const Type* to, const char* verb);
-    bool isUntypedLiteral(const Node* node) const;
-    const Type* remember(const Node* node, const Type* type);
-    void addSend(const Node* node, SendKind kind, std::string op, const Type* operandType, const Type* resultType);
-
-    const Type* checkBlockLiteral(const BlockLiteral* block, const Type* expected);
-    const Type* checkBlockValue(const std::vector<Node*>& statements, const Type* expected, bool hasExpectation);
-    const Type* checkBlockInvoke(const Node* send, const Type* blockType, const std::vector<Node*>& arguments, const Type* expected);
-    bool unify(const Type* pending, const Type* concrete, const Node* site);
-    BlockInfo* newBlockInfo(const BlockLiteral* literal, bool inlined);
-    const Type* checkInlinedBranch(const Node* argument, const char* selector, const Type* expected);
-    const Type* checkInlinedIf(const KeywordSend* send, const Type* expected);
-    const Type* checkInlinedToDo(const KeywordSend* send);
-    const Type* checkInlinedTimesRepeat(const KeywordSend* send, const Type* receiver);
-
-    void pushScope() { scopes_.emplace_back(); }
-    void popScope() { scopes_.pop_back(); }
-    LocalInfo* declareLocal(const std::string& name, const Type* type, const Node* decl, SourceRange nameRange);
-    LocalInfo* lookupLocal(const std::string& name);
-    const LocalInfo* rootLocal(const Node* node) const;
-    bool isTypeName(const std::string& name) const;
-
-    bool alwaysReturns(const std::vector<Node*>& statements) const;
-    bool alwaysReturns(const Node* statement) const;
-    bool breaksOut(const Node* node, int depth) const;
-
-    OverflowMode overflow() const { return overflow_.empty() ? OverflowMode::trap : overflow_.back(); }
-
-    SemanticModel& model_;
-    TypeTable& types_;
-    DiagnosticEngine& diagnostics_;
-    const Unit* unit_ = nullptr;
-    FunctionContext context_;
-    std::vector<std::unordered_map<std::string, LocalInfo*>> scopes_;
-    std::vector<OverflowMode> overflow_;
-    OverflowMode unitOverflow_ = OverflowMode::trap;
-    std::unordered_map<const MessageInfo*, int> checkState_;
-    int blockCounter_ = 0;
-};
+    return parts;
+}
 
 // ---------------------------------------------------------------------------
 // declarations
@@ -194,6 +87,12 @@ void Analyzer::run(const Unit* unit)
     }
 
     collect(unit);
+    for (const auto& info : model_.enums) {
+        resolveEnum(info.get());
+    }
+    for (const auto& info : model_.namedTypes) {
+        resolveNamedType(info.get());
+    }
     for (const auto& record : model_.records) {
         resolveRecord(record.get());
     }
@@ -226,6 +125,8 @@ void Analyzer::run(const Unit* unit)
         }
     }
 
+    finalizePendingContainers();
+
     if (unit->unitKind == UnitKind::program && model_.program.main == nullptr) {
         error(unit->nameRange, "sema.noMain",
               "program '" + unit->name + "' has no entry point; add 'extends " + unit->name +
@@ -241,6 +142,12 @@ void Analyzer::collect(const Unit* unit)
         }
         else if (auto classDecl = nodeCast<ClassDecl>(item)) {
             declareClass(classDecl);
+        }
+        else if (auto enumDecl = nodeCast<EnumDecl>(item)) {
+            declareEnum(enumDecl);
+        }
+        else if (auto typeDecl = nodeCast<TypeAliasDecl>(item)) {
+            declareNamedType(typeDecl);
         }
     }
     for (const Node* item : unit->items) {
@@ -270,10 +177,7 @@ void Analyzer::collect(const Unit* unit)
             break;
         }
         case NodeKind::enumDecl:
-            unsupported(item, "enums", "phase 5");
-            break;
         case NodeKind::typeAliasDecl:
-            unsupported(item, "named types and subranges", "phase 5");
             break;
         case NodeKind::namespaceDecl:
             unsupported(item, "namespaces", "phase 7");
@@ -347,9 +251,14 @@ void Analyzer::resolveRecord(RecordInfo* record)
         if (rejectEscapingBlock(field->type, type, "a record field")) {
             type = types_.error();
         }
-        if (isReference(type)) {
+        if (needsCleanup(type)) {
             error(field->type, "sema.referenceInRecord",
-                  "records hold plain data; a class reference ('" + typeName(type) + "') can't be a record field");
+                  "records hold plain data; a '" + typeName(type) +
+                      "' (a reference-counted value: an object, string or container) can't be a record field");
+            type = types_.error();
+        }
+        if (type->pending) {
+            error(field->type, "sema.invalidElementType", "records hold plain data; containers can't be record fields");
             type = types_.error();
         }
         if (type->kind == TypeKind::record) {
@@ -501,7 +410,17 @@ void Analyzer::declareParams(MessageInfo* message, const MessageDecl* decl)
         if (type->kind == TypeKind::blockToInfer) {
             type = types_.pendingBlock();
         }
-        bool mainArgs = message->isMain && type->kind == TypeKind::placeholder && type->name == "array";
+        bool mainArgs = message->isMain && type->kind == TypeKind::array && type->pending;
+        if (mainArgs) {
+            type = types_.arrayOf(types_.string());
+        }
+        else if (type->pending && isDynamicContainer(type)) {
+            error(param->type, "sema.cannotInferElement",
+                  "write the element type of parameter '" + param->name + "', such as '" + param->name + ":[" + type->name +
+                      (type->kind == TypeKind::hashtable ? " keys: K values: V]'" : " of: T]'") +
+                      "; specialising messages per element type is planned");
+            type = types_.error();
+        }
         if (!mainArgs) {
             requireValueType(param->type, type);
         }
@@ -854,28 +773,39 @@ const Type* Analyzer::checkReferenceComparison(const BinarySend* send, const Typ
     if (left == types_.error() || right == types_.error()) {
         return types_.error();
     }
-    bool compatible = canWiden(left, right) || canWiden(right, left) ||
-                      (left->kind == TypeKind::nilType && isReference(right)) || (right->kind == TypeKind::nilType && isReference(left));
-    if (!compatible || (left->kind == TypeKind::nilType && right->kind == TypeKind::nilType)) {
-        error(send, "sema.typeMismatch", "can't compare '" + typeName(left) + "' with '" + typeName(right) + "'");
+    bool leftNil = left->kind == TypeKind::nilType;
+    bool rightNil = right->kind == TypeKind::nilType;
+    if (leftNil && rightNil) {
+        error(send, "sema.typeMismatch", "can't compare nil with nil");
         return types_.error();
     }
-    if ((left->kind == TypeKind::nilType && isClass(right)) || (right->kind == TypeKind::nilType && isClass(left))) {
-        error(send, "sema.typeMismatch", "a '" + typeName(isClass(left) ? left : right) + "' is never nil; only optionals can be compared with nil");
+    if ((leftNil && !isOptional(right)) || (rightNil && !isOptional(left))) {
+        const Type* other = leftNil ? right : left;
+        error(send, "sema.typeMismatch", "a '" + typeName(other) + "' is never nil; only optionals can be compared with nil");
         return types_.error();
     }
-    addSend(send, SendKind::referenceCompare, send->selector, nullptr, types_.boolType());
+    // Only references compare by identity; other optionals are compared with nil.
+    bool identity = (isReference(left) || leftNil) && (isReference(right) || rightNil);
+    bool compatible = canWiden(left, right) || canWiden(right, left) || leftNil || rightNil;
+    if (!compatible || (!identity && !leftNil && !rightNil)) {
+        error(send, "sema.typeMismatch",
+              identity || !compatible ? "can't compare '" + typeName(left) + "' with '" + typeName(right) + "'"
+                                      : "an optional can only be compared with nil; unwrap it with 'ifNotNil: { :value | ... }' first");
+        return types_.error();
+    }
+    bool valueOptional = isValueOptional(left) || isValueOptional(right);
+    addSend(send, valueOptional ? SendKind::optionalCompare : SendKind::referenceCompare, send->selector,
+            leftNil ? right : left, types_.boolType());
     return types_.boolType();
 }
 
-const Type* Analyzer::checkInlinedIfNil(const KeywordSend* send, const Type* receiver)
+// `x ifNotNil: { :v | ... }`, `ifNil:`, and the two-branch forms, inlined. The
+// two-branch forms produce a value when both blocks end in expressions of a
+// common type: `n := (d at: "k") ifNil: { 0 } ifNotNil: { :v | v }`.
+const Type* Analyzer::checkInlinedIfNil(const KeywordSend* send, const Type* receiver, const Type* expected)
 {
-    std::vector<std::string> parts;
-    for (size_t start = 0; start < send->selector.size();) {
-        size_t colon = send->selector.find(':', start);
-        parts.push_back(send->selector.substr(start, colon - start + 1));
-        start = colon + 1;
-    }
+    std::vector<std::string> parts = selectorParts(send->selector);
+    std::vector<const Type*> values;
     for (size_t i = 0; i < parts.size(); ++i) {
         auto literal = nodeCast<BlockLiteral>(send->arguments[i]);
         bool notNil = parts[i] == "ifNotNil:";
@@ -885,6 +815,7 @@ const Type* Analyzer::checkInlinedIfNil(const KeywordSend* send, const Type* rec
             error(send->arguments[i], "sema.inlinedNeedsBlock",
                   notNil ? "'ifNotNil:' needs a block literal with one parameter, such as '{ :value | ... }'"
                          : "'ifNil:' needs a block literal without parameters");
+            values.push_back(types_.error());
             continue;
         }
         BlockInfo* info = newBlockInfo(literal, true);
@@ -892,7 +823,7 @@ const Type* Analyzer::checkInlinedIfNil(const KeywordSend* send, const Type* rec
         if (notNil) {
             auto param = static_cast<const BlockParam*>(literal->params[0]);
             const Type* declared = param->type != nullptr ? resolveType(param->type) : nullptr;
-            if (declared != nullptr && declared != receiver->inner && declared != types_.error()) {
+            if (declared != nullptr && canonical(declared) != canonical(receiver->inner) && declared != types_.error()) {
                 error(param, "sema.typeMismatch", "the unwrapped value is a '" + typeName(receiver->inner) + "'");
             }
             LocalInfo* local = declareLocal(param->name, receiver->inner, param, param->range);
@@ -900,12 +831,52 @@ const Type* Analyzer::checkInlinedIfNil(const KeywordSend* send, const Type* rec
             info->params.push_back(local);
             model_.localRefs[param->id] = local;
         }
-        checkStatements(literal->statements);
+        const Type* value = parts.size() == 2 ? checkBlockValue(literal->statements, expected, false) : types_.voidType();
+        if (parts.size() != 2) {
+            checkStatements(literal->statements);
+        }
         popScope();
-        remember(literal, types_.voidType());
+        remember(literal, value);
+        values.push_back(value);
     }
-    addSend(send, SendKind::inlineIfNil, send->selector, receiver, types_.voidType());
-    return types_.voidType();
+    const Type* result = types_.voidType();
+    if (values.size() == 2 && isValueType(values[0]) && isValueType(values[1])) {
+        if (const Type* common = commonType(values[0], values[1])) {
+            result = common;
+        }
+    }
+    addSend(send, SendKind::inlineIfNil, send->selector, receiver, result);
+    return result;
+}
+
+bool Analyzer::checkInlinedEach(const Node* argument, const char* selector, const Type* elementType, int loopDepthChange)
+{
+    auto literal = nodeCast<BlockLiteral>(argument);
+    if (literal == nullptr || literal->params.size() != 1) {
+        check(argument, nullptr);
+        error(argument, "sema.inlinedNeedsBlock", std::string("'") + selector + "' needs a block literal with one parameter, such as '{ :each | ... }'");
+        return false;
+    }
+    auto param = static_cast<const BlockParam*>(literal->params[0]);
+    const Type* type = elementType;
+    if (param->type != nullptr) {
+        const Type* declared = resolveType(param->type);
+        if (declared != types_.error() && requireAssignable(param, elementType, declared, "iterate")) {
+            type = declared;
+        }
+    }
+    BlockInfo* info = newBlockInfo(literal, true);
+    pushScope();
+    LocalInfo* local = declareLocal(param->name, type, param, param->range);
+    local->readOnly = true;
+    info->params.push_back(local);
+    model_.localRefs[param->id] = local;
+    context_.loopDepth += loopDepthChange;
+    checkStatements(literal->statements);
+    context_.loopDepth -= loopDepthChange;
+    popScope();
+    remember(literal, types_.voidType());
+    return true;
 }
 
 void Analyzer::declareProgramMessages(const ExtendsDecl* decl)
@@ -947,7 +918,17 @@ void Analyzer::declareMessage(const MessageDecl* decl)
         if (type->kind == TypeKind::blockToInfer) {
             type = types_.pendingBlock();
         }
-        bool mainArgs = message->isMain && type->kind == TypeKind::placeholder && type->name == "array";
+        bool mainArgs = message->isMain && type->kind == TypeKind::array && type->pending;
+        if (mainArgs) {
+            type = types_.arrayOf(types_.string());
+        }
+        else if (type->pending && isDynamicContainer(type)) {
+            error(param->type, "sema.cannotInferElement",
+                  "write the element type of parameter '" + param->name + "', such as '" + param->name + ":[" + type->name +
+                      (type->kind == TypeKind::hashtable ? " keys: K values: V]'" : " of: T]'") +
+                      "; specialising messages per element type is planned");
+            type = types_.error();
+        }
         if (!mainArgs) {
             requireValueType(param->type, type);
         }
@@ -976,8 +957,8 @@ void Analyzer::declareMessage(const MessageDecl* decl)
         if (message->returnType != types_.int32()) {
             error(decl->selectorRange, "sema.invalidMain", "'main' must return [int32], the process exit code");
         }
-        if (decl->selector == "main:" && !(message->params[0]->type->kind == TypeKind::placeholder &&
-                                           message->params[0]->type->name == "array")) {
+        if (decl->selector == "main:" && !(message->params[0]->type == types_.arrayOf(types_.string()) &&
+                                           message->params[0]->type->kind == TypeKind::array)) {
             error(decl->params[0]->range, "sema.invalidMain", "the parameter of 'main:' must be 'args:array'");
         }
         model_.program.main = message.get();
@@ -995,6 +976,10 @@ const Type* Analyzer::resolveType(const Node* node)
     }
     if (auto name = nodeCast<TypeName>(node)) {
         if (const Type* builtin = types_.builtin(name->name)) {
+            // The bare container names infer their element types from first use.
+            if ((isDynamicContainer(builtin) || builtin->kind == TypeKind::set) && builtin->inner == nullptr) {
+                return types_.pendingContainer(builtin->kind);
+            }
             return builtin;
         }
         if (const RecordInfo* record = model_.recordNamed(name->name)) {
@@ -1003,31 +988,37 @@ const Type* Analyzer::resolveType(const Node* node)
         if (const ClassInfo* info = model_.classNamed(name->name)) {
             return info->type;
         }
+        if (EnumInfo* info = model_.enumNamed(name->name)) {
+            resolveEnum(info);
+            return info->type;
+        }
+        if (const NamedTypeInfo* info = model_.namedType(name->name)) {
+            return resolveNamedType(const_cast<NamedTypeInfo*>(info));
+        }
         error(node, "sema.unknownType", "unknown type '" + name->name + "'");
         return types_.error();
     }
     if (auto optional = nodeCast<OptionalType>(node)) {
         const Type* inner = resolveType(optional->inner);
-        if (isClass(inner)) {
-            return types_.optionalOf(inner);
+        if (inner == types_.error()) {
+            return inner;
         }
-        if (inner != types_.error()) {
-            unsupported(node, "optionals of non-class types such as '" + typeName(inner) + "?'", "a later phase");
+        if (isOptional(inner) || !isValueType(inner) || isBlock(inner) || inner->pending) {
+            error(node, "sema.invalidOptional", "'" + typeName(inner) + "' can't be made optional");
+            return types_.error();
         }
-        return types_.error();
+        return types_.optionalOf(inner);
     }
     if (auto message = nodeCast<TypeMessage>(node)) {
         auto receiver = nodeCast<TypeName>(message->receiver);
         if (receiver != nullptr && receiver->name == "block") {
             return resolveBlockType(message);
         }
+        return resolveTypeMessage(message, "");
     }
     switch (node->kind) {
     case NodeKind::tupleType:
         unsupported(node, "tuple types (several return values)", "a later phase");
-        break;
-    case NodeKind::typeMessage:
-        unsupported(node, "type messages such as 'array of:' and subranges", "phase 5");
         break;
     default:
         error(node, "sema.expectedType", "expected a type");
@@ -1078,7 +1069,7 @@ const Type* Analyzer::resolveBlockType(const TypeMessage* message)
 bool Analyzer::requireValueType(const Node* node, const Type* type)
 {
     if (type->kind == TypeKind::placeholder) {
-        unsupported(node, "the type '" + type->name + "'", type->name == "int128" || type->name == "uint128" ? "a later phase" : "phase 5");
+        unsupported(node, "the type '" + type->name + "'", type->name == "int128" || type->name == "uint128" ? "a later phase" : "phase 9");
         return false;
     }
     return true;
@@ -1420,24 +1411,55 @@ void Analyzer::checkFor(const ForStmt* statement)
     const Type* declared = statement->variableType != nullptr ? resolveType(statement->variableType) : nullptr;
     const Type* elementType = types_.error();
     auto interval = nodeCast<KeywordSend>(statement->iterable);
-    if (interval == nullptr || interval->selector != "to:") {
-        check(statement->iterable, nullptr);
-        unsupported(statement->iterable, "iterating anything other than an integer interval 'a to: b'", "phase 5");
+    if (const Type* ordinal = checkOrdinalIterable(statement->iterable)) {
+        elementType = ordinal;
+        if (declared != nullptr && ordinal != types_.error() && requireAssignable(statement->iterable, ordinal, declared, "iterate")) {
+            elementType = declared;
+        }
+    }
+    else if (interval == nullptr || interval->selector != "to:") {
+        elementType = checkCollectionIterable(statement);
+        if (declared != nullptr && elementType != types_.error() && requireAssignable(statement->iterable, elementType, declared, "iterate")) {
+            elementType = declared;
+        }
     }
     else {
-        const Type* common = checkOperandPair(interval->receiver, interval->arguments[0], declared, "the bounds of the interval", interval);
-        if (common != types_.error() && !isInteger(common)) {
-            error(interval, "sema.invalidInterval", "the bounds of an interval must be integers, not '" + typeName(common) + "'");
-            common = types_.error();
-        }
-        elementType = common;
-        if (declared != nullptr && common != types_.error()) {
-            if (requireAssignable(interval, common, declared, "iterate")) {
-                elementType = declared;
+        const Type* common = nullptr;
+        if (!isUntypedLiteral(interval->receiver)) {
+            const Type* left = check(interval->receiver, nullptr);
+            const Type* hint = isInteger(decay(left)) ? decay(left) : isOrdinal(left) ? decay(left) : declared;
+            const Type* right = check(interval->arguments[0], hint);
+            common = left == types_.error() || right == types_.error() ? types_.error() : commonType(decay(left), decay(right));
+            if (common == nullptr) {
+                error(interval, "sema.typeMismatch",
+                      "mismatched types in the bounds of the interval: '" + typeName(left) + "' and '" + typeName(right) + "'");
+                common = types_.error();
+            }
+            if (isEnum(common)) {
+                addSend(interval, SendKind::enumRange, "to:", common, common);
+                remember(interval, common);
+                elementType = common;
+                common = nullptr;
             }
         }
-        addSend(interval, SendKind::interval, "to:", elementType, elementType);
-        remember(interval, elementType);
+        else {
+            common = checkOperandPair(interval->receiver, interval->arguments[0], declared, "the bounds of the interval", interval);
+        }
+        if (common != nullptr && common != types_.error() && !isInteger(common)) {
+            error(interval, "sema.invalidInterval", "the bounds of an interval must be integers or enum members, not '" + typeName(common) + "'");
+            common = types_.error();
+        }
+        // `common` is null for an enum interval, which is already recorded.
+        if (common != nullptr) {
+            elementType = common;
+        }
+        if (declared != nullptr && elementType != types_.error() && requireAssignable(interval, elementType, declared, "iterate")) {
+            elementType = declared;
+        }
+        if (common != nullptr) {
+            addSend(interval, SendKind::interval, "to:", elementType, elementType);
+            remember(interval, elementType);
+        }
     }
     LocalInfo* local = declareLocal(statement->variable, elementType, statement, statement->variableRange);
     local->readOnly = true;
@@ -1451,10 +1473,21 @@ void Analyzer::checkFor(const ForStmt* statement)
 void Analyzer::checkCase(const CaseStmt* statement)
 {
     const Type* subject = check(statement->subject, nullptr);
+    if (isOrdinal(subject) || isSubrange(subject)) {
+        checkEnumCase(statement, subject);
+        return;
+    }
+    if (isUnion(subject)) {
+        checkUnionCase(statement, subject);
+        return;
+    }
+    if (subject->kind == TypeKind::character) {
+        subject = types_.integer(32, false);
+    }
     bool usable = isInteger(subject);
     if (!usable && subject != types_.error()) {
         error(statement->subject, "sema.invalidCaseSubject",
-              "'case' works on integers for now (enums and unions come in phase 5), not on '" + typeName(subject) + "'");
+              "'case' works on integers, characters, enums, subranges and unions, not on '" + typeName(subject) + "'");
     }
 
     std::vector<CaseRange> seen;
@@ -1586,7 +1619,15 @@ bool Analyzer::requireAssignable(const Node* node, const Type* from, const Type*
     if (isBlock(from) && from->pending && isBlock(to)) {
         return unify(from, to, node);
     }
+    const Type* source = canonical(from);
+    const Type* target = canonical(to);
+    if (source->kind == target->kind && (source->pending || target->pending) && source->kind != TypeKind::block) {
+        return source->pending ? unifyContainer(source, target, node) : unifyContainer(target, source, node);
+    }
     if (canWiden(from, to) && (isValueType(from) || from->kind == TypeKind::nilType)) {
+        return true;
+    }
+    if (isCheckedConversion(from, to)) {
         return true;
     }
     std::string message = std::string("can't ") + verb + " a value of type '" + typeName(from) + "' as '" + typeName(to) + "'";
@@ -1617,8 +1658,10 @@ const Type* Analyzer::check(const Node* node, const Type* expected)
         type = types_.nilType();
         break;
     case NodeKind::stringLiteral:
+        type = types_.string();
+        break;
     case NodeKind::charLiteral:
-        unsupported(node, "strings and characters", "phase 5");
+        type = types_.character();
         break;
     case NodeKind::identifier:
         type = checkIdentifier(static_cast<const Identifier*>(node));
@@ -1657,7 +1700,7 @@ const Type* Analyzer::check(const Node* node, const Type* expected)
         type = checkKeyword(static_cast<const KeywordSend*>(node), expected);
         break;
     case NodeKind::arrayLiteral:
-        unsupported(node, "array literals", "phase 5");
+        type = checkArrayLiteral(static_cast<const ArrayLiteral*>(node), expected);
         break;
     case NodeKind::blockLiteral:
         type = checkBlockLiteral(static_cast<const BlockLiteral*>(node), isBlock(expected) && !expected->pending ? expected : nullptr);
@@ -1680,6 +1723,7 @@ const Type* Analyzer::check(const Node* node, const Type* expected)
 
 const Type* Analyzer::checkIntegerLiteral(const IntegerLiteral* literal, const Type* expected)
 {
+    expected = literalExpectation(expected, false);
     const Type* target = nullptr;
     if (!literal->suffix.empty()) {
         const std::string& s = literal->suffix;
@@ -1690,7 +1734,7 @@ const Type* Analyzer::checkIntegerLiteral(const IntegerLiteral* literal, const T
         uint32_t bits = static_cast<uint32_t>(std::stoul(s.substr(1)));
         target = types_.integer(bits, s[0] == 'i');
     }
-    else if (isInteger(expected)) {
+    else if (isInteger(expected) || (isSubrange(expected) && isInteger(expected->inner))) {
         target = expected;
     }
     else if (isReal(expected)) {
@@ -1711,6 +1755,7 @@ const Type* Analyzer::checkIntegerLiteral(const IntegerLiteral* literal, const T
 
 const Type* Analyzer::checkRealLiteral(const RealLiteral* literal, const Type* expected)
 {
+    expected = literalExpectation(expected, true);
     if (!literal->suffix.empty()) {
         return types_.real(literal->suffix == "r32" ? 32 : 64);
     }
@@ -1748,6 +1793,14 @@ const Type* Analyzer::checkIdentifier(const Identifier* identifier)
     }
     if (const ClassInfo* info = model_.classNamed(identifier->name)) {
         return types_.metaOf(info->type);
+    }
+    if (EnumInfo* info = model_.enumNamed(identifier->name)) {
+        resolveEnum(info);
+        return types_.metaOf(info->type);
+    }
+    if (const NamedTypeInfo* info = model_.namedType(identifier->name)) {
+        const Type* type = resolveNamedType(const_cast<NamedTypeInfo*>(info));
+        return type == types_.error() ? type : types_.metaOf(type);
     }
     if (const Type* builtin = types_.builtin(identifier->name)) {
         return types_.metaOf(builtin);
@@ -1819,6 +1872,33 @@ const Type* Analyzer::checkUnary(const UnarySend* send, const Type* expected)
         model_.sends[send->id].target = it->second;
         return it->second->returnType;
     }
+    receiver = canonical(receiver);
+    if (receiver->kind == TypeKind::meta && receiver->instance != nullptr) {
+        if (const Type* result = checkMetaUnary(send, receiver)) {
+            return result;
+        }
+    }
+    if (const Type* result = checkValueUnary(send, receiver)) {
+        return result;
+    }
+    if (isString(receiver) || isStringView(receiver) || receiver->kind == TypeKind::character || selector == "printString") {
+        if (const Type* result = checkStringUnary(send, receiver)) {
+            return result;
+        }
+    }
+    if (isDynamicContainer(receiver) || receiver->kind == TypeKind::fixedArray || receiver->kind == TypeKind::set) {
+        if (const Type* result = checkContainerUnary(send, receiver)) {
+            return result;
+        }
+    }
+    if (isUnion(receiver)) {
+        if (const Type* result = checkUnionUnary(send, receiver)) {
+            return result;
+        }
+    }
+    if (isSubrange(receiver) && isInteger(receiver->inner)) {
+        receiver = receiver->inner;
+    }
     if (isNumeric(receiver)) {
         if (selector == "negated") {
             if (!receiver->isSigned && isInteger(receiver)) {
@@ -1870,15 +1950,15 @@ const Type* Analyzer::checkOperandPair(const Node* lhs, const Node* rhs, const T
     bool rightUntyped = isUntypedLiteral(rhs);
     if (leftUntyped && !rightUntyped) {
         right = check(rhs, expected);
-        left = check(lhs, isNumeric(right) ? right : expected);
+        left = check(lhs, isNumeric(decay(right)) ? decay(right) : expected);
     }
     else if (rightUntyped && !leftUntyped) {
         left = check(lhs, expected);
-        right = check(rhs, isNumeric(left) ? left : expected);
+        right = check(rhs, isNumeric(decay(left)) ? decay(left) : expected);
     }
     else if (leftUntyped && rightUntyped) {
         left = check(lhs, expected);
-        right = check(rhs, isNumeric(left) ? left : expected);
+        right = check(rhs, isNumeric(decay(left)) ? decay(left) : expected);
     }
     else {
         left = check(lhs, nullptr);
@@ -1887,7 +1967,7 @@ const Type* Analyzer::checkOperandPair(const Node* lhs, const Node* rhs, const T
     if (left == types_.error() || right == types_.error()) {
         return types_.error();
     }
-    const Type* common = commonType(left, right);
+    const Type* common = commonType(decay(left), decay(right));
     if (common == nullptr || !isValueType(common) || isBlock(common)) {
         std::string message = std::string("mismatched types in ") + what + ": '" + typeName(left) + "' and '" + typeName(right) + "'";
         if (isNumeric(left) && isNumeric(right)) {
@@ -1936,8 +2016,14 @@ const Type* Analyzer::checkBinary(const BinarySend* send, const Type* expected)
             check(send->argument, nullptr);
             return types_.error();
         }
-        if ((op == "=" || op == "<>") && (isReference(left) || left->kind == TypeKind::nilType)) {
+        if ((op == "=" || op == "<>") && (isReference(left) || isOptional(left) || left->kind == TypeKind::nilType)) {
             return checkReferenceComparison(send, left);
+        }
+        if (isBitSet(canonical(left))) {
+            return checkBitSetBinary(send, canonical(left));
+        }
+        if (isString(left) || left->kind == TypeKind::character || isDynamicContainer(left) || isUnion(left)) {
+            return checkStringBinary(send, canonical(left));
         }
         if (isClass(left) || isOptional(left)) {
             return checkInstanceSend(send, send->receiver, left, op, {send->argument}, send->selectorRange);
@@ -1958,7 +2044,8 @@ const Type* Analyzer::checkBinary(const BinarySend* send, const Type* expected)
     }
     if (comparison) {
         bool ordered = op != "=" && op != "<>";
-        if (!(isNumeric(common) || (!ordered && common == types_.boolType()))) {
+        bool orderable = isNumeric(common) || isEnum(common) || common->kind == TypeKind::character;
+        if (!(orderable || (!ordered && common == types_.boolType()))) {
             if (common->kind == TypeKind::record) {
                 unsupported(send, "comparing records", "a later phase");
             }
@@ -2012,10 +2099,38 @@ const Type* Analyzer::checkKeyword(const KeywordSend* send, const Type* expected
     }
     if (isOptional(receiver) && (selector == "ifNil:" || selector == "ifNotNil:" || selector == "ifNil:ifNotNil:" ||
                                  selector == "ifNotNil:ifNil:")) {
-        return checkInlinedIfNil(send, receiver);
+        return checkInlinedIfNil(send, receiver, expected);
     }
     if (isClass(receiver) || isOptional(receiver)) {
         return checkInstanceSend(send, send->receiver, receiver, selector, send->arguments, selectorRange);
+    }
+    receiver = canonical(receiver);
+    if (receiver->kind == TypeKind::meta && receiver->instance != nullptr && !isClass(receiver->instance) &&
+        receiver->instance->kind != TypeKind::record) {
+        if (const Type* result = checkMetaKeyword(send, receiver, expected)) {
+            return result;
+        }
+    }
+    if (const Type* result = checkValueKeyword(send, receiver, expected)) {
+        return result;
+    }
+    if (isString(receiver) || isStringView(receiver) || receiver->kind == TypeKind::character) {
+        if (const Type* result = checkStringKeyword(send, receiver, expected)) {
+            return result;
+        }
+    }
+    if (isDynamicContainer(receiver) || receiver->kind == TypeKind::fixedArray || receiver->kind == TypeKind::set) {
+        if (const Type* result = checkContainerKeyword(send, receiver, expected)) {
+            return result;
+        }
+    }
+    if (isUnion(receiver)) {
+        if (const Type* result = checkUnionKeyword(send, receiver, expected)) {
+            return result;
+        }
+    }
+    if (isSubrange(receiver) && isInteger(receiver->inner)) {
+        receiver = receiver->inner;
     }
     if (receiver->kind == TypeKind::meta && isClass(receiver->instance)) {
         return checkClassSideSend(send, receiver->instance->classInfo, selector, send->arguments, selectorRange);
@@ -2460,7 +2575,8 @@ const LocalInfo* Analyzer::rootLocal(const Node* node) const
 
 bool Analyzer::isTypeName(const std::string& name) const
 {
-    return types_.builtin(name) != nullptr || model_.recordNamed(name) != nullptr || model_.classNamed(name) != nullptr;
+    return types_.builtin(name) != nullptr || model_.recordNamed(name) != nullptr || model_.classNamed(name) != nullptr ||
+           model_.enumNamed(name) != nullptr || model_.namedType(name) != nullptr;
 }
 
 bool Analyzer::alwaysReturns(const std::vector<Node*>& statements) const
@@ -2488,7 +2604,8 @@ bool Analyzer::alwaysReturns(const Node* statement) const
         return !breaksOut(static_cast<const LoopStmt*>(statement)->body, 0);
     case NodeKind::caseStmt: {
         auto caseStmt = static_cast<const CaseStmt*>(statement);
-        if (caseStmt->elseBody == nullptr || !alwaysReturns(caseStmt->elseBody)) {
+        bool exhaustive = model_.exhaustiveCases.count(caseStmt->id) != 0;
+        if (caseStmt->elseBody == nullptr ? !exhaustive : !alwaysReturns(caseStmt->elseBody)) {
             return false;
         }
         for (const Node* node : caseStmt->entries) {
@@ -2525,7 +2642,8 @@ bool Analyzer::breaksOut(const Node* node, int depth) const
         inner = depth + 1;
     }
     if (const SendInfo* send = model_.sendOf(node)) {
-        if (send->kind == SendKind::inlineToDo || send->kind == SendKind::inlineTimesRepeat) {
+        if (send->kind == SendKind::inlineToDo || send->kind == SendKind::inlineTimesRepeat || send->kind == SendKind::inlineEnumDo ||
+            send->kind == SendKind::inlineDo) {
             inner = depth + 1;
         }
     }
@@ -2539,9 +2657,11 @@ bool Analyzer::breaksOut(const Node* node, int depth) const
 
 }
 
+namespace bob::sema {
+
 void analyze(const ast::Unit* unit, SemanticModel& model, DiagnosticEngine& diagnostics)
 {
-    Analyzer analyzer(model, diagnostics);
+    detail::Analyzer analyzer(model, diagnostics);
     analyzer.run(unit);
 }
 

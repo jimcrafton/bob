@@ -2,6 +2,8 @@
 
 #include "semanticModel.h"
 
+#include <algorithm>
+
 namespace bob::sema {
 
 TypeTable::TypeTable()
@@ -22,12 +24,32 @@ TypeTable::TypeTable()
     builtins_["byte"] = builtins_["uint8"];
     builtins_["intptr"] = builtins_["int64"];
     builtins_["uintptr"] = builtins_["uint64"];
+    string_ = own({TypeKind::string, "string"});
+    builtins_["string"] = string_;
+    // A Unicode scalar value, stored as uint32.
+    character_ = own({TypeKind::character, "char", 32, false});
+    builtins_["char"] = character_;
 
-    const char* placeholders[] = {"array", "string", "dictionary", "hashtable", "set", "slice", "pointer", "char", "int128", "uint128"};
+    // The bare container names: the element type is inferred (pending containers).
+    builtins_["array"] = own({TypeKind::array, "array"});
+    builtins_["dictionary"] = own({TypeKind::dictionary, "dictionary"});
+    builtins_["hashtable"] = own({TypeKind::hashtable, "hashtable"});
+    builtins_["set"] = own({TypeKind::set, "set"});
+
+    const char* placeholders[] = {"slice", "pointer", "int128", "uint128"};
     for (const char* name : placeholders) {
         builtins_[name] = own({TypeKind::placeholder, name});
     }
     builtins_["block"] = own({TypeKind::blockToInfer, "block"});
+
+    const char* viewNames[] = {"string bytes", "string codepoints", "string graphemes"};
+    const Type* viewElements[] = {integer(8, false), character_, string_};
+    for (int i = 0; i < 3; ++i) {
+        Type* view = own({TypeKind::stringView, viewNames[i]});
+        view->count = static_cast<uint64_t>(i);
+        view->inner = viewElements[i];
+        views_[i] = view;
+    }
 }
 
 Type* TypeTable::addClass(ClassInfo* info)
@@ -43,11 +65,169 @@ const Type* TypeTable::optionalOf(const Type* inner)
     if (it != optionals_.end()) {
         return it->second;
     }
-    Type* type = own({TypeKind::optional, inner->name + "?"});
+    std::string name = inner->name.find(' ') != std::string::npos ? "[" + inner->name + "]?" : inner->name + "?";
+    Type* type = own({TypeKind::optional, name});
     type->inner = inner;
     type->classInfo = inner->classInfo;
     optionals_[inner] = type;
     return type;
+}
+
+Type* TypeTable::addEnum(EnumInfo* info, const Type* storage)
+{
+    Type* type = own({TypeKind::enumType, info->name, storage->bits, storage->isSigned});
+    type->enumInfo = info;
+    return type;
+}
+
+const Type* TypeTable::subrange(const Type* base, int64_t low, int64_t high, const std::string& name)
+{
+    Type* type = own({TypeKind::subrange, name, base->bits, base->isSigned});
+    type->inner = base;
+    type->low = low;
+    type->high = high;
+    type->enumInfo = base->enumInfo;
+    return type;
+}
+
+const Type* TypeTable::distinct(const Type* base, const std::string& name)
+{
+    Type copy = *base;
+    copy.name = name;
+    copy.distinctOf = base;
+    copy.resolved = nullptr;
+    return own(std::move(copy));
+}
+
+namespace {
+
+std::string elementName(const Type* type)
+{
+    return type->name.find(' ') != std::string::npos ? "[" + type->name + "]" : type->name;
+}
+
+}
+
+const Type* TypeTable::arrayOf(const Type* element)
+{
+    auto key = std::make_pair(static_cast<int>(TypeKind::array), std::make_pair(element, static_cast<const Type*>(nullptr)));
+    auto it = containers_.find(key);
+    if (it != containers_.end()) {
+        return it->second;
+    }
+    Type* type = own({TypeKind::array, "array of: " + elementName(element)});
+    type->inner = element;
+    containers_[key] = type;
+    return type;
+}
+
+const Type* TypeTable::dictionaryOf(const Type* value)
+{
+    auto key = std::make_pair(static_cast<int>(TypeKind::dictionary), std::make_pair(value, static_cast<const Type*>(nullptr)));
+    auto it = containers_.find(key);
+    if (it != containers_.end()) {
+        return it->second;
+    }
+    Type* type = own({TypeKind::dictionary, "dictionary of: " + elementName(value)});
+    type->inner = value;
+    type->key = string_;
+    containers_[key] = type;
+    return type;
+}
+
+const Type* TypeTable::hashtableOf(const Type* keyType, const Type* value)
+{
+    auto key = std::make_pair(static_cast<int>(TypeKind::hashtable), std::make_pair(value, keyType));
+    auto it = containers_.find(key);
+    if (it != containers_.end()) {
+        return it->second;
+    }
+    Type* type = own({TypeKind::hashtable, "hashtable keys: " + elementName(keyType) + " values: " + elementName(value)});
+    type->inner = value;
+    type->key = keyType;
+    containers_[key] = type;
+    return type;
+}
+
+const Type* TypeTable::setOf(const Type* element)
+{
+    auto key = std::make_pair(static_cast<int>(TypeKind::set), std::make_pair(element, static_cast<const Type*>(nullptr)));
+    auto it = containers_.find(key);
+    if (it != containers_.end()) {
+        return it->second;
+    }
+    Type* type = own({TypeKind::set, "set of: " + elementName(element)});
+    type->inner = element;
+    if (isEnum(element)) {
+        // Bit n is the member whose value is n: the smallest of 8/16/32/64 bits that
+        // holds the largest value, or the enum's storage if that's wider.
+        uint64_t largest = 0;
+        for (const EnumMemberInfo& member : element->enumInfo->members) {
+            largest = std::max(largest, member.value);
+        }
+        uint32_t bits = 8;
+        while (bits < 64 && largest >= bits) {
+            bits *= 2;
+        }
+        type->bits = std::max(bits, element->bits);
+    }
+    containers_[key] = type;
+    return type;
+}
+
+const Type* TypeTable::fixedArrayOf(const Type* element, const Type* index, uint64_t count)
+{
+    auto key = std::make_pair(static_cast<int>(TypeKind::fixedArray), std::make_pair(element, index));
+    auto it = containers_.find(key);
+    if (it != containers_.end()) {
+        return it->second;
+    }
+    Type* type = own({TypeKind::fixedArray, "array of: " + elementName(element) + " by: " + elementName(index)});
+    type->inner = element;
+    type->key = index;
+    type->count = count;
+    containers_[key] = type;
+    return type;
+}
+
+const Type* TypeTable::unionOf(std::vector<const Type*> members)
+{
+    std::sort(members.begin(), members.end(), [](const Type* a, const Type* b) { return a->name < b->name; });
+    members.erase(std::unique(members.begin(), members.end()), members.end());
+    if (members.size() == 1) {
+        return members.front();
+    }
+    auto it = unions_.find(members);
+    if (it != unions_.end()) {
+        return it->second;
+    }
+    std::string name;
+    for (const Type* member : members) {
+        name += (name.empty() ? "" : " | ") + elementName(member);
+    }
+    Type* type = own({TypeKind::unionType, name});
+    type->members = members;
+    unions_[members] = type;
+    return type;
+}
+
+const Type* TypeTable::stringView(int view)
+{
+    return views_[view];
+}
+
+Type* TypeTable::pendingContainer(TypeKind kind)
+{
+    Type type{kind, builtins_.at(kind == TypeKind::array        ? "array"
+                                 : kind == TypeKind::dictionary ? "dictionary"
+                                 : kind == TypeKind::hashtable  ? "hashtable"
+                                                                : "set")
+                        ->name};
+    type.pending = true;
+    if (kind == TypeKind::dictionary) {
+        type.key = string_;
+    }
+    return own(std::move(type));
 }
 
 const Type* TypeTable::block(std::vector<const Type*> params, const Type* result)
@@ -115,6 +295,14 @@ Type* TypeTable::addProgram(ProgramInfo* program)
     return type;
 }
 
+const Type* canonical(const Type* type)
+{
+    while (type != nullptr && type->resolved != nullptr) {
+        type = type->resolved;
+    }
+    return type;
+}
+
 bool isInteger(const Type* type)
 {
     return type != nullptr && type->kind == TypeKind::integer;
@@ -145,16 +333,134 @@ bool isOptional(const Type* type)
     return type != nullptr && type->kind == TypeKind::optional;
 }
 
+bool isEnum(const Type* type)
+{
+    return type != nullptr && type->kind == TypeKind::enumType;
+}
+
+bool isSubrange(const Type* type)
+{
+    return type != nullptr && type->kind == TypeKind::subrange;
+}
+
+bool isString(const Type* type)
+{
+    return type != nullptr && type->kind == TypeKind::string;
+}
+
+bool isUnion(const Type* type)
+{
+    return type != nullptr && type->kind == TypeKind::unionType;
+}
+
+bool isStringView(const Type* type)
+{
+    return type != nullptr && type->kind == TypeKind::stringView;
+}
+
+bool isBitSet(const Type* type)
+{
+    return type != nullptr && type->kind == TypeKind::set && isEnum(type->inner);
+}
+
+bool isDynamicContainer(const Type* type)
+{
+    if (type == nullptr) {
+        return false;
+    }
+    switch (type->kind) {
+    case TypeKind::array:
+    case TypeKind::dictionary:
+    case TypeKind::hashtable:
+        return true;
+    case TypeKind::set:
+        return !isBitSet(canonical(type));
+    default:
+        return false;
+    }
+}
+
+bool isOrdinal(const Type* type)
+{
+    return isEnum(type) || (isSubrange(type) && isEnum(type->inner));
+}
+
 bool isReference(const Type* type)
 {
-    return isClass(type) || isOptional(type);
+    return isClass(type) || (isOptional(type) && isClass(type->inner));
+}
+
+bool isManaged(const Type* type)
+{
+    if (type == nullptr) {
+        return false;
+    }
+    if (isOptional(type)) {
+        return isClass(type->inner);
+    }
+    return isClass(type) || isString(type) || isStringView(type) || isDynamicContainer(type);
+}
+
+bool needsCleanup(const Type* type)
+{
+    type = canonical(type);
+    if (isManaged(type)) {
+        return true;
+    }
+    if (isOptional(type)) {
+        return needsCleanup(type->inner);
+    }
+    if (type != nullptr && type->kind == TypeKind::fixedArray) {
+        return needsCleanup(type->inner);
+    }
+    if (isUnion(type)) {
+        for (const Type* member : type->members) {
+            if (needsCleanup(member)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool isValueOptional(const Type* type)
+{
+    return isOptional(type) && !isClass(type->inner);
 }
 
 bool isValueType(const Type* type)
 {
-    return type != nullptr && (type->kind == TypeKind::boolType || type->kind == TypeKind::integer ||
-                               type->kind == TypeKind::real || type->kind == TypeKind::record || type->kind == TypeKind::block ||
-                               type->kind == TypeKind::classType || type->kind == TypeKind::optional);
+    if (type == nullptr) {
+        return false;
+    }
+    switch (type->kind) {
+    case TypeKind::boolType:
+    case TypeKind::integer:
+    case TypeKind::real:
+    case TypeKind::record:
+    case TypeKind::block:
+    case TypeKind::classType:
+    case TypeKind::optional:
+    case TypeKind::enumType:
+    case TypeKind::subrange:
+    case TypeKind::string:
+    case TypeKind::character:
+    case TypeKind::array:
+    case TypeKind::dictionary:
+    case TypeKind::hashtable:
+    case TypeKind::set:
+    case TypeKind::fixedArray:
+    case TypeKind::unionType:
+    case TypeKind::stringView:
+        return true;
+    default:
+        return false;
+    }
+}
+
+const Type* decay(const Type* type)
+{
+    return isSubrange(type) ? type->inner : type;
 }
 
 bool sameBlockShape(const Type* a, const Type* b)
@@ -188,20 +494,36 @@ std::string blockTypeName(const Type* type)
 
 bool canWiden(const Type* from, const Type* to)
 {
+    from = canonical(from);
+    to = canonical(to);
     if (from == to) {
         return true;
+    }
+    if (from == nullptr || to == nullptr) {
+        return false;
     }
     if (isBlock(from) && isBlock(to)) {
         return sameBlockShape(from, to);
     }
-    if (from != nullptr && from->kind == TypeKind::nilType) {
+    if (from->kind == TypeKind::nilType) {
         return isOptional(to);
     }
     if (isClass(from) && isClass(to)) {
         return from->classInfo->isKindOf(to->classInfo);
     }
     if (isOptional(to)) {
-        return canWiden(isOptional(from) ? from->inner : from, to->inner);
+        if (isOptional(from)) {
+            return isReference(from) && isReference(to) ? canWiden(from->inner, to->inner) : canonical(from->inner) == canonical(to->inner);
+        }
+        return canWiden(from, to->inner);
+    }
+    // A subrange converts implicitly out to its base (always valid).
+    if (isSubrange(from) && !isSubrange(to)) {
+        return canWiden(from->inner, to);
+    }
+    // Distinct named types mix only with themselves.
+    if (from->distinctOf != nullptr || to->distinctOf != nullptr) {
+        return false;
     }
     if (isInteger(from) && isInteger(to)) {
         if (from->isSigned == to->isSigned) {
@@ -212,22 +534,36 @@ bool canWiden(const Type* from, const Type* to)
     if (isReal(from) && isReal(to)) {
         return to->bits > from->bits;
     }
+    // A union accepts each of its members.
+    if (isUnion(to)) {
+        return std::find(to->members.begin(), to->members.end(), from) != to->members.end();
+    }
     return false;
 }
 
 const Type* commonType(const Type* a, const Type* b)
 {
     if (canWiden(a, b)) {
-        return b;
+        return canonical(b);
     }
     if (canWiden(b, a)) {
-        return a;
+        return canonical(a);
     }
     return nullptr;
 }
 
 bool integerFits(uint64_t magnitude, bool negative, const Type* type)
 {
+    if (isSubrange(type) && isInteger(type->inner)) {
+        if (type->isSigned) {
+            if (!negative && magnitude > static_cast<uint64_t>(INT64_MAX)) {
+                return false;
+            }
+            int64_t value = negative ? static_cast<int64_t>(~magnitude + 1) : static_cast<int64_t>(magnitude);
+            return value >= type->low && value <= type->high;
+        }
+        return (!negative || magnitude == 0) && magnitude >= static_cast<uint64_t>(type->low) && magnitude <= static_cast<uint64_t>(type->high);
+    }
     if (!isInteger(type)) {
         return false;
     }
@@ -243,7 +579,7 @@ bool integerFits(uint64_t magnitude, bool negative, const Type* type)
 
 std::string typeName(const Type* type)
 {
-    return type == nullptr ? "<none>" : type->name;
+    return type == nullptr ? "<none>" : canonical(type)->name;
 }
 
 }

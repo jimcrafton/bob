@@ -106,7 +106,47 @@ std::string describe(const SendInfo& send, const SemanticModel& model)
     case SendKind::fieldSet:
         return "tier 0, inlined field write";
     case SendKind::interval:
+    case SendKind::enumRange:
+    case SendKind::collectionRange:
         return "";
+    case SendKind::constant:
+        return "tier 0, compile-time constant";
+    case SendKind::inlineEnumDo:
+    case SendKind::inlineDo:
+        return "tier 0, inlined loop over " + type + " (no closure created)";
+    case SendKind::unionIfKindOf:
+    case SendKind::unionIsKindOf:
+        return "tier 0, inlined tag test for " + type;
+    case SendKind::printString:
+        return type.find('|') != std::string::npos ? "tier 0, switch on the union tag, direct call per member" : "tier 1, runtime call (" + type + " printString)";
+    case SendKind::stringConcat:
+    case SendKind::stringCompare:
+    case SendKind::stringPredicate:
+    case SendKind::stringSplit:
+    case SendKind::stringJoin:
+    case SendKind::stringFromUtf8:
+    case SendKind::stringFromUtf8Lossy:
+    case SendKind::stringToUtf8:
+    case SendKind::stringFromChar:
+    case SendKind::stringViewCount:
+    case SendKind::enumName:
+    case SendKind::arrayLiteral:
+    case SendKind::setLiteral:
+    case SendKind::containerAdd:
+    case SendKind::containerRemove:
+    case SendKind::containerIncludes:
+    case SendKind::containerAtIfAbsent:
+    case SendKind::arrayRemoveLast:
+    case SendKind::dictionaryKeys:
+    case SendKind::dictionaryValues:
+        return "tier 1, runtime call";
+    case SendKind::containerAt:
+    case SendKind::containerAtPut:
+        return send.operandType != nullptr && (send.operandType->kind == TypeKind::array || send.operandType->kind == TypeKind::fixedArray)
+                   ? "tier 0, intrinsic " + std::string(send.operandType->kind == TypeKind::fixedArray ? "unchecked index (the index type is the range)" : "bounds-checked index")
+                   : "tier 1, runtime hash lookup";
+    default:
+        return "tier 0, intrinsic";
     }
     return "";
 }

@@ -5,6 +5,8 @@ add_library(bobSemantic STATIC
     types.cpp
     semanticModel.cpp
     analyzer.cpp
+    analyzerTypes.cpp
+    analyzerContainers.cpp
     explainDispatch.cpp
 )
 

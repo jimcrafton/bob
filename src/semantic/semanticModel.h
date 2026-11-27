@@ -122,6 +122,36 @@ struct ClassInfo {
     int slotOf(const std::string& selector) const;
 };
 
+struct EnumMemberInfo {
+    std::string name;
+    // Two's-complement bits of the member's value in the storage type.
+    uint64_t value = 0;
+    uint32_t ordinal = 0;
+    const ast::EnumMember* decl = nullptr;
+};
+
+struct EnumInfo {
+    std::string name;
+    const ast::EnumDecl* decl = nullptr;
+    const Type* storage = nullptr;
+    std::vector<EnumMemberInfo> members;
+    Type* type = nullptr;
+    // Values are 0, 1, 2 ... in declaration order, so ordinal = value.
+    bool dense = true;
+
+    const EnumMemberInfo* member(std::string_view memberName) const;
+    const EnumMemberInfo* memberWithValue(uint64_t value) const;
+};
+
+// `type Name := ...;`
+struct NamedTypeInfo {
+    std::string name;
+    const ast::TypeAliasDecl* decl = nullptr;
+    const Type* type = nullptr;
+    bool isAlias = false;
+    bool resolving = false;
+};
+
 struct ProgramInfo {
     std::string name;
     std::vector<MessageInfo*> messages;
@@ -162,6 +192,71 @@ enum class SendKind : uint8_t {
     fieldGet,
     fieldSet,
     referenceCompare,
+
+    // phase 5
+    constant,          // a compile-time value: `constant` holds its bits, resultType its type
+    enumValue,         // `c value`: the storage integer
+    enumOrdinal,       // `c ordinal`
+    enumSucc,
+    enumPred,
+    enumFromValue,     // `Color fromValue: n` -> Color?
+    enumName,          // `c name` -> string
+    enumRange,         // the iterable of `for c in Color` / `Color red to: Color blue`
+    inlineEnumDo,      // `Color do: { :c | ... }`
+    distinctValue,     // `p value` on a distinct type: same bits, base type
+    distinctFromValue, // `PhysAddr fromValue: n`
+    subrangeFromValue, // `Percent fromValue: n` -> Percent?
+    optionalCompare,   // `x = nil`, `x <> nil` on an optional of a plain value
+    bitSetLiteral,     // `[Perm read, Perm write]` as a `set of: Perm`
+    bitSetOp,          // `+ - *` on bit sets
+    bitSetIncludes,
+    bitSetCount,
+    bitSetValue,
+    bitSetFromValue,
+    bitSetMutate,      // `s add: m`, `s remove: m`
+    bitSetIsEmpty,
+
+    // strings (`op` holds the selector where several share a kind)
+    stringConcat,      // a + b
+    stringCompare,     // = <> < <= > >= (byte-wise)
+    stringView,        // s bytes / codepoints / graphemes: the same string, as a view
+    stringViewCount,   // s bytes count ...
+    stringByteAt,      // s bytes at: n
+    stringIsEmpty,
+    stringPredicate,   // startsWith: endsWith: includesSubstring:
+    stringSplit,       // s split: ","  -> array of: string
+    stringJoin,        // ", " join: names
+    stringFromUtf8,    // string fromUtf8: bytes -> string?
+    stringFromUtf8Lossy,
+    stringToUtf8,      // s toUtf8 -> array of: uint8
+    printString,       // operandType: the receiver's type
+    charValue,         // c value -> uint32
+    charFromValue,     // char fromValue: n -> char?
+    stringFromChar,    // c asString
+
+    // containers
+    arrayLiteral,      // resultType: the array; elements converted to its element type
+    setLiteral,
+    fixedArrayLiteral,
+    containerCount,
+    containerIsEmpty,
+    containerAt,       // array/fixed array: index; dictionary/hashtable: key -> V?
+    containerAtPut,
+    containerAtIfAbsent,
+    containerIncludes, // array/set: element; dictionary/hashtable: key (includesKey:)
+    containerAdd,      // array add:, set add:
+    containerRemove,   // set remove:, dictionary removeKey:
+    arrayFirst,
+    arrayLast,
+    arrayRemoveLast,
+    dictionaryKeys,
+    dictionaryValues,
+    inlineDo,          // do:, keysDo:, keysAndValuesDo: with a literal block (op = selector)
+    collectionRange,   // the iterable of `for x in collection`
+
+    // unions
+    unionIfKindOf,     // u ifKindOf: T do: { :x | ... }; `operandType` is T
+    unionIsKindOf,     // u isKindOf: T
 };
 
 // How a send node is implemented. `operandType` is the type every operand is
@@ -178,6 +273,9 @@ struct SendInfo {
     const ClassInfo* classInfo = nullptr;
     const FieldInfo* field = nullptr;
     int slot = -1;
+    // constant: the value's bits. enum sends: the enum.
+    uint64_t constant = 0;
+    const EnumInfo* enumInfo = nullptr;
 };
 
 // One case label as an inclusive range of the subject's values, stored as
@@ -197,6 +295,8 @@ public:
     std::vector<std::unique_ptr<LocalInfo>> locals;
     std::vector<std::unique_ptr<BlockInfo>> blockInfos;
     std::vector<std::unique_ptr<ClassInfo>> classes;
+    std::vector<std::unique_ptr<EnumInfo>> enums;
+    std::vector<std::unique_ptr<NamedTypeInfo>> namedTypes;
 
     std::unordered_map<ast::NodeId, const Type*> expressionTypes;
     std::unordered_map<ast::NodeId, const BlockInfo*> blocks;
@@ -207,6 +307,8 @@ public:
     std::unordered_map<ast::NodeId, const FieldInfo*> selfFieldRefs;
     std::unordered_map<ast::NodeId, std::vector<CaseRange>> caseRanges;
     std::unordered_set<ast::NodeId> implicitDeclarations;
+    // `case` statements that cover every value of their subject (no `else` needed).
+    std::unordered_set<ast::NodeId> exhaustiveCases;
 
     const Type* typeOf(const ast::Node* node) const;
     const LocalInfo* localOf(const ast::Node* node) const;
@@ -215,6 +317,8 @@ public:
     const BlockInfo* blockOf(const ast::Node* node) const;
     const RecordInfo* recordNamed(std::string_view name) const;
     ClassInfo* classNamed(std::string_view name) const;
+    EnumInfo* enumNamed(std::string_view name) const;
+    const NamedTypeInfo* namedType(std::string_view name) const;
 };
 
 }

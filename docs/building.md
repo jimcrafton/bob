@@ -5,11 +5,13 @@
 |---|---|---|
 | Visual Studio 2026 (MSVC `cl`, MASM `ml64`) | building the compiler, runtime and tests | VS developer environment (`vcvars64.bat`) |
 | CMake ≥ 3.30, Ninja | build system | bundled with Visual Studio |
-| LLVM 23.1.2, Debug and Release builds | code generation library (`bobCompiler`), `llvm-dlltool` | `BOB_LLVM_ROOT` (set by the presets) |
+| LLVM 22.1 or later (presets use 23.1.2), Debug and Release builds | code generation library (`bobCompiler`), `llvm-dlltool` | `BOB_LLVM_ROOT` (set by the presets) |
 | `lld-link` | linking bob programs | `C:\Program Files\LLVM\bin` (found at configure time, else PATH, else `--linker=`) |
 | GoogleTest 1.15.2 | `bobTests` | downloaded by CMake `FetchContent` at configure time |
 
 Debug builds of bob must link against the **Debug** LLVM build and Release builds against the **Release** build. MSVC's debug and release C runtimes and STL layouts can't be mixed, which is why the presets point at different LLVM roots.
+
+The prebuilt `clang+llvm-<version>-x86_64-pc-windows-msvc.tar.xz` from the LLVM GitHub releases works as the Release root (it includes `lib/cmake/llvm`; the `LLVM-<version>-win64.exe` installer does not). LLVM ships no Debug build, so a Debug root has to be built from source. Tested with 22.1.7 (Release) and 23.1.2 (Debug and Release).
 
 ## Presets
 | Preset | Build type | LLVM root |
@@ -55,6 +57,16 @@ The grammar is in `docs/grammar.md`, the type rules in `docs/semantics.md`. Runt
 
 ## Test programs
 `tests/programs/run/*.bob` are compiled and run by `bobTests` at `-O0` and `-O2`. Each declares its outcome in header comments: `# expect-exit: <code>` and optionally `# expect-stderr: <text>`. Every program must also exit without a leak report, unless its expected stderr is the leak report itself. To add a test, drop in a new file. No other registration is needed.
+
+`tests/programs/unicode/GraphemeBreakTest.txt` is Unicode's conformance data for grapheme clusters. `Unicode.GraphemeBreakConformance` runs every case against the runtime's segmenter (`src/runtime/core/unicode.cpp`, compiled into `bobTests` too).
+
+## Unicode tables
+`src/runtime/core/unicodeTables.inc` (grapheme break properties, Extended_Pictographic, Indic_Conjunct_Break) is generated from the UCD files in `tools/unicodegen/ucd` (Unicode 16.0.0) and checked in. To regenerate it after updating those files, run this from a VS developer prompt in the repository root:
+```
+cl /std:c++20 /EHsc /O2 tools\unicodegen\unicodegen.cpp /Fe:unicodegen.exe
+unicodegen.exe tools\unicodegen\ucd src\runtime\core\unicodeTables.inc
+```
+Update `tests/programs/unicode/GraphemeBreakTest.txt` to the same Unicode version.
 
 ## Using bobc on LLVM IR (phase 0)
 `bobc` accepts hand-written LLVM IR that defines `i32 @bobMain()`:

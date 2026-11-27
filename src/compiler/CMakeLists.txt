@@ -5,6 +5,8 @@ llvm_map_components_to_libnames(bobLlvmLibs
 
 add_library(bobCompiler STATIC
     codegen/codeGenerator.cpp
+    codegen/codegenContainers.cpp
+    codegen/codegenValues.cpp
     driver/driver.cpp
     driver/driverOptions.cpp
     driver/linker.cpp

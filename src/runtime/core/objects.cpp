@@ -85,9 +85,37 @@ void* bobAllocObject(BobClass* cls)
     return header;
 }
 
+// Strings, arrays and tables have a runtime class with instanceSize 0: their size
+// varies, so it comes from the heap.
+void* bobAllocBuffer(BobClass* cls, uint64_t size)
+{
+    auto* header = static_cast<BobObjectHeader*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size));
+    if (header == nullptr) {
+        writeError("bob: out of memory\n");
+        ExitProcess(static_cast<UINT>(bob::abi::trapExitCode));
+    }
+    header->isa = cls;
+    header->refCount = 1;
+    _InterlockedIncrement64(&liveObjects);
+    _InterlockedExchangeAdd64(&liveBytes, static_cast<long long>(size));
+    return header;
+}
+
+void* bobGrowBuffer(void* buffer, uint64_t size)
+{
+    uint64_t old = HeapSize(GetProcessHeap(), 0, buffer);
+    void* grown = HeapReAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, buffer, size);
+    if (grown == nullptr) {
+        writeError("bob: out of memory\n");
+        ExitProcess(static_cast<UINT>(bob::abi::trapExitCode));
+    }
+    _InterlockedExchangeAdd64(&liveBytes, static_cast<long long>(size) - static_cast<long long>(old));
+    return grown;
+}
+
 void bobRetain(void* object)
 {
-    if (object != nullptr) {
+    if (object != nullptr && (static_cast<BobObjectHeader*>(object)->flags & bobObjectImmortal) == 0) {
         _InterlockedIncrement(reinterpret_cast<volatile long*>(&static_cast<BobObjectHeader*>(object)->refCount));
     }
 }
@@ -98,6 +126,9 @@ void bobRelease(void* object)
         return;
     }
     auto* header = static_cast<BobObjectHeader*>(object);
+    if ((header->flags & bobObjectImmortal) != 0) {
+        return;
+    }
     if (_InterlockedDecrement(reinterpret_cast<volatile long*>(&header->refCount)) != 0) {
         return;
     }
@@ -106,7 +137,8 @@ void bobRelease(void* object)
         cls->destroy(object);
     }
     _InterlockedDecrement64(&liveObjects);
-    _InterlockedExchangeAdd64(&liveBytes, -static_cast<long long>(cls->instanceSize));
+    uint64_t size = cls->instanceSize != 0 ? cls->instanceSize : HeapSize(GetProcessHeap(), 0, object);
+    _InterlockedExchangeAdd64(&liveBytes, -static_cast<long long>(size));
     HeapFree(GetProcessHeap(), 0, object);
 }
 

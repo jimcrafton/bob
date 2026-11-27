@@ -1,135 +1,9 @@
-#include "codegen/codeGenerator.h"
-
-#include "abi.h"
-#include "objectModel.h"
-
-#include <llvm/IR/Constants.h>
-#include <llvm/IR/IRBuilder.h>
-#include <llvm/IR/Intrinsics.h>
-#include <llvm/IR/LLVMContext.h>
-#include <llvm/IR/Module.h>
+#include "codegenInternal.h"
 
 #include <algorithm>
 #include <cmath>
-#include <unordered_map>
-#include <vector>
 
-namespace bob::codegen {
-
-namespace {
-
-using namespace bob::ast;
-using sema::OverflowMode;
-using sema::SendKind;
-using sema::Type;
-using sema::TypeKind;
-
-class Generator {
-public:
-    Generator(const sema::SemanticModel& model, llvm::LLVMContext& context, std::string dataLayout)
-        : model_(model), context_(context), builder_(context), dataLayout_(std::move(dataLayout))
-    {
-    }
-
-    std::unique_ptr<llvm::Module> run(const Unit* unit);
-
-private:
-    llvm::Type* llvmType(const Type* type);
-    llvm::StructType* structType(const sema::RecordInfo* record);
-    void declareMessage(const sema::MessageInfo* message);
-    void emitMessage(const sema::MessageInfo* message);
-    void emitEntryPoint();
-    void beginFunction(llvm::Function* function, const sema::MessageInfo* message, const std::vector<sema::LocalInfo*>& locals);
-
-    // classes and objects
-    llvm::StructType* objectType(const sema::ClassInfo* info);
-    llvm::StructType* classInfoType(size_t vtableSize);
-    llvm::GlobalVariable* selectorGlobal(const std::string& selector);
-    void declareClass(const sema::ClassInfo* info);
-    void emitClass(const sema::ClassInfo* info);
-    llvm::Value* fieldAddress(llvm::Value* object, const sema::FieldInfo* field);
-    llvm::Value* selfValue();
-    llvm::FunctionType* methodType(const sema::MessageInfo* message);
-
-    // reference counting
-    void retain(llvm::Value* value);
-    void release(llvm::Value* value);
-    bool producesOwned(const Node* node) const;
-    llvm::Value* emitOwnedAs(const Node* expression, const Type* target);
-    void storeReference(llvm::Value* address, llvm::Value* owned, const Type* type);
-    void flushTemporaries(size_t mark);
-    void releaseLocals();
-    void emitReturn(llvm::Value* value);
-
-    void ensureLiveBlock();
-    void emitStatements(const std::vector<Node*>& statements);
-    void emitStatement(const Node* statement);
-    void emitGroup(const Node* group);
-    void emitIf(const IfStmt* statement);
-    void emitFor(const ForStmt* statement);
-    void emitCountingLoop(const sema::LocalInfo* local, const Node* lowNode, const Node* highNode, const std::vector<Node*>& body);
-    void emitCase(const CaseStmt* statement);
-    void store(const sema::LocalInfo* local, llvm::Value* value);
-    llvm::Value* addressOf(const sema::LocalInfo* local);
-    llvm::AllocaInst* entryAlloca(llvm::Type* type, const std::string& name);
-
-    llvm::StructType* blockValueType();
-    llvm::FunctionType* blockFunctionType(const Type* blockType);
-    llvm::Value* emitBlockLiteral(const BlockLiteral* literal);
-    llvm::Function* emitBlockFunction(const sema::BlockInfo* info);
-    llvm::Value* emitInlinedBody(const BlockLiteral* literal, const Type* resultType);
-    llvm::Value* emitInvoke(const Node* receiver, const std::vector<Node*>& arguments, const Type* blockType);
-    llvm::Value* emitInlinedIf(const KeywordSend* send, const sema::SendInfo& info);
-    void emitTimesRepeat(const KeywordSend* send, const Type* countType);
-
-    llvm::Value* emit(const Node* expression);
-    llvm::Value* emitAs(const Node* expression, const Type* target);
-    llvm::Value* widen(llvm::Value* value, const Type* from, const Type* to);
-    llvm::Value* emitAddress(const Node* expression);
-    llvm::Value* emitSend(const Node* node, const sema::SendInfo& send);
-    llvm::Value* emitLiteral(const Node* node);
-
-    llvm::Value* arithmetic(char op, llvm::Value* a, llvm::Value* b, const Type* type, OverflowMode mode);
-    llvm::Value* divide(char op, llvm::Value* a, llvm::Value* b, const Type* type, OverflowMode mode);
-    llvm::Value* negate(llvm::Value* value, const Type* type, OverflowMode mode);
-    llvm::Value* compare(const std::string& op, llvm::Value* a, llvm::Value* b, const Type* type);
-    llvm::Value* convert(llvm::Value* value, const Type* from, const Type* to);
-    llvm::Value* shift(bool left, llvm::Value* value, llvm::Value* amount, const Type* type, const Type* amountType, OverflowMode mode);
-    llvm::Value* minValue(const Type* type);
-    llvm::Value* maxValue(const Type* type);
-    void trapIf(llvm::Value* condition, abi::TrapReason reason);
-
-    const sema::SemanticModel& model_;
-    llvm::LLVMContext& context_;
-    llvm::IRBuilder<> builder_;
-    std::string dataLayout_;
-    std::unique_ptr<llvm::Module> module_;
-    llvm::Function* trapFunction_ = nullptr;
-    llvm::Function* retainFunction_ = nullptr;
-    llvm::Function* releaseFunction_ = nullptr;
-    llvm::Function* allocFunction_ = nullptr;
-    llvm::Function* msgSendFunction_ = nullptr;
-    std::vector<llvm::Value*> temporaries_;
-    std::unordered_map<const sema::ClassInfo*, llvm::StructType*> objectTypes_;
-    std::unordered_map<const sema::ClassInfo*, llvm::GlobalVariable*> classGlobals_;
-    std::unordered_map<const sema::ClassInfo*, llvm::Function*> initFunctions_;
-    std::unordered_map<const sema::ClassInfo*, llvm::Function*> newFunctions_;
-    std::unordered_map<const sema::ClassInfo*, llvm::Function*> destroyFunctions_;
-    std::unordered_map<std::string, llvm::GlobalVariable*> selectors_;
-    llvm::Function* function_ = nullptr;
-    const sema::MessageInfo* message_ = nullptr;
-    const sema::BlockInfo* block_ = nullptr;
-    llvm::Value* environment_ = nullptr;
-    std::unordered_map<const sema::MessageInfo*, llvm::Function*> functions_;
-    std::unordered_map<const sema::RecordInfo*, llvm::StructType*> structs_;
-    std::unordered_map<const sema::LocalInfo*, llvm::AllocaInst*> slots_;
-
-    struct LoopTargets {
-        llvm::BasicBlock* breakTarget;
-        llvm::BasicBlock* continueTarget;
-    };
-    std::vector<LoopTargets> loops_;
-};
+namespace bob::codegen::detail {
 
 // ---------------------------------------------------------------------------
 // module structure
@@ -266,8 +140,8 @@ void Generator::emitClass(const sema::ClassInfo* info)
     function_ = destroyFunctions_.at(info);
     builder_.SetInsertPoint(llvm::BasicBlock::Create(context_, "entry", function_));
     for (const sema::FieldInfo& field : info->fields) {
-        if (sema::isReference(field.type)) {
-            release(builder_.CreateLoad(ptr, fieldAddress(function_->getArg(0), &field)));
+        if (sema::needsCleanup(field.type)) {
+            releaseValue(builder_.CreateLoad(llvmType(field.type), fieldAddress(function_->getArg(0), &field)), field.type);
         }
     }
     builder_.CreateRetVoid();
@@ -279,7 +153,15 @@ void Generator::emitClass(const sema::ClassInfo* info)
         builder_.CreateCall(initFunctions_.at(info->superclass), {object});
     }
     for (const sema::FieldInfo& field : info->fields) {
-        if (field.owner != info || field.initializer == nullptr) {
+        if (field.owner != info) {
+            continue;
+        }
+        if (field.initializer == nullptr) {
+            // Objects start zero-filled; only enums and subranges whose default isn't 0 need a store.
+            llvm::Constant* initial = defaultValue(field.type);
+            if (!initial->isNullValue()) {
+                builder_.CreateStore(initial, fieldAddress(object, &field));
+            }
             continue;
         }
         size_t mark = temporaries_.size();
@@ -330,23 +212,9 @@ void Generator::emitClass(const sema::ClassInfo* info)
 // borrowed; call results are owned. Owned values used only for the duration
 // of a statement are "temporaries", released when the statement ends.
 
-void Generator::retain(llvm::Value* value)
-{
-    if (!llvm::isa<llvm::ConstantPointerNull>(value)) {
-        builder_.CreateCall(retainFunction_, {value});
-    }
-}
-
-void Generator::release(llvm::Value* value)
-{
-    if (!llvm::isa<llvm::ConstantPointerNull>(value)) {
-        builder_.CreateCall(releaseFunction_, {value});
-    }
-}
-
 bool Generator::producesOwned(const Node* node) const
 {
-    if (!sema::isReference(model_.typeOf(node))) {
+    if (!sema::needsCleanup(model_.typeOf(node))) {
         return false;
     }
     if (node->kind == NodeKind::identifier) {
@@ -372,31 +240,31 @@ bool Generator::producesOwned(const Node* node) const
 llvm::Value* Generator::emitOwnedAs(const Node* expression, const Type* target)
 {
     llvm::Value* value = emit(expression);
-    if (sema::isReference(model_.typeOf(expression)) && !producesOwned(expression)) {
-        retain(value);
+    if (sema::needsCleanup(model_.typeOf(expression)) && !producesOwned(expression)) {
+        retainValue(value, model_.typeOf(expression));
     }
     return widen(value, model_.typeOf(expression), target);
 }
 
 void Generator::storeReference(llvm::Value* address, llvm::Value* owned, const Type* type)
 {
-    if (!sema::isReference(type)) {
+    if (!sema::needsCleanup(type)) {
         builder_.CreateStore(owned, address);
         return;
     }
-    llvm::Value* old = builder_.CreateLoad(builder_.getPtrTy(), address, "old");
+    llvm::Value* old = builder_.CreateLoad(llvmType(type), address, "old");
     builder_.CreateStore(owned, address);
-    release(old);
+    releaseValue(old, type);
 }
 
 void Generator::flushTemporaries(size_t mark)
 {
-    if (builder_.GetInsertBlock()->hasTerminator()) {
+    if (builder_.GetInsertBlock()->getTerminator() != nullptr) {
         temporaries_.resize(std::min(mark, temporaries_.size()));
         return;
     }
     while (temporaries_.size() > mark) {
-        release(temporaries_.back());
+        releaseValue(temporaries_.back().value, temporaries_.back().type);
         temporaries_.pop_back();
     }
 }
@@ -404,8 +272,8 @@ void Generator::flushTemporaries(size_t mark)
 void Generator::releaseLocals()
 {
     for (const auto& [local, slot] : slots_) {
-        if (sema::isReference(local->type) && !local->isParameter) {
-            release(builder_.CreateLoad(builder_.getPtrTy(), slot));
+        if (sema::needsCleanup(local->type) && !local->isParameter) {
+            releaseValue(builder_.CreateLoad(llvmType(local->type), slot), local->type);
         }
     }
 }
@@ -415,7 +283,7 @@ void Generator::releaseLocals()
 void Generator::emitReturn(llvm::Value* value)
 {
     for (auto it = temporaries_.rbegin(); it != temporaries_.rend(); ++it) {
-        release(*it);
+        releaseValue(it->value, it->type);
     }
     releaseLocals();
     if (value != nullptr) {
@@ -440,8 +308,8 @@ void Generator::beginFunction(llvm::Function* function, const sema::MessageInfo*
         if (sema::isValueType(local->type)) {
             llvm::AllocaInst* slot = builder_.CreateAlloca(llvmType(local->type), nullptr, local->name);
             slots_[local] = slot;
-            if (sema::isReference(local->type) && !local->isParameter) {
-                builder_.CreateStore(llvm::ConstantPointerNull::get(builder_.getPtrTy()), slot);
+            if (sema::needsCleanup(local->type) && !local->isParameter) {
+                builder_.CreateStore(llvm::Constant::getNullValue(llvmType(local->type)), slot);
             }
         }
     }
@@ -449,7 +317,24 @@ void Generator::beginFunction(llvm::Function* function, const sema::MessageInfo*
 
 llvm::Type* Generator::llvmType(const Type* type)
 {
+    type = sema::canonical(type);
     switch (type->kind) {
+    case TypeKind::enumType:
+    case TypeKind::subrange:
+    case TypeKind::character:
+        return builder_.getIntNTy(type->bits);
+    case TypeKind::set:
+        return sema::isBitSet(type) ? static_cast<llvm::Type*>(builder_.getIntNTy(type->bits)) : builder_.getPtrTy();
+    case TypeKind::string:
+    case TypeKind::stringView:
+    case TypeKind::array:
+    case TypeKind::dictionary:
+    case TypeKind::hashtable:
+        return builder_.getPtrTy();
+    case TypeKind::fixedArray:
+        return llvm::ArrayType::get(llvmType(type->inner), type->count);
+    case TypeKind::unionType:
+        return unionType(type);
     case TypeKind::voidType:
         return builder_.getVoidTy();
     case TypeKind::boolType:
@@ -462,8 +347,12 @@ llvm::Type* Generator::llvmType(const Type* type)
         return structType(type->record);
     case TypeKind::block:
         return blockValueType();
-    case TypeKind::classType:
     case TypeKind::optional:
+        if (sema::isValueOptional(type)) {
+            return llvm::StructType::get(context_, {builder_.getInt1Ty(), llvmType(type->inner)});
+        }
+        return builder_.getPtrTy();
+    case TypeKind::classType:
     case TypeKind::nilType:
     case TypeKind::blockToInfer:
     case TypeKind::placeholder:
@@ -523,7 +412,7 @@ void Generator::emitMessage(const sema::MessageInfo* message)
     if (body != nullptr) {
         emitStatements(body->statements);
     }
-    if (!builder_.GetInsertBlock()->hasTerminator()) {
+    if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
         if (message->returnType->kind == TypeKind::voidType) {
             emitReturn(nullptr);
         }
@@ -535,12 +424,13 @@ void Generator::emitMessage(const sema::MessageInfo* message)
 
 void Generator::emitEntryPoint()
 {
-    auto type = llvm::FunctionType::get(builder_.getInt32Ty(), {}, false);
+    // bobMain(args): the runtime passes the command-line arguments as an array of strings (borrowed).
+    auto type = llvm::FunctionType::get(builder_.getInt32Ty(), {builder_.getPtrTy()}, false);
     llvm::Function* entry = llvm::Function::Create(type, llvm::GlobalValue::ExternalLinkage, abi::mainSymbol, module_.get());
     builder_.SetInsertPoint(llvm::BasicBlock::Create(context_, "entry", entry));
     std::vector<llvm::Value*> args;
-    for (const sema::LocalInfo* param : model_.program.main->params) {
-        args.push_back(llvm::Constant::getNullValue(llvmType(param->type)));
+    for (size_t i = 0; i < model_.program.main->params.size(); ++i) {
+        args.push_back(entry->getArg(0));
     }
     builder_.CreateRet(builder_.CreateCall(functions_.at(model_.program.main), args));
 }
@@ -550,7 +440,7 @@ void Generator::emitEntryPoint()
 
 void Generator::ensureLiveBlock()
 {
-    if (builder_.GetInsertBlock()->hasTerminator()) {
+    if (builder_.GetInsertBlock()->getTerminator() != nullptr) {
         builder_.SetInsertPoint(llvm::BasicBlock::Create(context_, "dead", function_));
     }
 }
@@ -607,7 +497,7 @@ void Generator::emitStatement(const Node* statement)
         auto decl = static_cast<const VariableDecl*>(statement);
         const sema::LocalInfo* local = model_.localOf(decl);
         llvm::Value* value = decl->initializer != nullptr ? emitOwnedAs(decl->initializer, local->type)
-                                                          : llvm::Constant::getNullValue(llvmType(local->type));
+                                                          : defaultValue(local->type);
         storeReference(addressOf(local), value, local->type);
         break;
     }
@@ -652,7 +542,7 @@ void Generator::emitStatement(const Node* statement)
         loops_.push_back({exit, condition});
         emitGroup(loop->body);
         loops_.pop_back();
-        if (!builder_.GetInsertBlock()->hasTerminator()) {
+        if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
             builder_.CreateBr(condition);
         }
         builder_.SetInsertPoint(exit);
@@ -667,7 +557,7 @@ void Generator::emitStatement(const Node* statement)
         loops_.push_back({exit, body});
         emitGroup(loop->body);
         loops_.pop_back();
-        if (!builder_.GetInsertBlock()->hasTerminator()) {
+        if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
             builder_.CreateBr(body);
         }
         builder_.SetInsertPoint(exit);
@@ -706,7 +596,7 @@ void Generator::emitIf(const IfStmt* statement)
 
     builder_.SetInsertPoint(thenBlock);
     emitGroup(statement->thenBody);
-    if (!builder_.GetInsertBlock()->hasTerminator()) {
+    if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
         builder_.CreateBr(merge);
     }
     if (statement->elseBody != nullptr) {
@@ -717,7 +607,7 @@ void Generator::emitIf(const IfStmt* statement)
         else {
             emitGroup(statement->elseBody);
         }
-        if (!builder_.GetInsertBlock()->hasTerminator()) {
+        if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
             builder_.CreateBr(merge);
         }
     }
@@ -726,6 +616,28 @@ void Generator::emitIf(const IfStmt* statement)
 
 void Generator::emitFor(const ForStmt* statement)
 {
+    const sema::LocalInfo* local = model_.localOf(statement);
+    const auto& statements = static_cast<const StatementGroup*>(statement->body)->statements;
+    if (const sema::SendInfo* each = model_.sendOf(statement); each != nullptr && each->kind == SendKind::collectionRange) {
+        emitCollectionLoop(statement->iterable, each->operandType, {local}, statements, "for");
+        return;
+    }
+    if (const sema::SendInfo* range = model_.sendOf(statement->iterable); range != nullptr && range->kind == SendKind::enumRange) {
+        const Type* element = sema::canonical(range->operandType);
+        if (auto interval = nodeCast<KeywordSend>(statement->iterable)) {
+            const sema::EnumInfo* info = sema::decay(element)->enumInfo;
+            llvm::Value* low = enumOrdinal(emitAs(interval->receiver, element), info);
+            llvm::Value* high = enumOrdinal(emitAs(interval->arguments[0], element), info);
+            emitOrdinalLoop(local, element, low, high, statements, nullptr);
+        }
+        else {
+            bool isEnumType = sema::isEnum(element);
+            int64_t low = isEnumType ? 0 : element->low;
+            int64_t high = isEnumType ? static_cast<int64_t>(element->enumInfo->members.size()) - 1 : element->high;
+            emitOrdinalLoop(local, element, builder_.getInt64(static_cast<uint64_t>(low)), builder_.getInt64(static_cast<uint64_t>(high)), statements, nullptr);
+        }
+        return;
+    }
     auto interval = static_cast<const KeywordSend*>(statement->iterable);
     auto body = static_cast<const StatementGroup*>(statement->body);
     emitCountingLoop(model_.localOf(statement), interval->receiver, interval->arguments[0], body->statements);
@@ -751,7 +663,7 @@ void Generator::emitCountingLoop(const sema::LocalInfo* local, const Node* lowNo
     loops_.push_back({exit, step});
     emitStatements(statements);
     loops_.pop_back();
-    if (!builder_.GetInsertBlock()->hasTerminator()) {
+    if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
         builder_.CreateBr(step);
     }
 
@@ -768,8 +680,16 @@ void Generator::emitCountingLoop(const sema::LocalInfo* local, const Node* lowNo
 void Generator::emitCase(const CaseStmt* statement)
 {
     const Type* type = model_.typeOf(statement->subject);
-    llvm::Value* subject = emit(statement->subject);
-    llvm::Type* llvmSubject = llvmType(type);
+    llvm::Value* subject = emitAs(statement->subject, type);
+    // A union is matched on its tag; ranges hold member indexes.
+    llvm::Value* unionValue = nullptr;
+    bool isSigned = type->isSigned;
+    if (sema::isUnion(type)) {
+        unionValue = subject;
+        subject = unionTag(subject);
+        isSigned = false;
+    }
+    llvm::Type* llvmSubject = subject->getType();
     llvm::BasicBlock* merge = llvm::BasicBlock::Create(context_, "case.end", function_);
 
     for (const Node* node : statement->entries) {
@@ -777,13 +697,13 @@ void Generator::emitCase(const CaseStmt* statement)
         auto ranges = model_.caseRanges.find(entry->id);
         llvm::Value* matches = builder_.getFalse();
         for (const sema::CaseRange& range : ranges->second) {
-            llvm::Value* low = llvm::ConstantInt::get(llvmSubject, range.low, type->isSigned);
-            llvm::Value* high = llvm::ConstantInt::get(llvmSubject, range.high, type->isSigned);
+            llvm::Value* low = llvm::ConstantInt::get(llvmSubject, range.low, isSigned);
+            llvm::Value* high = llvm::ConstantInt::get(llvmSubject, range.high, isSigned);
             llvm::Value* test = nullptr;
             if (range.low == range.high) {
                 test = builder_.CreateICmpEQ(subject, low);
             }
-            else if (type->isSigned) {
+            else if (isSigned) {
                 test = builder_.CreateAnd(builder_.CreateICmpSGE(subject, low), builder_.CreateICmpSLE(subject, high));
             }
             else {
@@ -795,14 +715,30 @@ void Generator::emitCase(const CaseStmt* statement)
         llvm::BasicBlock* next = llvm::BasicBlock::Create(context_, "case.next", function_);
         builder_.CreateCondBr(matches, bodyBlock, next);
         builder_.SetInsertPoint(bodyBlock);
-        emitStatements(static_cast<const BlockLiteral*>(entry->body)->statements);
-        if (!builder_.GetInsertBlock()->hasTerminator()) {
+        auto body = static_cast<const BlockLiteral*>(entry->body);
+        const sema::BlockInfo* info = model_.blockOf(body);
+        if (unionValue != nullptr && info != nullptr && !info->params.empty() && ranges->second.size() == 1) {
+            const sema::LocalInfo* bound = info->params[0];
+            llvm::Value* member = unionMember(unionValue, type, static_cast<size_t>(ranges->second[0].low));
+            retainValue(member, bound->type);
+            storeReference(addressOf(bound), member, bound->type);
+        }
+        size_t mark = temporaries_.size();
+        emitStatements(body->statements);
+        flushTemporaries(mark);
+        if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
             builder_.CreateBr(merge);
         }
         builder_.SetInsertPoint(next);
     }
-    emitGroup(statement->elseBody);
-    if (!builder_.GetInsertBlock()->hasTerminator()) {
+    if (statement->elseBody != nullptr) {
+        emitGroup(statement->elseBody);
+    }
+    else if (model_.exhaustiveCases.count(statement->id) != 0) {
+        // Every value is covered, so control can't get here.
+        builder_.CreateUnreachable();
+    }
+    if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
         builder_.CreateBr(merge);
     }
     builder_.SetInsertPoint(merge);
@@ -816,16 +752,21 @@ void Generator::emitCase(const CaseStmt* statement)
 llvm::Value* Generator::emitAs(const Node* expression, const Type* target)
 {
     llvm::Value* value = emit(expression);
-    if (value != nullptr && sema::isReference(model_.typeOf(expression)) && producesOwned(expression)) {
-        temporaries_.push_back(value);
+    if (value != nullptr && sema::needsCleanup(model_.typeOf(expression)) && producesOwned(expression)) {
+        addTemporary(value, model_.typeOf(expression));
     }
     return widen(value, model_.typeOf(expression), target);
 }
 
 llvm::Value* Generator::widen(llvm::Value* value, const Type* from, const Type* to)
 {
-    if (from == to || to == nullptr || from == nullptr) {
+    from = sema::canonical(from);
+    to = sema::canonical(to);
+    if (from == to || to == nullptr || from == nullptr || value == nullptr) {
         return value;
+    }
+    if (sema::isOptional(to) || sema::isUnion(to) || sema::isSubrange(to) || sema::isSubrange(from) || from->distinctOf != nullptr) {
+        return coerce(value, from, to);
     }
     if (sema::isInteger(from) && sema::isInteger(to)) {
         return from->isSigned ? builder_.CreateSExt(value, llvmType(to)) : builder_.CreateZExt(value, llvmType(to));
@@ -874,6 +815,12 @@ llvm::Value* Generator::emitLiteral(const Node* node)
     if (auto real = nodeCast<RealLiteral>(node)) {
         return llvm::ConstantFP::get(llvmType(type), real->value);
     }
+    if (auto character = nodeCast<CharLiteral>(node)) {
+        return builder_.getInt32(character->codepoint);
+    }
+    if (auto string = nodeCast<StringLiteral>(node)) {
+        return stringLiteral(string->value);
+    }
     return builder_.getInt1(static_cast<const BoolLiteral*>(node)->value);
 }
 
@@ -883,7 +830,13 @@ llvm::Value* Generator::emit(const Node* expression)
     case NodeKind::integerLiteral:
     case NodeKind::realLiteral:
     case NodeKind::boolLiteral:
+    case NodeKind::charLiteral:
+    case NodeKind::stringLiteral:
         return emitLiteral(expression);
+    case NodeKind::arrayLiteral: {
+        const sema::SendInfo* send = model_.sendOf(expression);
+        return send != nullptr ? emitSend(expression, *send) : nullptr;
+    }
     case NodeKind::identifier:
     case NodeKind::selfExpr: {
         const Type* type = model_.typeOf(expression);
@@ -901,7 +854,7 @@ llvm::Value* Generator::emit(const Node* expression)
         // Loads that something else could overwrite mid-statement (fields, captured
         // variables) are retained so the value stays alive while it's used.
         if (producesOwned(expression)) {
-            retain(value);
+            retainValue(value, type);
         }
         return value;
     }
@@ -914,8 +867,8 @@ llvm::Value* Generator::emit(const Node* expression)
         const Type* type = model_.typeOf(access);
         if (llvm::Value* address = emitAddress(access)) {
             llvm::Value* value = builder_.CreateLoad(llvmType(type), address, access->field);
-            if (sema::isReference(type)) {
-                retain(value);
+            if (sema::needsCleanup(type)) {
+                retainValue(value, type);
             }
             return value;
         }
@@ -1122,8 +1075,8 @@ llvm::Value* Generator::emitSend(const Node* node, const sema::SendInfo& send)
     case SendKind::fieldGet: {
         auto unary = static_cast<const UnarySend*>(node);
         llvm::Value* value = builder_.CreateLoad(llvmType(send.field->type), fieldAddress(emitAs(unary->receiver, nullptr), send.field));
-        if (sema::isReference(send.field->type)) {
-            retain(value);
+        if (sema::needsCleanup(send.field->type)) {
+            retainValue(value, send.field->type);
         }
         return value;
     }
@@ -1140,45 +1093,24 @@ llvm::Value* Generator::emitSend(const Node* node, const sema::SendInfo& send)
         llvm::Value* b = emitAs(binary->argument, nullptr);
         return send.op == "=" ? builder_.CreateICmpEQ(a, b) : builder_.CreateICmpNE(a, b);
     }
-    case SendKind::inlineIfNil: {
-        auto keyword = static_cast<const KeywordSend*>(node);
-        llvm::Value* value = emitAs(keyword->receiver, nullptr);
-        llvm::Value* isNil = builder_.CreateICmpEQ(value, llvm::ConstantPointerNull::get(builder_.getPtrTy()));
-        llvm::BasicBlock* nilBlock = llvm::BasicBlock::Create(context_, "ifnil", function_);
-        llvm::BasicBlock* valueBlock = llvm::BasicBlock::Create(context_, "ifnotnil", function_);
-        llvm::BasicBlock* merge = llvm::BasicBlock::Create(context_, "nilend", function_);
-        builder_.CreateCondBr(isNil, nilBlock, valueBlock);
-        std::vector<std::string> parts;
-        for (size_t start = 0; start < keyword->selector.size();) {
-            size_t colon = keyword->selector.find(':', start);
-            parts.push_back(keyword->selector.substr(start, colon - start + 1));
-            start = colon + 1;
+    case SendKind::optionalCompare:
+        return emitOptionalCompare(static_cast<const BinarySend*>(node), send);
+    case SendKind::inlineIfNil:
+        return emitInlinedIfNil(static_cast<const KeywordSend*>(node), send);
+    default:
+        if (llvm::Value* value = emitEnumSend(node, send)) {
+            return value;
         }
-        auto branch = [&](llvm::BasicBlock* start, bool forNil) {
-            builder_.SetInsertPoint(start);
-            for (size_t i = 0; i < parts.size(); ++i) {
-                if ((parts[i] == "ifNil:") != forNil) {
-                    continue;
-                }
-                auto literal = static_cast<const BlockLiteral*>(keyword->arguments[i]);
-                if (!forNil) {
-                    const sema::LocalInfo* bound = model_.blockOf(literal)->params[0];
-                    retain(value);
-                    storeReference(addressOf(bound), value, bound->type);
-                }
-                size_t mark = temporaries_.size();
-                emitStatements(literal->statements);
-                flushTemporaries(mark);
-            }
-            if (!builder_.GetInsertBlock()->hasTerminator()) {
-                builder_.CreateBr(merge);
-            }
-        };
-        branch(nilBlock, true);
-        branch(valueBlock, false);
-        builder_.SetInsertPoint(merge);
-        return nullptr;
-    }
+        if (llvm::Value* value = emitBitSetSend(node, send)) {
+            return value;
+        }
+        if (llvm::Value* value = emitStringSend(node, send)) {
+            return value;
+        }
+        if (llvm::Value* value = emitContainerSend(node, send)) {
+            return value;
+        }
+        return emitUnionSend(node, send);
     }
     return nullptr;
 }
@@ -1246,8 +1178,8 @@ llvm::Function* Generator::emitBlockFunction(const sema::BlockInfo* info)
         if (sema::isValueType(local->type)) {
             llvm::AllocaInst* slot = builder_.CreateAlloca(llvmType(local->type), nullptr, local->name);
             slots_[local] = slot;
-            if (sema::isReference(local->type) && !local->isParameter) {
-                builder_.CreateStore(llvm::ConstantPointerNull::get(builder_.getPtrTy()), slot);
+            if (sema::needsCleanup(local->type) && !local->isParameter) {
+                builder_.CreateStore(llvm::Constant::getNullValue(llvmType(local->type)), slot);
             }
         }
     }
@@ -1256,7 +1188,7 @@ llvm::Function* Generator::emitBlockFunction(const sema::BlockInfo* info)
     }
 
     llvm::Value* result = emitInlinedBody(info->node, blockType->result);
-    if (!builder_.GetInsertBlock()->hasTerminator()) {
+    if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
         emitReturn(blockType->result->kind == TypeKind::voidType ? nullptr : result);
     }
 
@@ -1286,7 +1218,7 @@ llvm::Value* Generator::emitInlinedBody(const BlockLiteral* literal, const Type*
         emitStatement(statements[i]);
     }
     ensureLiveBlock();
-    if (sema::isReference(resultType)) {
+    if (sema::needsCleanup(resultType)) {
         return emitOwnedAs(last->expression, resultType);
     }
     return emitAs(last->expression, resultType);
@@ -1331,7 +1263,7 @@ llvm::Value* Generator::emitInlinedIf(const KeywordSend* send, const sema::SendI
         size_t mark = temporaries_.size();
         llvm::Value* value = literal != nullptr ? emitInlinedBody(literal, resultType) : nullptr;
         flushTemporaries(mark);
-        if (!builder_.GetInsertBlock()->hasTerminator()) {
+        if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
             if (wantsValue) {
                 incoming.push_back({value, builder_.GetInsertBlock()});
             }
@@ -1378,7 +1310,7 @@ void Generator::emitTimesRepeat(const KeywordSend* send, const Type* countType)
     loops_.push_back({exit, increment});
     emitStatements(literal->statements);
     loops_.pop_back();
-    if (!builder_.GetInsertBlock()->hasTerminator()) {
+    if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
         builder_.CreateBr(increment);
     }
 
@@ -1618,10 +1550,12 @@ llvm::Value* Generator::shift(bool left, llvm::Value* value, llvm::Value* amount
 
 }
 
+namespace bob::codegen {
+
 std::unique_ptr<llvm::Module> generateModule(const ast::Unit* unit, const sema::SemanticModel& model, llvm::LLVMContext& context,
                                              const std::string& dataLayout)
 {
-    Generator generator(model, context, dataLayout);
+    detail::Generator generator(model, context, dataLayout);
     return generator.run(unit);
 }
 

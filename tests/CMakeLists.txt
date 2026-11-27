@@ -19,7 +19,10 @@ add_executable(bobTests
     runProgramTests.cpp
     semanticTests.cpp
     syntaxCorpusTests.cpp
+    unicodeTests.cpp
+    "${PROJECT_SOURCE_DIR}/src/runtime/core/unicode.cpp"
 )
+target_include_directories(bobTests PRIVATE "${PROJECT_SOURCE_DIR}/src/runtime/core")
 target_link_libraries(bobTests PRIVATE bobCompiler GTest::gtest_main)
 target_compile_definitions(bobTests PRIVATE
     BOB_TEST_RUNTIME_DIR="${BOB_OUTPUT_DIR}"

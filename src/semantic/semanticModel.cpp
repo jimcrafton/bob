@@ -83,10 +83,51 @@ ClassInfo* SemanticModel::classNamed(std::string_view name) const
     return nullptr;
 }
 
+EnumInfo* SemanticModel::enumNamed(std::string_view name) const
+{
+    for (const auto& info : enums) {
+        if (info->name == name) {
+            return info.get();
+        }
+    }
+    return nullptr;
+}
+
+const NamedTypeInfo* SemanticModel::namedType(std::string_view name) const
+{
+    for (const auto& info : namedTypes) {
+        if (info->name == name) {
+            return info.get();
+        }
+    }
+    return nullptr;
+}
+
+const EnumMemberInfo* EnumInfo::member(std::string_view memberName) const
+{
+    for (const EnumMemberInfo& m : members) {
+        if (m.name == memberName) {
+            return &m;
+        }
+    }
+    return nullptr;
+}
+
+const EnumMemberInfo* EnumInfo::memberWithValue(uint64_t value) const
+{
+    for (const EnumMemberInfo& m : members) {
+        if (m.value == value) {
+            return &m;
+        }
+    }
+    return nullptr;
+}
+
+// Pending containers whose element type was inferred later read as the final type.
 const Type* SemanticModel::typeOf(const ast::Node* node) const
 {
     auto it = node != nullptr ? expressionTypes.find(node->id) : expressionTypes.end();
-    return it == expressionTypes.end() ? nullptr : it->second;
+    return it == expressionTypes.end() ? nullptr : canonical(it->second);
 }
 
 const LocalInfo* SemanticModel::localOf(const ast::Node* node) const

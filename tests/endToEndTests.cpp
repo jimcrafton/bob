@@ -229,6 +229,6 @@ TEST_F(EndToEnd, DumpLlvmPrintsTheModule)
     llvm::raw_string_ostream err(diagnostics);
     bob::driver::Driver driver(out, err);
     EXPECT_EQ(driver.run(options), 0) << diagnostics;
-    EXPECT_NE(output.find("define i32 @bobMain()"), std::string::npos) << output;
+    EXPECT_NE(output.find("define i32 @bobMain(ptr"), std::string::npos) << output;
     EXPECT_NE(output.find("llvm.smul.with.overflow.i32"), std::string::npos) << output;
 }

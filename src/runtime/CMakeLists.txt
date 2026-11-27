@@ -1,8 +1,12 @@
 string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
 add_library(bobrt STATIC
+    core/arrays.cpp
     core/objects.cpp
+    core/strings.cpp
+    core/tables.cpp
     core/trap.cpp
+    core/unicode.cpp
     crt/crtSupport.cpp
     platform/win64/win64Console.cpp
     platform/win64/win64Entry.cpp
@@ -12,7 +16,7 @@ add_library(bobrt STATIC
 
 target_include_directories(bobrt
     PUBLIC include
-    PRIVATE "${PROJECT_SOURCE_DIR}/src/shared" platform/win64
+    PRIVATE "${PROJECT_SOURCE_DIR}/src/shared" platform/win64 core
 )
 
 # Freestanding: no CRT, no security cookies, no RTTI/EH, no runtime checks,
