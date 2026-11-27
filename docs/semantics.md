@@ -301,7 +301,12 @@ Element types are inferred. You write `array of: T` (or a similar type message) 
 Compile-time code is ordinary bob, type checked like everything else. `bobc` compiles it with the same code generator and runs it inside the compiler (an LLVM ORC JIT) against a build of the runtime linked into the compiler (`bobrtHosted`). Its results are embedded in the program.
 
 **Constants**
-- `NAME := expr;` at unit level declares an immutable constant, computed during compilation. `@[compiletime]` there is allowed but redundant.
+- `@[constant] NAME := expr;` or `@[constant] name: T := expr;` at unit level declares an immutable constant, computed during compilation.
+  - With a type, the value converts to it as an initializer would (`@[constant] mask: uint64 := 255u8;`).
+  - The name's case doesn't matter.
+  - `@[compiletime]` on the value is allowed but redundant.
+  - A constant needs a value (`sema.invalidConstant`).
+- A unit-level declaration without `@[constant]` is `sema.unitLevelVariable`: mutable globals aren't supported yet.
 - Constants are visible in every message, and may refer to each other in any order. They're evaluated in dependency order, and a cycle is an error (`sema.constantCycle` or `compiletime.cycle`).
 - Assigning to one is `sema.assignToConstant`. A constant's value must be **embeddable**: numbers, `bool`, `char`, enums, subranges, enum sets, strings, records, fixed arrays, optionals and unions of those, or arrays, sets, dictionaries and hashtables of those (`sema.notEmbeddable` otherwise; objects and blocks exist only while code runs).
 - **How constants are embedded:** strings and arrays become immortal read-only objects shared by every use (a 256-entry table exists once in the binary). Records and scalars become immediate constants. Dictionaries, hashtables, hash sets and unions are rebuilt where they're used.
