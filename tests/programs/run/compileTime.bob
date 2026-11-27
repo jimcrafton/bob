@@ -1,0 +1,109 @@
+# expect-exit: 0
+program compileTime, 0.1.0
+{
+    record Point { x: int32; y: int32; }
+    record Packet { kind: uint8; length: uint32; flags: uint16; }
+    @[packed] record Header { kind: uint8; length: uint32; }
+    enum Color { red; green; blue; }
+
+    # Constants: computed during compilation, embedded as read-only data.
+    @[constant] CRC_TABLE := self crc32Table;
+    @[constant] limit: int32 := 10;
+    @[constant] SQUARES := self squaresUpTo: limit;
+    @[constant] GREETING := "hello" + ", " + "world";
+    @[constant] ORIGIN := Point x: 3 y: -4;
+    @[constant] NAMES := [Color red name, Color blue name];
+    @[constant] mask: uint64 := 255u8;
+
+    # Layout asserts: compilation fails if a record's layout changes.
+    @[compiletime] {
+        if Point meta size <> 8 or Point meta alignment <> 4 {
+            compiler error: "Point layout changed";
+        }
+        if Packet meta size <> 12 or Header meta size <> 5 {
+            compiler error: "Packet layouts changed";
+        }
+    }
+
+    extends compileTime {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        # The standard CRC-32 table (polynomial 0xEDB88320), built at compile time.
+        @[static] @[compiletime] msg crc32Table [array of: uint32] {
+            table: array of: uint32;
+            for n in 0 to: 255 {
+                c := n asUInt32;
+                for k in 1 to: 8 {
+                    if (c & 1u32) <> 0u32 {
+                        c := 0xEDB88320u32 ^ (c shr 1);
+                    } else {
+                        c := c shr 1;
+                    }
+                }
+                table add: c;
+            }
+            return table;
+        }
+
+        # Ordinary messages can run at compile time too.
+        @[static] msg squaresUpTo: n:int32 [array of: int32] {
+            result: array of: int32;
+            for i in 1 to: n {
+                result add: i * i;
+            }
+            return result;
+        }
+
+        @[static] msg fib: n:int32 [int64] {
+            if n < 2 {
+                return n asInt64;
+            }
+            return (self fib: n - 1) + (self fib: n - 2);
+        }
+
+        @[static] msg crc32: s:string [uint32] {
+            crc := 0xFFFFFFFFu32;
+            for b in s bytes {
+                crc := (CRC_TABLE at: (crc ^ b asUInt32) & 255u32) ^ (crc shr 8);
+            }
+            return crc ^ 0xFFFFFFFFu32;
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            failures := failures + (self check: CRC_TABLE count = 256 and (CRC_TABLE at: 1) = 0x77073096u32 id: 1);
+            failures := failures + (self check: (self crc32: "123456789") = 0xCBF43926u32 id: 2);
+            failures := failures + (self check: SQUARES count = 10 and SQUARES last = 100 id: 3);
+            failures := failures + (self check: GREETING = "hello, world" and ORIGIN.y = -4 id: 4);
+            failures := failures + (self check: (NAMES at: 1) = "blue" and mask = 255u64 and mask meta typeName = "uint64" id: 5);
+
+            # A compile-time expression inside a message: computed once, while compiling.
+            big := @[compiletime] (self fib: 30);
+            failures := failures + (self check: big = 832040i64 id: 6);
+
+            # Constants have value semantics: changing a copy leaves the constant alone.
+            mine := SQUARES;
+            mine add: 121;
+            failures := failures + (self check: mine count = 11 and SQUARES count = 10 id: 7);
+
+            # meta is always compile-time information.
+            p: Point;
+            failures := failures + (self check: p meta name = "p" and p meta typeName = "Point" and p meta size = 8 id: 8);
+            failures := failures + (self check: Color meta count = 3 and (Color meta members at: 2) = Color blue id: 9);
+            fields := @[compiletime] (self fieldSummary);
+            failures := failures + (self check: fields = "kind@0:1 length@4:4 flags@8:2" id: 10);
+            return failures;
+        }
+
+        @[static] @[compiletime] msg fieldSummary [string] {
+            parts: array of: string;
+            for f in Packet meta fields {
+                parts add: f name + "@" + f offset printString + ":" + f size printString;
+            }
+            return " " join: parts;
+        }
+    }
+}

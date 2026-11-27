@@ -1,0 +1,21 @@
+# expect-exit: 0
+# Every local here only ever holds a stack object, so main makes no retain/release
+# calls (checked by EndToEnd.StackObjectsHaveNoRefcountCalls).
+program stackRefcount, 0.1.0
+{
+    class Point {
+        public { x: int32; y: int32; }
+        msg sum [int32] { return x + y; }
+    }
+    extends stackRefcount {
+        @[static] msg main: args:array [int32] {
+            p := Point x: 3 y: 4;
+            q := p;
+            maybe: Point? := nil;
+            maybe := q;
+            total := 0;
+            maybe ifNotNil: { :m | total := m sum; };
+            return total + q sum - 14;
+        }
+    }
+}
