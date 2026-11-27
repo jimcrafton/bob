@@ -17,6 +17,7 @@ add_executable(bobTests
     layoutTests.cpp
     lexerTests.cpp
     parserTests.cpp
+    reflectionTests.cpp
     runProgramTests.cpp
     semanticTests.cpp
     syntaxCorpusTests.cpp
@@ -25,6 +26,8 @@ add_executable(bobTests
 )
 target_include_directories(bobTests PRIVATE "${PROJECT_SOURCE_DIR}/src/runtime/core")
 target_link_libraries(bobTests PRIVATE bobCompiler GTest::gtest_main)
+# As for bobCompiler: C4702 fires inside inlined LLVM headers (llvm/ADT/bit.h).
+target_compile_options(bobTests PRIVATE /wd4702)
 target_compile_definitions(bobTests PRIVATE
     BOB_TEST_RUNTIME_DIR="${BOB_OUTPUT_DIR}"
     BOB_TEST_PROGRAMS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/programs"

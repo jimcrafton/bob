@@ -32,15 +32,6 @@ struct Aggregate {
     uint64_t total() const { return roundUp(size, alignment); }
 };
 
-uint64_t unionPayloadWords(const Type* type)
-{
-    uint64_t largest = 8;
-    for (const Type* member : type->members) {
-        largest = std::max(largest, sizeOf(member));
-    }
-    return (largest + 7) / 8;
-}
-
 Aggregate recordLayout(const RecordInfo* record, size_t upTo, uint64_t* offset)
 {
     Aggregate layout;
@@ -94,8 +85,6 @@ uint64_t sizeOf(const Type* type)
             layout.add(sizeOf(type->inner), alignmentOf(type->inner), false);
             return layout.total();
         }
-    case TypeKind::unionType:
-        return 8 + 8 * unionPayloadWords(type);
     case TypeKind::block:
         return 16;
     default:

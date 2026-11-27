@@ -44,7 +44,7 @@ std::string stripColon(std::string_view keyword)
 
 int binaryPrecedence(std::string_view op)
 {
-    if (op == "or") {
+    if (op == "or" || op == "xor") {
         return 1;
     }
     if (op == "and") {
@@ -53,7 +53,7 @@ int binaryPrecedence(std::string_view op)
     if (op == "=" || op == "<>" || op == "<" || op == "<=" || op == ">" || op == ">=") {
         return 3;
     }
-    if (op == "*" || op == "/" || op == "%" || op == "&" || op == "shl" || op == "shr") {
+    if (op == "*" || op == "/" || op == "%" || op == "shl" || op == "shr") {
         return 5;
     }
     return 4;
@@ -1055,6 +1055,9 @@ Node* Parser::parseBinaryExpression(int minPrecedence)
         else if (at(TokenKind::kwShr)) {
             op = "shr";
         }
+        else if (at(TokenKind::kwXor)) {
+            op = "xor";
+        }
         else {
             break;
         }
@@ -1064,6 +1067,11 @@ Node* Parser::parseBinaryExpression(int minPrecedence)
         }
         if (op == "?") {
             fail(current().range, "parse.unexpectedOperator", "'?' is only valid after a type name, as in 'Foo?'");
+        }
+        if (op == "&" || op == "|" || op == "^") {
+            const char* word = op == "&" ? "and" : op == "|" ? "or" : "xor";
+            fail(current().range, "parse.unexpectedOperator",
+                 "there is no '" + std::string(op) + "' operator; bitwise operations are words: 'a " + word + " b'");
         }
         const Token& opToken = advance();
         Node* right = parseBinaryExpression(precedence + 1);
@@ -1345,6 +1353,9 @@ Node* Parser::parseTypeTerm()
     if (at(TokenKind::leftBracket)) {
         return parseOptionalSuffix(parseBracketType(), begin);
     }
+    if (at(TokenKind::leftBrace)) {
+        return parseOptionalSuffix(parseBlockType(), begin);
+    }
     if (at(TokenKind::integerLiteral) || at(TokenKind::realLiteral) || at(TokenKind::charLiteral) ||
         (atOperator("-") && (at(TokenKind::integerLiteral, 1) || at(TokenKind::realLiteral, 1)))) {
         return parsePrimary();
@@ -1402,6 +1413,26 @@ Node* Parser::parseBracketType()
     tuple->elements = std::move(elements);
     tuple->range = rangeFrom(open.range.begin);
     return tuple;
+}
+
+// `{ T1, T2 [R] }`: parameter types, then the result type in brackets, as in a
+// message declaration's `[R]`.
+Node* Parser::parseBlockType()
+{
+    const Token& open = expect(TokenKind::leftBrace, "'{'");
+    BlockType* block = make<BlockType>(open.range.begin);
+    if (!at(TokenKind::rightBrace) && !at(TokenKind::leftBracket)) {
+        do {
+            block->params.push_back(parseType(true));
+        } while (accept(TokenKind::comma));
+    }
+    if (accept(TokenKind::leftBracket)) {
+        block->result = parseType(true);
+        expect(TokenKind::rightBracket, "']' after the block's result type");
+    }
+    expect(TokenKind::rightBrace, "'}' to end the block type, as in '{ int32 [bool] }'");
+    block->range = rangeFrom(open.range.begin);
+    return block;
 }
 
 Node* Parser::parseOptionalSuffix(Node* inner, uint32_t begin)

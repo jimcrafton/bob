@@ -114,10 +114,31 @@ bool Analyzer::resolveDefaultable(ClassInfo* info)
             field.constructsDefault = inherited.constructsDefault;
             continue;
         }
+        if (field.initializer == nullptr && isBlock(canonical(field.type))) {
+            // There's no default block: it must be passed, or the field made optional.
+            field.required = true;
+            defaultable = false;
+            if (!field.isPublic) {
+                error(field.decl->nameRange, "sema.uninitializedReference",
+                      "private field '" + field.name + "' needs an initializer: a block has no default, and only public fields can be passed when constructing; make it optional ('" +
+                          typeName(field.type) + "?') or give it ':= { … }'");
+            }
+            continue;
+        }
         if (field.initializer != nullptr || !isClass(field.type)) {
             continue;
         }
         ClassInfo* fieldClass = field.type->classInfo;
+        if (field.ownership == Ownership::unowned) {
+            // A default-constructed object would have no owner and be destroyed at once.
+            field.required = true;
+            defaultable = false;
+            if (!field.isPublic) {
+                error(field.decl->nameRange, "sema.uninitializedReference",
+                      "private field '" + field.name + "' is @[unowned] and needs a value; only public fields can be passed when constructing");
+            }
+            continue;
+        }
         if (resolveDefaultable(fieldClass)) {
             field.constructsDefault = true;
             continue;

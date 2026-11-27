@@ -1,4 +1,4 @@
-// Phase 5 values: optionals, unions, enums, subranges, enum sets, and reference
+// Phase 5 values: optionals, enums, subranges, enum sets, and reference
 // counting of values that hold managed pointers.
 
 #include "codegenInternal.h"
@@ -64,6 +64,10 @@ void Generator::retainValue(llvm::Value* value, const Type* type)
         builder_.CreateCall(retainFunction_, {value});
         return;
     }
+    if (sema::isBlock(type)) {
+        builder_.CreateCall(retainFunction_, {builder_.CreateExtractValue(value, {1}, "block.env")});
+        return;
+    }
     if (sema::isOptional(type)) {
         // An absent optional holds a zero value, which is safe to retain.
         retainValue(builder_.CreateExtractValue(value, {1}), type->inner);
@@ -81,6 +85,10 @@ void Generator::releaseValue(llvm::Value* value, const Type* type)
     }
     if (sema::isManaged(type)) {
         builder_.CreateCall(releaseFunction_, {value});
+        return;
+    }
+    if (sema::isBlock(type)) {
+        builder_.CreateCall(releaseFunction_, {builder_.CreateExtractValue(value, {1}, "block.env")});
         return;
     }
     if (sema::isOptional(type)) {
@@ -139,13 +147,6 @@ llvm::Function* Generator::elementCallback(const Type* type, bool retain)
         index->addIncoming(next, builder_.GetInsertBlock());
         builder_.CreateCondBr(builder_.CreateICmpEQ(next, builder_.getInt64(type->count)), done, loop);
         builder_.SetInsertPoint(done);
-    }
-    else if (sema::isUnion(type)) {
-        llvm::Value* value = builder_.CreateLoad(llvmType(type), address);
-        switchOnUnion(value, type, nullptr, [&](size_t member, llvm::Value* memberValue) -> llvm::Value* {
-            visit(memberValue, type->members[member]);
-            return nullptr;
-        });
     }
     else {
         visit(builder_.CreateLoad(llvmType(type), address), type);
@@ -255,8 +256,16 @@ llvm::Value* Generator::emitInlinedIfNil(const KeywordSend* send, const sema::Se
                 emitStatements(literal->statements);
             }
             flushTemporaries(mark);
+            // The binding's scope ends with the block: let go of the object now,
+            // so a weak reference sees it destroyed when the last owner drops it.
+            const sema::LocalInfo* bound = forNil ? nullptr : model_.blockOf(literal)->params[0];
+            if (bound != nullptr && !bound->captured && !isStackOnly(bound) && sema::needsCleanup(bound->type) && !blockTerminated()) {
+                llvm::Value* slot = addressOf(bound);
+                releaseValue(builder_.CreateLoad(llvmType(bound->type), slot), bound->type);
+                builder_.CreateStore(llvm::Constant::getNullValue(llvmType(bound->type)), slot);
+            }
         }
-        if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
+        if (!blockTerminated()) {
             if (wantsValue) {
                 incoming.push_back({result, builder_.GetInsertBlock()});
             }
@@ -280,118 +289,6 @@ llvm::Value* Generator::emitInlinedIfNil(const KeywordSend* send, const sema::Se
 }
 
 // ---------------------------------------------------------------------------
-// unions: { tag: i32, payload: [n x i64] }, tag = index in the sorted members
-
-llvm::StructType* Generator::unionType(const Type* type)
-{
-    auto it = unionTypes_.find(type);
-    if (it != unionTypes_.end()) {
-        return it->second;
-    }
-    uint64_t largest = 8;
-    for (const Type* member : type->members) {
-        largest = std::max(largest, sizeOf(member));
-    }
-    llvm::StructType* layout = llvm::StructType::create(
-        context_, {builder_.getInt32Ty(), llvm::ArrayType::get(builder_.getInt64Ty(), (largest + 7) / 8)}, "union." + std::to_string(unionTypes_.size()));
-    unionTypes_[type] = layout;
-    return layout;
-}
-
-size_t Generator::unionIndex(const Type* type, const Type* member) const
-{
-    for (size_t i = 0; i < type->members.size(); ++i) {
-        if (type->members[i] == sema::canonical(member)) {
-            return i;
-        }
-    }
-    return type->members.size();
-}
-
-llvm::Value* Generator::unionTag(llvm::Value* value)
-{
-    return builder_.CreateExtractValue(value, {0}, "tag");
-}
-
-llvm::Value* Generator::unionMember(llvm::Value* value, const Type* type, size_t member)
-{
-    llvm::Value* slot = spill(value, "union");
-    llvm::Value* payload = builder_.CreateStructGEP(unionType(type), slot, 1);
-    return builder_.CreateLoad(llvmType(type->members[member]), payload);
-}
-
-llvm::Value* Generator::unionWrap(llvm::Value* value, const Type* type, size_t member)
-{
-    llvm::StructType* layout = unionType(type);
-    llvm::AllocaInst* slot = entryAlloca(layout, "union");
-    builder_.CreateStore(llvm::Constant::getNullValue(layout), slot);
-    builder_.CreateStore(builder_.getInt32(static_cast<uint32_t>(member)), builder_.CreateStructGEP(layout, slot, 0));
-    builder_.CreateStore(value, builder_.CreateStructGEP(layout, slot, 1));
-    return builder_.CreateLoad(layout, slot);
-}
-
-llvm::Value* Generator::switchOnUnion(llvm::Value* value, const Type* type, llvm::Type* resultType,
-                                      const std::function<llvm::Value*(size_t, llvm::Value*)>& body)
-{
-    llvm::BasicBlock* merge = llvm::BasicBlock::Create(context_, "union.end", function_);
-    llvm::BasicBlock* fallback = llvm::BasicBlock::Create(context_, "union.bad", function_);
-    llvm::SwitchInst* dispatch = builder_.CreateSwitch(unionTag(value), fallback, static_cast<unsigned>(type->members.size()));
-    std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> incoming;
-    for (size_t i = 0; i < type->members.size(); ++i) {
-        llvm::BasicBlock* arm = llvm::BasicBlock::Create(context_, "union.arm", function_);
-        dispatch->addCase(builder_.getInt32(static_cast<uint32_t>(i)), arm);
-        builder_.SetInsertPoint(arm);
-        llvm::Value* member = unionMember(value, type, i);
-        llvm::Value* result = body(i, member);
-        incoming.push_back({result, builder_.GetInsertBlock()});
-        builder_.CreateBr(merge);
-    }
-    builder_.SetInsertPoint(fallback);
-    builder_.CreateUnreachable();
-    builder_.SetInsertPoint(merge);
-    if (resultType == nullptr || resultType->isVoidTy()) {
-        return nullptr;
-    }
-    llvm::PHINode* phi = builder_.CreatePHI(resultType, static_cast<unsigned>(incoming.size()));
-    for (const auto& [v, from] : incoming) {
-        phi->addIncoming(v, from);
-    }
-    return phi;
-}
-
-llvm::Value* Generator::emitUnionSend(const Node* node, const sema::SendInfo& send)
-{
-    auto keyword = nodeCast<KeywordSend>(node);
-    if (keyword == nullptr || (send.kind != SendKind::unionIsKindOf && send.kind != SendKind::unionIfKindOf)) {
-        return nullptr;
-    }
-    const Type* type = model_.typeOf(keyword->receiver);
-    llvm::Value* value = emitAs(keyword->receiver, type);
-    size_t index = unionIndex(type, send.operandType);
-    llvm::Value* matches = builder_.CreateICmpEQ(unionTag(value), builder_.getInt32(static_cast<uint32_t>(index)));
-    if (send.kind == SendKind::unionIsKindOf) {
-        return matches;
-    }
-    llvm::BasicBlock* body = llvm::BasicBlock::Create(context_, "kindof", function_);
-    llvm::BasicBlock* done = llvm::BasicBlock::Create(context_, "kindof.end", function_);
-    builder_.CreateCondBr(matches, body, done);
-    builder_.SetInsertPoint(body);
-    auto literal = static_cast<const BlockLiteral*>(keyword->arguments[1]);
-    const sema::LocalInfo* bound = model_.blockOf(literal)->params[0];
-    llvm::Value* member = coerce(unionMember(value, type, index), send.operandType, bound->type);
-    retainValue(member, bound->type);
-    storeReference(addressOf(bound), member, bound->type);
-    size_t mark = temporaries_.size();
-    emitStatements(literal->statements);
-    flushTemporaries(mark);
-    if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
-        builder_.CreateBr(done);
-    }
-    builder_.SetInsertPoint(done);
-    return nullptr;
-}
-
-// ---------------------------------------------------------------------------
 // conversions
 
 llvm::Value* Generator::coerce(llvm::Value* value, const Type* from, const Type* to)
@@ -410,22 +307,6 @@ llvm::Value* Generator::coerce(llvm::Value* value, const Type* from, const Type*
         }
         llvm::Value* inner = widen(value, from, to->inner);
         return makeOptional(builder_.getTrue(), inner, to);
-    }
-    if (sema::isUnion(to)) {
-        if (sema::isUnion(from)) {
-            return value;
-        }
-        size_t index = unionIndex(to, from);
-        if (index == to->members.size()) {
-            for (size_t i = 0; i < to->members.size(); ++i) {
-                if (sema::canWiden(from, to->members[i])) {
-                    index = i;
-                    break;
-                }
-            }
-            value = widen(value, from, to->members[index]);
-        }
-        return unionWrap(value, to, index);
     }
     if (sema::isSubrange(to)) {
         // Checked conversion into a subrange: trap when out of range.
@@ -552,7 +433,7 @@ void Generator::emitOrdinalLoop(const sema::LocalInfo* local, const Type* elemen
     loops_.push_back({exit, step});
     emitStatements(body);
     loops_.pop_back();
-    if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
+    if (!blockTerminated()) {
         builder_.CreateBr(step);
     }
 
@@ -692,7 +573,7 @@ llvm::Value* Generator::emitBitSetSend(const Node* node, const sema::SendInfo& s
         for (const sema::EnumMemberInfo& member : type->inner->enumInfo->members) {
             valid |= uint64_t(1) << member.value;
         }
-        llvm::Value* ok = builder_.CreateICmpEQ(builder_.CreateAnd(value, llvm::ConstantInt::get(mask, ~valid)), llvm::ConstantInt::get(mask, 0));
+        llvm::Value* ok = builder_.CreateICmpEQ(builder_.CreateAnd(value, llvm::ConstantInt::get(mask, ~valid, false, true)), llvm::ConstantInt::get(mask, 0));
         return makeOptional(ok, value, send.resultType);
     }
     case SendKind::bitSetMutate: {

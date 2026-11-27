@@ -218,6 +218,30 @@ TEST_F(EndToEnd, ExplainDispatchReportsEachSend)
     EXPECT_NE(output.find("captures total by reference"), std::string::npos) << output;
 }
 
+TEST_F(EndToEnd, ExplainDispatchReportsItablesAndClosures)
+{
+    auto explain = [&](const char* program) {
+        bob::driver::DriverOptions options;
+        options.inputPath = std::string(BOB_TEST_PROGRAMS_DIR) + "/run/" + program + ".bob";
+        options.outputPath = workPath((std::string(program) + ".exe").c_str());
+        options.runtimeDir = BOB_TEST_RUNTIME_DIR;
+        options.explainDispatch = true;
+        std::string output;
+        std::string diagnostics;
+        llvm::raw_string_ostream out(output);
+        llvm::raw_string_ostream err(diagnostics);
+        bob::driver::Driver driver(out, err);
+        EXPECT_EQ(driver.run(options), 0) << diagnostics;
+        return output;
+    };
+    std::string itables = explain("itables");
+    // Scalable refines Shape, so its slots start with Shape's four messages.
+    EXPECT_NE(itables.find("'scale:' -> tier 2, itable 'Scalable' slot 4"), std::string::npos) << itables;
+    EXPECT_NE(itables.find("'bounds' -> tier 2, itable 'Shape' slot 1"), std::string::npos) << itables;
+    std::string closures = explain("closures");
+    EXPECT_NE(closures.find("captures count (boxed) -> heap closure (returned)"), std::string::npos) << closures;
+}
+
 TEST_F(EndToEnd, DumpLlvmPrintsTheModule)
 {
     bob::driver::DriverOptions options;
@@ -364,7 +388,10 @@ TEST_F(Modules, ProgramWithAModuleAndAStaticLibrary)
     ASSERT_TRUE(static_cast<bool>(written));
     std::string bobi = std::string((*written)->getBuffer());
     EXPECT_EQ(bobi.find("Helper"), std::string::npos) << bobi;
-    EXPECT_EQ(bobi.find("return"), std::string::npos) << bobi;
+    EXPECT_EQ(bobi.find("return "), std::string::npos) << bobi;
+    EXPECT_NE(bobi.find("@[weak] target: geometry.Square?;"), std::string::npos) << bobi;
+    EXPECT_NE(bobi.find("onChange: { int32 [int32] };"), std::string::npos) << bobi;
+    EXPECT_NE(bobi.find("@[alias] type Scale := { int32 [int32] };"), std::string::npos) << bobi;
     EXPECT_NE(bobi.find("@[constant] SQUARES: array of: int32 := [1, 4, 9, 16, 25];"), std::string::npos) << bobi;
 
     // Changing only implementation code keeps the interface, so dependents stay valid.

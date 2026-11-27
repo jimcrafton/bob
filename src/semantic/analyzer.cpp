@@ -24,7 +24,7 @@ bool isArithmeticOperator(std::string_view op)
 
 bool isBitwiseOperator(std::string_view op)
 {
-    return op == "&" || op == "|" || op == "^";
+    return op == "and" || op == "or" || op == "xor";
 }
 
 bool isComparisonOperator(std::string_view op)
@@ -295,13 +295,13 @@ void Analyzer::resolveRecord(RecordInfo* record)
         }
         const Type* type = resolveType(field->type);
         requireValueType(field->type, type);
-        if (rejectEscapingBlock(field->type, type, "a record field")) {
+        if (rejectBareBlock(field->type, type, "a record field")) {
             type = types_.error();
         }
         if (needsCleanup(type)) {
             error(field->type, "sema.referenceInRecord",
                   "records hold plain data; a '" + typeName(type) +
-                      "' (a reference-counted value: an object, string or container) can't be a record field");
+                      "' (a reference-counted value: an object, string, container or block) can't be a record field");
             type = types_.error();
         }
         if (type->pending) {
@@ -435,14 +435,18 @@ void Analyzer::resolveClass(ClassInfo* info)
                     initializer = attribute;
                     continue;
                 }
+                if (isOwnershipAttribute(attribute)) {
+                    continue;
+                }
                 unsupported(attribute, "the field attribute '@[" + attribute->name + "]'", "phase 9");
             }
             const Type* type = resolveType(field->type);
             requireValueType(field->type, type);
-            if (rejectEscapingBlock(field->type, type, "a field")) {
+            if (rejectBareBlock(field->type, type, "the type of a field")) {
                 type = types_.error();
             }
             FieldInfo fieldInfo;
+            fieldInfo.ownership = ownershipOf(field, type, false);
             fieldInfo.name = field->name;
             fieldInfo.type = type;
             fieldInfo.index = static_cast<uint32_t>(info->fields.size());
@@ -494,7 +498,7 @@ void Analyzer::declareParams(MessageInfo* message, const MessageDecl* decl)
     message->returnType = decl->returnType != nullptr ? resolveType(decl->returnType) : types_.voidType();
     if (decl->returnType != nullptr) {
         requireValueType(decl->returnType, message->returnType);
-        if (rejectEscapingBlock(decl->returnType, message->returnType, "a message's return type")) {
+        if (rejectBareBlock(decl->returnType, message->returnType, "a message's return type")) {
             message->returnType = types_.error();
         }
     }
@@ -803,9 +807,7 @@ const Type* Analyzer::checkInstanceSend(const Node* send, const Node* receiverNo
     }
     else if (info->isProtocol) {
         kind = SendKind::dynamicSend;
-        if (target->returnType->kind == TypeKind::record) {
-            unsupported(send, "a protocol message that returns a record", "a later phase");
-        }
+        slot = info->witnessSlotOf(selector);
     }
     else {
         std::vector<const MessageInfo*> implementations{target};
@@ -1015,7 +1017,7 @@ void Analyzer::declareMessage(const MessageDecl* decl)
     message->returnType = decl->returnType != nullptr ? resolveType(decl->returnType) : types_.voidType();
     if (decl->returnType != nullptr) {
         requireValueType(decl->returnType, message->returnType);
-        if (rejectEscapingBlock(decl->returnType, message->returnType, "a message's return type")) {
+        if (rejectBareBlock(decl->returnType, message->returnType, "a message's return type")) {
             message->returnType = types_.error();
         }
     }
@@ -1074,16 +1076,21 @@ const Type* Analyzer::resolveType(const Node* node)
         if (inner == types_.error()) {
             return inner;
         }
-        if (isOptional(inner) || !isValueType(inner) || isBlock(inner) || inner->pending) {
+        if (isOptional(inner) || !isValueType(inner) || inner->pending) {
             error(node, "sema.invalidOptional", "'" + typeName(inner) + "' can't be made optional");
             return types_.error();
         }
         return types_.optionalOf(inner);
     }
+    if (auto block = nodeCast<BlockType>(node)) {
+        return resolveBlockType(block);
+    }
     if (auto message = nodeCast<TypeMessage>(node)) {
         auto receiver = nodeCast<TypeName>(message->receiver);
         if (receiver != nullptr && receiver->name == "block") {
-            return resolveBlockType(message);
+            error(message, "sema.invalidBlockType",
+                  "block types are written in braces: '{ int32, int32 [bool] }' (parameters, then the result in brackets)");
+            return types_.error();
         }
         return resolveTypeMessage(message, "");
     }
@@ -1098,36 +1105,20 @@ const Type* Analyzer::resolveType(const Node* node)
     return types_.error();
 }
 
-// `block takes: [T1, T2] returns: R`, `block takes: [T]`, `block returns: R`.
-const Type* Analyzer::resolveBlockType(const TypeMessage* message)
+// `{ T1, T2 [R] }`, `{ T }` (no result), `{ [R] }` (no parameters), `{ }`.
+const Type* Analyzer::resolveBlockType(const BlockType* block)
 {
     std::vector<const Type*> params;
-    const Type* result = types_.voidType();
-    if (message->selector != "takes:returns:" && message->selector != "takes:" && message->selector != "returns:") {
-        error(message, "sema.invalidBlockType", "a block type is written 'block takes: [T, ...] returns: R'");
-        return types_.error();
-    }
-    size_t argument = 0;
-    if (message->selector.rfind("takes:", 0) == 0) {
-        const Node* takes = message->arguments[argument++];
-        if (auto tuple = nodeCast<TupleType>(takes)) {
-            for (const Node* element : tuple->elements) {
-                params.push_back(resolveType(static_cast<const TupleTypeElement*>(element)->type));
-            }
-        }
-        else {
-            params.push_back(resolveType(takes));
-        }
-    }
-    if (argument < message->arguments.size()) {
-        result = resolveType(message->arguments[argument]);
+    const Type* result = block->result != nullptr ? resolveType(block->result) : types_.voidType();
+    for (const Node* node : block->params) {
+        params.push_back(resolveType(node));
     }
     for (const Type* param : params) {
         if (param == types_.error()) {
             return types_.error();
         }
         if (!isValueType(param)) {
-            error(message, "sema.invalidBlockType", "block parameters need value types, not '" + typeName(param) + "'");
+            error(block, "sema.invalidBlockType", "block parameters need value types, not '" + typeName(param) + "'");
             return types_.error();
         }
     }
@@ -1146,11 +1137,52 @@ bool Analyzer::requireValueType(const Node* node, const Type* type)
     return true;
 }
 
-bool Analyzer::rejectEscapingBlock(const Node* node, const Type* type, const char* where)
+bool Analyzer::isOwnershipAttribute(const Attribute* attribute)
 {
-    if (isBlock(type) || type->kind == TypeKind::blockToInfer) {
-        unsupported(node, std::string("a block as ") + where + " (the block would outlive the frame that created it)",
-                    "phase 8, escaping closures");
+    return (attribute->name == "weak" || attribute->name == "unowned") && attribute->value == nullptr;
+}
+
+// `@[weak]` / `@[unowned]` on a field or variable declaration. A weak reference
+// must be optional (it reads as nil once its object is gone); an implicitly
+// declared one (`@[weak] me := self;`) is made optional.
+Ownership Analyzer::ownershipOf(const Node* declaration, const Type*& type, bool inferred)
+{
+    Ownership ownership = Ownership::strong;
+    const Attribute* found = nullptr;
+    for (const Attribute* attribute : declaration->attributes) {
+        if (!isOwnershipAttribute(attribute)) {
+            continue;
+        }
+        if (found != nullptr) {
+            error(attribute, "sema.invalidOwnership", "a reference is either @[weak] or @[unowned], not both");
+            continue;
+        }
+        found = attribute;
+        ownership = attribute->name == "weak" ? Ownership::weak : Ownership::unowned;
+    }
+    if (found == nullptr || type == types_.error()) {
+        return ownership;
+    }
+    if (!isReference(canonical(type))) {
+        error(found, "sema.invalidOwnership", "only references to objects can be @[" + found->name + "], not a '" + typeName(type) + "'");
+        return Ownership::strong;
+    }
+    if (ownership == Ownership::weak && isClass(canonical(type))) {
+        if (!inferred) {
+            error(found, "sema.invalidOwnership",
+                  "a weak reference becomes nil when its object is destroyed, so its type must be optional: '" + typeName(type) + "?'");
+            return Ownership::strong;
+        }
+        type = types_.optionalOf(type);
+    }
+    return ownership;
+}
+
+bool Analyzer::rejectBareBlock(const Node* node, const Type* type, const char* where)
+{
+    if (type->kind == TypeKind::blockToInfer) {
+        error(node, "sema.cannotInferBlock",
+              std::string("a bare 'block' can't be ") + where + "; write its type, such as '{ int32 [bool] }'");
         return true;
     }
     return false;
@@ -1248,7 +1280,7 @@ void Analyzer::finalizeInferredBlocks(MessageInfo* message)
         if (!complete) {
             error(static_cast<const MessageParam*>(param->decl)->nameRange, "sema.cannotInferBlock",
                   "the type of block parameter '" + param->name +
-                      "' can't be inferred from how it's used; write it as '" + param->name + ":[block takes: [T] returns: R]'");
+                      "' can't be inferred from how it's used; write it as '" + param->name + ":{ T [R] }'");
             param->type = types_.error();
             continue;
         }
@@ -1294,6 +1326,11 @@ void Analyzer::checkStatement(const Node* statement)
     if (statement->kind != NodeKind::statementGroup) {
         for (const Attribute* attribute : statement->attributes) {
             bool placement = (attribute->name == "stack" || attribute->name == "heap") && attribute->value == nullptr;
+            bool declaration = statement->kind == NodeKind::variableDecl ||
+                               (statement->kind == NodeKind::assignment && nodeCast<Identifier>(static_cast<const Assignment*>(statement)->target) != nullptr);
+            if (isOwnershipAttribute(attribute) && declaration) {
+                continue;
+            }
             if (!placement) {
                 unsupported(attribute, "the attribute '@[" + attribute->name + "]' on a statement", "a later phase");
             }
@@ -1307,7 +1344,7 @@ void Analyzer::checkStatement(const Node* statement)
         if (type->kind == TypeKind::blockToInfer) {
             if (decl->initializer == nullptr) {
                 error(decl->type, "sema.cannotInferBlock",
-                      "a bare 'block' variable needs an initializer to take its type from, or write 'block takes: [T] returns: R'");
+                      "a bare 'block' variable needs an initializer to take its type from, or write its type, such as '{ T [R] }'");
                 type = types_.error();
             }
             else {
@@ -1322,10 +1359,16 @@ void Analyzer::checkStatement(const Node* statement)
             const Type* initType = check(decl->initializer, type);
             requireAssignable(decl->initializer, initType, type, "initialize");
         }
-        else if (isClass(type)) {
+        else if (isClass(type) && !hasAttribute(statement, "unowned")) {
             checkDefaultObject(decl, type);
         }
+        Ownership ownership = ownershipOf(statement, type, false);
+        if (ownership == Ownership::unowned && decl->initializer == nullptr && isClass(canonical(type))) {
+            error(decl->nameRange, "sema.invalidOwnership",
+                  "'" + decl->name + "' is @[unowned] and needs a value: a new object would be destroyed at once");
+        }
         LocalInfo* local = declareLocal(decl->name, type, decl, decl->nameRange);
+        local->ownership = ownership;
         model_.localRefs[decl->id] = local;
         checkPlacementAttributes(statement);
         break;
@@ -1397,6 +1440,12 @@ void Analyzer::checkAssignment(const Assignment* assignment)
 {
     if (auto identifier = nodeCast<Identifier>(assignment->target)) {
         if (LocalInfo* local = lookupLocal(identifier->name)) {
+            for (const Attribute* attribute : assignment->attributes) {
+                if (isOwnershipAttribute(attribute)) {
+                    error(attribute, "sema.invalidOwnership",
+                          "@[" + attribute->name + "] goes on the declaration of '" + identifier->name + "', not on an assignment");
+                }
+            }
             model_.localRefs[identifier->id] = local;
             remember(identifier, local->type);
             if (local->readOnly) {
@@ -1408,6 +1457,11 @@ void Analyzer::checkAssignment(const Assignment* assignment)
             return;
         }
         if (const FieldInfo* field = selfField(identifier->name)) {
+            for (const Attribute* attribute : assignment->attributes) {
+                if (isOwnershipAttribute(attribute)) {
+                    error(attribute, "sema.invalidOwnership", "@[" + attribute->name + "] goes on the declaration of field '" + field->name + "'");
+                }
+            }
             lookupLocal("self");
             model_.selfFieldRefs[identifier->id] = field;
             remember(identifier, field->type);
@@ -1433,7 +1487,9 @@ void Analyzer::checkAssignment(const Assignment* assignment)
                   "can't infer the type of '" + identifier->name + "' from a value of type '" + typeName(valueType) + "'");
             valueType = types_.error();
         }
+        Ownership ownership = ownershipOf(assignment, valueType, true);
         LocalInfo* local = declareLocal(identifier->name, valueType, assignment, identifier->range);
+        local->ownership = ownership;
         model_.implicitDeclarations.insert(assignment->id);
         model_.localRefs[assignment->id] = local;
         model_.localRefs[identifier->id] = local;
@@ -1562,17 +1618,13 @@ void Analyzer::checkCase(const CaseStmt* statement)
         checkEnumCase(statement, subject);
         return;
     }
-    if (isUnion(subject)) {
-        checkUnionCase(statement, subject);
-        return;
-    }
     if (subject->kind == TypeKind::character) {
         subject = types_.integer(32, false);
     }
     bool usable = isInteger(subject);
     if (!usable && subject != types_.error()) {
         error(statement->subject, "sema.invalidCaseSubject",
-              "'case' works on integers, characters, enums, subranges and unions, not on '" + typeName(subject) + "'");
+              "'case' works on integers, characters, enums and subranges, not on '" + typeName(subject) + "'");
     }
 
     std::vector<CaseRange> seen;
@@ -1642,7 +1694,7 @@ void Analyzer::checkCase(const CaseStmt* statement)
         auto body = nodeCast<BlockLiteral>(entry->body);
         if (body != nullptr) {
             if (!body->params.empty()) {
-                unsupported(body->params.front(), "binding the matched value in a case entry", "phase 5 (unions)");
+                error(body->params.front(), "sema.invalidCaseBinding", "a case entry doesn't bind a value; use the subject itself");
             }
             pushScope();
             checkStatements(body->statements);
@@ -2038,11 +2090,6 @@ const Type* Analyzer::checkUnary(const UnarySend* send, const Type* expected)
             return result;
         }
     }
-    if (isUnion(receiver)) {
-        if (const Type* result = checkUnionUnary(send, receiver)) {
-            return result;
-        }
-    }
     if (isSubrange(receiver) && isInteger(receiver->inner)) {
         receiver = receiver->inner;
     }
@@ -2129,15 +2176,22 @@ const Type* Analyzer::checkOperandPair(const Node* lhs, const Node* rhs, const T
 const Type* Analyzer::checkBinary(const BinarySend* send, const Type* expected)
 {
     const std::string& op = send->selector;
-    if (op == "and" || op == "or") {
-        const Type* left = check(send->receiver, types_.boolType());
-        const Type* right = check(send->argument, types_.boolType());
-        if ((left != types_.boolType() && left != types_.error()) || (right != types_.boolType() && right != types_.error())) {
-            error(send->selectorRange, "sema.typeMismatch", "'" + op + "' needs bool operands");
-            return types_.error();
+    // `and`, `or`, `xor` are logical on bools and bitwise on integers (as in Pascal).
+    bool integerOperands = isInteger(canonical(expected)) || isUntypedLiteral(send->receiver);
+    if (isBitwiseOperator(op) && !integerOperands) {
+        const Type* left = check(send->receiver, expected == types_.boolType() ? expected : nullptr);
+        integerOperands = isInteger(canonical(left));
+        if (!integerOperands) {
+            const Type* right = check(send->argument, types_.boolType());
+            if ((left != types_.boolType() && left != types_.error()) || (right != types_.boolType() && right != types_.error())) {
+                error(send->selectorRange, "sema.typeMismatch",
+                      "'" + op + "' needs two bools, or two integers for the bitwise operation; parenthesise a comparison: '(a " + op + " b) = 0'");
+                return types_.error();
+            }
+            SendKind kind = op == "and" ? SendKind::logicalAnd : op == "or" ? SendKind::logicalOr : SendKind::bitwise;
+            addSend(send, kind, op, types_.boolType(), types_.boolType());
+            return types_.boolType();
         }
-        addSend(send, op == "and" ? SendKind::logicalAnd : SendKind::logicalOr, op, types_.boolType(), types_.boolType());
-        return types_.boolType();
     }
 
     if (op == "shl" || op == "shr") {
@@ -2169,7 +2223,7 @@ const Type* Analyzer::checkBinary(const BinarySend* send, const Type* expected)
         if (isBitSet(canonical(left))) {
             return checkBitSetBinary(send, canonical(left));
         }
-        if (isString(left) || left->kind == TypeKind::character || isDynamicContainer(left) || isUnion(left)) {
+        if (isString(left) || left->kind == TypeKind::character || isDynamicContainer(left)) {
             return checkStringBinary(send, canonical(left));
         }
         if (isClass(left) || isOptional(left)) {
@@ -2274,11 +2328,6 @@ const Type* Analyzer::checkKeyword(const KeywordSend* send, const Type* expected
             return result;
         }
     }
-    if (isUnion(receiver)) {
-        if (const Type* result = checkUnionKeyword(send, receiver, expected)) {
-            return result;
-        }
-    }
     if (isSubrange(receiver) && isInteger(receiver->inner)) {
         receiver = receiver->inner;
     }
@@ -2317,7 +2366,7 @@ const Type* Analyzer::checkKeyword(const KeywordSend* send, const Type* expected
             if (isBlock(parameterType) && parameterType->pending) {
                 error(send->arguments[i], "sema.cannotInferBlock",
                       "the block parameter '" + target->params[i]->name + "' of '" + target->selector +
-                          "' is still being inferred (the messages call each other); annotate it with 'block takes: [T] returns: R'");
+                          "' is still being inferred (the messages call each other); write its type, such as '{ T [R] }'");
                 check(send->arguments[i], nullptr);
                 continue;
             }
@@ -2509,7 +2558,7 @@ bool Analyzer::unify(const Type* pendingType, const Type* concrete, const Node* 
 {
     Type* pending = const_cast<Type*>(pendingType);
     if (concrete->pending) {
-        error(site, "sema.cannotInferBlock", "two inferred blocks meet here; annotate one with 'block takes: [T] returns: R'");
+        error(site, "sema.cannotInferBlock", "two inferred blocks meet here; write the type of one, such as '{ T [R] }'");
         return false;
     }
     if (pending->arityKnown && pending->params.size() != concrete->params.size()) {

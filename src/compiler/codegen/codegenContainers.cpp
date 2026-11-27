@@ -77,11 +77,6 @@ llvm::Value* Generator::printString(llvm::Value* value, const Type* type)
         llvm::Value* ordinal = enumOrdinal(value, type->enumInfo);
         return builder_.CreateLoad(ptr, builder_.CreateGEP(table->getValueType(), table, {builder_.getInt32(0), ordinal}));
     }
-    if (sema::isUnion(type)) {
-        return switchOnUnion(value, type, ptr, [&](size_t member, llvm::Value* memberValue) {
-            return printString(memberValue, type->members[member]);
-        });
-    }
     return llvm::ConstantPointerNull::get(builder_.getPtrTy());
 }
 
@@ -336,7 +331,7 @@ llvm::Value* Generator::emitContainerSend(const Node* node, const sema::SendInfo
             fallback = defaultValue(result);
         }
         miss = builder_.GetInsertBlock();
-        bool missReturns = miss->getTerminator() != nullptr;
+        bool missReturns = blockTerminated();
         if (!missReturns) {
             builder_.CreateBr(done);
         }
@@ -548,7 +543,7 @@ void Generator::emitCollectionLoop(const Node* collection, const Type* type, con
     emitStatements(body);
     flushTemporaries(mark);
     loops_.pop_back();
-    if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
+    if (!blockTerminated()) {
         builder_.CreateBr(step);
     }
     if (step != condition) {

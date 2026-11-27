@@ -75,7 +75,8 @@ private:
     {
         type = canonical(type);
         std::string text = spellBare(type);
-        return grouped && text.find(' ') != std::string::npos ? "[" + text + "]" : text;
+        bool needsGroup = text.find(' ') != std::string::npos && text.front() != '{';
+        return grouped && needsGroup ? "[" + text + "]" : text;
     }
 
     const NamedTypeInfo* namedFor(const Type* type) const
@@ -121,18 +122,14 @@ private:
             }
             return std::to_string(type->low) + " to: " + std::to_string(type->high);
         case TypeKind::block: {
-            std::string text = "block";
-            if (!type->params.empty()) {
-                text += " takes: [";
-                for (size_t i = 0; i < type->params.size(); ++i) {
-                    text += (i == 0 ? "" : ", ") + spell(type->params[i], false);
-                }
-                text += "]";
+            std::string text = "{";
+            for (size_t i = 0; i < type->params.size(); ++i) {
+                text += (i == 0 ? " " : ", ") + spell(type->params[i], false);
             }
             if (type->result != nullptr && type->result->kind != TypeKind::voidType) {
-                text += " returns: " + spell(type->result, true);
+                text += " [" + spell(type->result, false) + "]";
             }
-            return text;
+            return text + " }";
         }
         default:
             return type->name;
@@ -369,7 +366,9 @@ private:
                 out_ << "        " << (field.isPublic ? "public" : "private") << " {";
                 group = visibility;
             }
-            out_ << " " << (field.initializer != nullptr ? "@[initialized] " : "") << field.name << ": " << spell(field.type, false) << ";";
+            const char* ownership = field.ownership == Ownership::weak ? "@[weak] " : field.ownership == Ownership::unowned ? "@[unowned] " : "";
+            out_ << " " << ownership << (field.initializer != nullptr ? "@[initialized] " : "") << field.name << ": " << spell(field.type, false)
+                 << ";";
         }
         if (group != -1) {
             out_ << " }\n";

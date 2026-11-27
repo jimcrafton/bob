@@ -62,6 +62,7 @@ enum class NodeKind : uint8_t {
     tupleType,
     tupleTypeElement,
     typeMessage,
+    blockType,
     error,
 };
 
@@ -342,8 +343,7 @@ struct KeywordSend : NodeOf<NodeKind::keywordSend> {
     std::vector<Node*> arguments;
 };
 
-// The body is a BlockLiteral so a union entry can bind the narrowed value
-// (`int32: { :n | ... }`); for enum and integer labels it has no parameters.
+// The body is a BlockLiteral; entries don't bind values, so it has no parameters.
 struct CaseEntry : NodeOf<NodeKind::caseEntry> {
     std::vector<Node*> labels;
     Node* body = nullptr;
@@ -383,6 +383,13 @@ struct TypeMessage : NodeOf<NodeKind::typeMessage> {
     Node* receiver = nullptr;
     std::string selector;
     std::vector<Node*> arguments;
+};
+
+// A block type: `{ int32, int32 [bool] }`, `{ int32 }` (no result), `{ [int32] }`
+// (no parameters), `{ }` (neither). `result` is null when there's no `[T]`.
+struct BlockType : NodeOf<NodeKind::blockType> {
+    std::vector<Node*> params;
+    Node* result = nullptr;
 };
 
 // Placeholder for source the parser couldn't make sense of; spans the skipped text.

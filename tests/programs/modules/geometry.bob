@@ -6,6 +6,7 @@ module geometry, 1.4.11
         enum Quadrant { first; second; third; fourth; }
 
         type Percent := 0 to: 100;
+        type Scale := { int32 [int32] };
 
         @[protocol] class Shape {
             msg area [int32];
@@ -18,6 +19,15 @@ module geometry, 1.4.11
             msg area [int32] { return side * side; }
             msg init { cachedArea := side * side; }
             msg cached [int32] { return cachedArea; }
+        }
+
+        # A weak field and a block field, used inline by importers.
+        class Watcher {
+            public {
+                @[weak] target: Square?;
+                onChange: { int32 [int32] };
+            }
+            msg fire: n:int32 [int32] { return onChange value: n; }
         }
 
         @[constant] ORIGIN := Point x: 0 y: 0;
@@ -40,6 +50,16 @@ module geometry, 1.4.11
 
             @[static] msg manhattan: a:Point to: b:Point [int32] {
                 return Helper distance: a to: b;
+            }
+
+            # A closure made in the module and called by the importer.
+            @[static] msg scaler: k:int32 [Scale] {
+                return { :x: int32 | x * k };
+            }
+
+            # Keeps the block: the importer's literal must become a heap closure.
+            @[static] msg watch: s:Square with: f:{ int32 [int32] } [Watcher] {
+                return Watcher target: s onChange: f;
             }
 
             @[static] msg squaresUpTo: n:int32 [array of: int32] {

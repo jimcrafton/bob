@@ -42,7 +42,7 @@ void Generator::emitThunk()
         builder_.CreateStore(value, function->getArg(0));
         flushTemporaries(mark);
     }
-    if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
+    if (!blockTerminated()) {
         emitReturn(nullptr);
     }
 }
@@ -146,10 +146,6 @@ llvm::Value* Generator::materialize(const sema::ConstValue* value, const Type* t
     llvm::Type* ptr = builder_.getPtrTy();
     llvm::Constant* none = llvm::ConstantPointerNull::get(builder_.getPtrTy());
     switch (type->kind) {
-    case TypeKind::unionType: {
-        size_t tag = value->tag;
-        return unionWrap(materialize(&value->elements[0], type->members[tag]), type, tag);
-    }
     case TypeKind::optional:
         return makeOptional(builder_.getTrue(), materialize(&value->elements[0], type->inner), type);
     case TypeKind::fixedArray: {

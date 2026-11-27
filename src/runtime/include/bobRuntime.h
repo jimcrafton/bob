@@ -19,7 +19,20 @@ void bobRuntimeWrite(int32_t stream, const uint8_t* bytes, uint64_t count);
 void* bobAllocObject(BobClass* cls);
 void bobRetain(void* object);
 void bobRelease(void* object);
+// Weak and unowned references count separately: they keep a destroyed object's
+// memory (not its fields) until the last of them is gone.
+void bobWeakRetain(void* object);
+void bobWeakRelease(void* object);
+// The object behind a weak reference, retained (+1), or null once it's destroyed.
+void* bobWeakLoad(void* object);
+// The same for an unowned reference, which traps once the object is destroyed.
+void* bobUnownedLoad(void* object);
+// Whether the object lives in a stack frame (placed there by escape analysis).
+bool bobObjectIsOnStack(void* object);
 void* bobMsgSendLookup(BobClass* cls, const char* selector);
+// The witness table of `cls` for `protocol` (a BobProtocol). Reads only
+// immutable data; a class that doesn't conform traps (well-typed code can't).
+void* const* bobWitness(const BobClass* cls, const void* protocol);
 void bob_msgSend();
 void bobRuntimeReportLeaks();
 

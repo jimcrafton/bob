@@ -41,13 +41,6 @@ bool embeddable(const Type* type)
     case TypeKind::dictionary:
     case TypeKind::hashtable:
         return !type->pending && embeddable(type->inner) && embeddable(type->key);
-    case TypeKind::unionType:
-        for (const Type* member : type->members) {
-            if (!embeddable(member)) {
-                return false;
-            }
-        }
-        return true;
     default:
         return false;
     }
@@ -387,17 +380,6 @@ const Type* Analyzer::checkMetaQuery(const UnarySend* send, const Type* metaType
                 ConstValue element;
                 element.type = subject;
                 element.bits = member.value;
-                value.elements.push_back(element);
-            }
-            return constant(value);
-        }
-        if (isUnion(subject)) {
-            ConstValue value;
-            value.type = types_.arrayOf(types_.string());
-            for (const Type* member : subject->members) {
-                ConstValue element;
-                element.type = types_.string();
-                element.text = typeName(member);
                 value.elements.push_back(element);
             }
             return constant(value);

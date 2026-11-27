@@ -192,27 +192,6 @@ const Type* TypeTable::fixedArrayOf(const Type* element, const Type* index, uint
     return type;
 }
 
-const Type* TypeTable::unionOf(std::vector<const Type*> members)
-{
-    std::sort(members.begin(), members.end(), [](const Type* a, const Type* b) { return a->name < b->name; });
-    members.erase(std::unique(members.begin(), members.end()), members.end());
-    if (members.size() == 1) {
-        return members.front();
-    }
-    auto it = unions_.find(members);
-    if (it != unions_.end()) {
-        return it->second;
-    }
-    std::string name;
-    for (const Type* member : members) {
-        name += (name.empty() ? "" : " | ") + elementName(member);
-    }
-    Type* type = own({TypeKind::unionType, name});
-    type->members = members;
-    unions_[members] = type;
-    return type;
-}
-
 const Type* TypeTable::metaInfoOf(const Type* subject)
 {
     auto it = metaInfos_.find(subject);
@@ -362,10 +341,6 @@ bool isString(const Type* type)
     return type != nullptr && type->kind == TypeKind::string;
 }
 
-bool isUnion(const Type* type)
-{
-    return type != nullptr && type->kind == TypeKind::unionType;
-}
 
 bool isStringView(const Type* type)
 {
@@ -418,7 +393,7 @@ bool isManaged(const Type* type)
 bool needsCleanup(const Type* type)
 {
     type = canonical(type);
-    if (isManaged(type)) {
+    if (isManaged(type) || isBlock(type)) {
         return true;
     }
     if (isOptional(type)) {
@@ -426,13 +401,6 @@ bool needsCleanup(const Type* type)
     }
     if (type != nullptr && type->kind == TypeKind::fixedArray) {
         return needsCleanup(type->inner);
-    }
-    if (isUnion(type)) {
-        for (const Type* member : type->members) {
-            if (needsCleanup(member)) {
-                return true;
-            }
-        }
     }
     return false;
 }
@@ -464,7 +432,6 @@ bool isValueType(const Type* type)
     case TypeKind::hashtable:
     case TypeKind::set:
     case TypeKind::fixedArray:
-    case TypeKind::unionType:
     case TypeKind::stringView:
         return true;
     default:
@@ -492,18 +459,17 @@ bool sameBlockShape(const Type* a, const Type* b)
 
 std::string blockTypeName(const Type* type)
 {
-    std::string name = "block";
-    if (!type->params.empty()) {
-        name += " takes: [";
-        for (size_t i = 0; i < type->params.size(); ++i) {
-            name += (i == 0 ? "" : ", ") + (type->params[i] != nullptr ? type->params[i]->name : std::string("?"));
-        }
-        name += "]";
+    if (type->pending && !type->arityKnown && type->result == nullptr) {
+        return "block";
+    }
+    std::string name = "{";
+    for (size_t i = 0; i < type->params.size(); ++i) {
+        name += (i == 0 ? " " : ", ") + (type->params[i] != nullptr ? type->params[i]->name : std::string("?"));
     }
     if (type->result != nullptr && type->result->kind != TypeKind::voidType) {
-        name += " returns: " + type->result->name;
+        name += " [" + type->result->name + "]";
     }
-    return name;
+    return name + " }";
 }
 
 bool canWiden(const Type* from, const Type* to)
@@ -547,10 +513,6 @@ bool canWiden(const Type* from, const Type* to)
     }
     if (isReal(from) && isReal(to)) {
         return to->bits > from->bits;
-    }
-    // A union accepts each of its members.
-    if (isUnion(to)) {
-        return std::find(to->members.begin(), to->members.end(), from) != to->members.end();
     }
     return false;
 }

@@ -71,7 +71,7 @@ A unit has a header, `import`s, then a `{ ... }` body with namespaces, classes, 
 ### 3.2 Lexical
 - Comments: `# to end of line`, `#{ ... }#` block.
 - Statement terminator: `;`. (Smalltalk uses `.`, but bob uses `.` for qualification `core.io.out` and field access `p.x`.)
-- Assignment: `:=`. Equality: `=`. **[Decided]** Not equal is Pascal's `<>`. Shifts are Pascal's word operators `shl` and `shr` (`x shl 2`), reserved words that bind like `*`. There are no `<<`, `>>`, `==`, `~=` or `??` operators.
+- Assignment: `:=`. Equality: `=`. **[Decided]** Not equal is Pascal's `<>`. Shifts are Pascal's word operators `shl` and `shr` (`x shl 2`), reserved words that bind like `*`. **[Decided 2026-11-27]** Bitwise operations are Pascal's words too: `and`, `or` and `xor` are logical on `bool` and bitwise on integers (`(flags and 0xFF) = 0`, `a xor b`). There are no `&`, `|`, `^`, `<<`, `>>`, `==`, `~=` or `??` operators; `|` only separates a block literal's parameters from its body.
 - Literals: `123`, `0x7F`, `0b1010`, `1_000_000`, `3.25`, `1e-9`, `"utf-8 string"`, `'é'` (unicode scalar / `char`), `true`, `false`, `nil`, array `[1, 2, 3]`.
 - Suffix-typed literals **[Proposed]**: `10u8`, `3.0r32`. Otherwise literals are polymorphic and take their type from context, defaulting to `int32`/`real64`.
 
@@ -106,15 +106,17 @@ x := (p distanceTo: q) sqrt;
 - **[Decided]** Unary sends bind tightest and apply only to the nearest operand, as in Smalltalk and like method calls in C-family languages. `4 + 5 toString` means `4 + (5 toString)`, so you write `(4 + 5) toString + " yes"`. `i < items count` means `i < (items count)`. There's no low-precedence "then send" operator.
 - **[Decided]** A keyword token is an identifier *immediately* followed by `:` (no whitespace), as in Smalltalk. There's no `@` prefix on later keyword parts.
 - Every send has an explicit receiver (`self foo: 1`). A statement can't start with a bare keyword, which keeps §3.3 unambiguous.
-- **[Decided]** Binary operators use conventional precedence instead of Smalltalk's strict left-to-right order, so `2 + 3 * 4` = 14. The overall order is still unary > binary > keyword. Binary precedence, highest first, is C's ordering *except* that the bitwise operators bind tighter than comparisons. That fixes C's well-known `x & mask == 0` trap, and Go, Swift and Rust do the same:
+- **[Decided]** Binary operators use conventional precedence instead of Smalltalk's strict left-to-right order, so `2 + 3 * 4` = 14. The overall order is still unary > binary > keyword. Binary precedence, highest first:
 
   | Level | Operators |
   |---|---|
-  | 1 | `*` `/` `%` `&` `shl` `shr` |
-  | 2 | `+` `-` `|` `^` |
+  | 1 | `*` `/` `%` `shl` `shr` |
+  | 2 | `+` `-` |
   | 3 | `=` `<>` `<` `<=` `>` `>=` |
   | 4 | `and` |
-  | 5 | `or` |
+  | 5 | `or` `xor` |
+
+  `and`, `or` and `xor` keep one precedence whether they're logical or bitwise, so a mask test is parenthesised: `(x and mask) = 0`. Leaving the parentheses out is a type error (an integer `and` a bool), not a silent bug as in C.
 
   All levels are left-associative. User-defined binary selectors (for example `+` on `Point`) take the precedence of their operator. Binary selectors that aren't in the table bind at level 3.
 - **[Decided]** No cascades for now (Smalltalk's `;` is our statement terminator). Repeat the receiver instead. A Dart-style `..` cascade could be added later without breaking existing code.
@@ -340,7 +342,7 @@ Rules:
 - A message declared with `;` instead of a body is *required*. A message with a body is a *default* that implementers may override. Default bodies can only use `self` sends, since there are no fields.
 - Classes conform with `implements` (any number, from any module). They can also conform retroactively through an `extends` block in another module (`extends Counter implements Printable { ... }`).
 - A `@[protocol]` class can `inherits` another `@[protocol]` class to refine it. It can't inherit a concrete class.
-- A value whose static type is a protocol is a reference to a conforming class instance. Sends through it are Tier 2 (`bob_msgSend`, §5.3). When the concrete type is known, sends stay static.
+- A value whose static type is a protocol is a reference to a conforming class instance. Sends through it are Tier 2 (itable dispatch since phase 8, §5.3). When the concrete type is known, sends stay static.
 - **[Decided]** Records can't implement protocols. Records are strictly for data (§4.2).
 
 ### 4.5 Built-in first-class types
@@ -374,14 +376,10 @@ class Inventory {
 }
 ```
 
-**[Decided]** Homogeneous and mixed contents are both allowed, and the compiler chooses the representation:
-- **One element type**: raw contiguous storage (`[1, 2, 3]` is 3 × 4 bytes). No tags, boxing or dispatch.
-- **All classes that share a protocol**: the element type is that protocol, stored as references with protocol dispatch.
-- **Mixed otherwise**: the element type is the *closed union* inferred from everything stored into the container in scope, e.g. `[7, 8, "oiudf", 1.5]` → `int32 | string | real64`. Each element is stored as a tag plus the value inline, so primitives aren't boxed.
-  - A message every member understands (`(ff at: 2) printString`) compiles to a switch on the tag, with a direct call in each arm. No `msgSend`.
-  - Anything else requires narrowing: `(ff at: 2) ifKindOf: int32 do: { :n | ... }`.
-  - The same applies to `dictionary` and `hashtable` values (a JSON-object-like `dictionary` gets a `string | int32 | ...` value type), and to `hashtable` keys.
-  - An accidental mix (`[1, 2, "3"]`) is usually caught at the first use that needs a specific type. The error message names the inferred union. `--explain-types` lists every inferred union.
+**[Decided]** The compiler chooses the representation from the element type:
+- **One element type**: raw contiguous storage (`[1, 2, 3]` is 3 × 4 bytes). No tags, boxing or dispatch. Values that convert to one type share it (`[1, 2.5]` is `real64`).
+- **All classes that share a superclass or protocol**: the element type is that class or protocol, stored as references with protocol dispatch.
+- **Mixed otherwise** is a compile error (`sema.mixedElementTypes`). **[Decided 2026-11-27]** Inferred closed unions (`[7, "x", 1.5]` → `int32 | string | real64`, narrowed with `case` or `ifKindOf:do:`) were built in phase 5 and removed: the type appeared without being asked for and couldn't be written down, and every value-handling feature (ARC, printing, layout, `meta`, interfaces, constants) had to special-case it, for little real use. Mixed data goes through a protocol; if dynamic data such as JSON becomes a real need, it gets a deliberate type (for example a `JsonValue` class hierarchy). An untagged C-style union for hardware overlays is a separate, `unsafe` systems feature (§6.4).
 
 **[Decided]** An optional annotation covers cases where inference can't decide (an array that's returned empty, a field only filled from outside the module). You write it only when the compiler asks for it, or to force a homogeneous container:
 ```
@@ -438,7 +436,7 @@ k: PciClass := PciClass network;
   Color meta members         # compile-time list of members (§8.3)
   ```
   Equality and ordering (`=`, `<`) compare values within the same enum type only.
-- No data attached to enumerators (Swift/Rust-style payloads). Sum types are covered by inferred unions (§4.5).
+- No data attached to enumerators (Swift/Rust-style payloads). There are no sum types; a protocol with one class per case covers them (§4.5).
 
 **[Decided] Pascal-style ordinal features.** Enums are *ordinal types*, a finite, ordered set of members, and the language builds on that:
 
@@ -473,7 +471,7 @@ handlers: array of: Handler by: Opcode;
 (handlers at: op) run;
 ```
 
-**`case` statement (Pascal `case`).** **[Decided]** This is the general branch for enums, integers and inferred unions. It's a statement, `case <subject> of { entries } [else { … }]`, always compiled to a jump table or compare chain. Each entry is a *label list, then `:`, then a braced body*. Labels can be members, constants, or ranges (`(1 to: 9)`). Without `else`, every member must be covered (a compile error otherwise, so adding a member later finds every `case` that needs updating). Labels must not overlap.
+**`case` statement (Pascal `case`).** **[Decided]** This is the general branch for enums and integers. It's a statement, `case <subject> of { entries } [else { … }]`, always compiled to a jump table or compare chain. Each entry is a *label list, then `:`, then a braced body*. Labels can be members, constants, or ranges (`(1 to: 9)`). Without `else`, every member must be covered (a compile error otherwise, so adding a member later finds every `case` that needs updating). Labels must not overlap.
 ```
 case c of {
     Color red, Color green: { self go; }
@@ -486,13 +484,8 @@ case n of {
 } else {
     ...
 }
-
-case v of {                          # inferred union int32 | string
-    int32:  { :n | total := total + n; }
-    string: { :s | names add: s; }
-}
 ```
-For a union subject, an entry body can bind the narrowed value as a block parameter (`{ :n | … }`). Parsing: the lexer's keyword token on the last label (`green:`) is split back into the label and the colon. That's unambiguous, because a case entry can't be an ordinary statement.
+Parsing: the lexer's keyword token on the last label (`green:`) is split back into the label and the colon. That's unambiguous, because a case entry can't be an ordinary statement.
 
 ### 4.7 Subranges and named types **[Decided]**
 A subrange is a contiguous slice of an integer or enum type, checked when values are assigned into it (Pascal).
@@ -547,7 +540,8 @@ The central idea: syntactically every operation is a send, and semantically the 
 | 0 Intrinsic | Receiver is a primitive, or a built-in with an intrinsic selector (`array at:`, `bool ifTrue:ifFalse:` and collection `do:` with literal blocks) | Inline LLVM IR (`add nsw`, `icmp`, branch, bounds-checked GEP) |
 | 1 Static | Receiver static type is a record; or class message (`@[static]`); or selector is `@[final]`; or class-hierarchy analysis shows exactly one implementation reachable in the module's closed hierarchy; or the exact dynamic type is known (just constructed, flow analysis) | Direct call, candidate for inlining |
 | 1v Vtable | Receiver static type is a class and several overrides are reachable in its closed hierarchy (§5.4) | One indexed load from the class's vtable + indirect call |
-| 2 Dynamic | Receiver static type is a `@[protocol]` class; reflection `perform:`; dynamically loaded library | `bob_msgSend(self, sel, args...)` |
+| 2 Protocol | Receiver static type is a `@[protocol]` class | itable: the class's witness table for the protocol, then a slot (phase 8, `docs/proposals.md` §2) |
+| 3 Dynamic | Reflection `perform:`; dynamically loaded library | `bob_msgSend(self, sel, args...)` |
 
 The compiler emits a diagnostic note option (`--explain-dispatch`) that reports which tier each send got. That's how you can confirm the "resolve everything it can" goal is being met.
 
@@ -559,6 +553,8 @@ Type checking always happens. A send is a compile error if the static type can't
 - **Object header** first word is the class pointer, so `msgSend` needs only one load to find the cache.
 
 ### 5.3 `bob_msgSend`
+**[Phase 8]** Protocol sends no longer use it: they go through read-only itables (witness tables per class and protocol, found by `bobWitness`; `docs/proposals.md` §2), so dispatch has no mutable state and is safe in interrupt handlers and on several cores. `bob_msgSend` remains for reflection (`perform:`) and dynamically loaded code.
+
 Modelled on `objc_msgSend` (see the zhengdong.me article):
 1. `self` in RCX, `sel` in RDX (Win64 ABI). Other args stay untouched in registers/stack.
 2. Load `isa` from `[self]`, then the cache from `isa`.
@@ -581,7 +577,7 @@ Written in MASM (`src/runtime/win64/msgSend.asm`, CMake `enable_language(ASM_MAS
 - **Several implementations**: the hierarchy is fixed, so the compiler can safely lay out a per-class **vtable** and dispatch with one indexed load. A small set can also become a type-check-and-branch on the class pointer. Vtables are normally *fragile* across modules: adding a method in a base class shifts every subclass's slots, which is C++'s fragile base class problem. Here no one outside the module can subclass, so the module always controls every slot.
 - The hierarchy facts are written into the module's interface file. An importing module that sends `area` to a `Shape` reads "closed; implementations = {Shape>>area, Circle>>area}" and devirtualises the same way.
 
-**What remains dynamic.** Only three sources: sends through `@[protocol]`-typed values, reflection `perform:`, and dynamically loaded code. Those use `bob_msgSend`. A send through a *class* type is never dynamic.
+**What remains dynamic.** Sends through `@[protocol]`-typed values use itables (phase 8). Only reflection `perform:` and dynamically loaded code use `bob_msgSend`. A send through a *class* type is never dynamic.
 
 **Costs.**
 - You can't subclass another module's *concrete* class, for example a library base class with fields that users extend (UIKit `UIViewController` style). The workaround is a protocol plus composition or delegation, which Go and Rust force anyway. If this ever proves necessary, an `@[open]` attribute can be added later as a purely additive change.
@@ -594,10 +590,15 @@ Prior art: Swift (`open`/`public`/`final`), Kotlin (final by default), C# (`seal
 - Non-escaping literal blocks (the vast majority) are inlined or lowered to a local function plus a frame pointer, with zero allocation.
 - Escaping blocks are ARC-managed closure objects (function pointer + captured context). Escape is inferred from the parameter type: `@[escaping]` on block parameters, Swift-style.
 - **[Decided, built in phase 3]**
-  - **Block types** are written `[block takes: [T, …] returns: R]`, the same type-message form as `array of:`.
+  - **Block types** are written in braces, like the blocks they describe, with the result in brackets as in a message declaration's `[R]`: `{ int32, int32 [bool] }`, `{ int32 }` (no result), `{ [int32] }` (no parameters), `{ }` (neither). **[Decided 2026-11-27]**, replacing `[block takes: [T, …] returns: R]`; the old form is `sema.invalidBlockType` with the new spelling. `|` and `->` were ruled out. A shape can be named, `type Transform := { int32 [int32] };`, and a named block type is always an alias because blocks match by shape.
   - **Bare `block` parameters are inferred from how the message body uses them**, and the message is compiled once. That's option A, chosen over per-call-site specialisation, which would be generics in disguise. The annotation is only needed when the body doesn't pin the type down.
-  - **Blocks are non-escaping until phase 8.** They capture by reference through a stack environment of pointers.
   - **`return` is allowed only inside inlined blocks**, so nothing ever unwinds the stack.
+- **[Built in phase 8] Escaping closures.**
+  - Escape is **inferred**, not annotated: the escape analysis that places objects (§4.3a) treats a block literal like an allocation. This replaces the Swift-style `@[escaping]` planned above.
+  - A block that stays in its frame keeps a stack environment with no allocation. Any other block is an ARC heap closure.
+  - Capture is always **by reference**, so a block behaves the same whether it escapes or not. A mutable variable captured by a heap closure lives in a shared heap box; read-only captures are copied. Each pass of a loop declares a new variable.
+  - Block values are reference counted.
+  - Details are in `docs/semantics.md`.
 
   Details are in `docs/semantics.md`.
 
@@ -652,7 +653,7 @@ Captured ideas, not yet decisions. The guiding idea: **a block is anything in `{
 ### 6.1 Model **[Proposed]**
 - Swift-style ARC for class instances and the storage of built-in types. The compiler inserts `retain`/`release`. Parameters are passed +0 (borrowed) by default, which removes most traffic. Returns are +1.
 - Locals live in stack slots. Scope exit releases. "Stack-based reference counting": objects proven not to escape (escape analysis) are allocated *on the stack* with no refcount traffic at all.
-- `weak` (zeroing, yields an optional) and `unowned` reference modifiers break cycles. No cycle collector.
+- `weak` (zeroing, yields an optional) and `unowned` reference modifiers break cycles. No cycle collector. **[Built in phase 8]** as the attributes `@[weak]`/`@[unowned]` on fields and variable declarations (`@[weak] me := self;` breaks a closure cycle). Weak and unowned references count in the header's flags. A destroyed object's memory stays until they're gone, so no side table is needed. Reading an unowned reference to a destroyed object traps.
 - Value semantics with copy-on-write for `string`, `array`, `dictionary`, `set`. Assignment copies the reference and bumps the count, and mutation copies only if the count is > 1.
 - Refcounts are atomic by default (correct across threads). Later optimisation: non-atomic for objects proven thread-local.
 - **[Built in phase 4]** The first implementation uses a deliberately simple, safe scheme:
@@ -753,11 +754,10 @@ p meta name              # "p"       (the variable's own name)
 p meta type              # the Point type itself, as a compile-time value
 Point meta fields        # [x, y]    (field infos: name, type, offset, size)
 Point meta messages      # message infos: selector, parameter types, return type
-ff meta type             # int32 | string | real64  (inferred unions are visible too)
-ff meta elementType members   # [int32, string, real64]
+ff meta elementType      # the element type of a container
 ```
 Rules:
-- `meta` is a reserved unary message. It is *always* evaluated at compile time, on any receiver: primitives, records, classes, unions, containers, and types themselves. It never conflicts with a user's own `size`/`name` messages, because those don't go through `meta`.
+- `meta` is a reserved unary message. It is *always* evaluated at compile time, on any receiver: primitives, records, classes, containers, and types themselves. It never conflicts with a user's own `size`/`name` messages, because those don't go through `meta`.
 - The result is a compile-time constant. It can go anywhere a constant can: array sizes, `@[align: p meta size]`, conditions inside `@[compiletime]` code, and string literals.
 - **Zero runtime cost.** No metadata goes into the binary unless code *uses* a `meta` result at runtime (for example storing `p meta typeName` in a variable embeds only that string). That's why it isn't gated by the runtime reflection levels of §9. The normal access rules still apply: `meta fields` outside a class lists only public fields.
 - **Compile-time iteration and splicing** (the C++26 `template for` / `[: r :]` equivalent). A `@[compiletime]` loop over meta info is unrolled. A field or message info used as a send argument resolves statically, so derive-style code costs nothing:
@@ -935,23 +935,25 @@ Runtime unit tests: gtest needs the CRT, so `bobTests` compiles the runtime sour
 | 2 ✅ | Sema + codegen for primitives, locals, records, intrinsic sends, `main:`, `return` | `factorial`/`fib` programs compile, run and return correct exit codes. **Done 2026-11-27:** `bobSemantic` (no LLVM) + LLVM codegen; also pulled in from phase 3: `if`/`while`/`for … to:`/`loop`/`break`/`continue`/integer `case`. Overflow modes, checked conversions and runtime traps (exit 101). 11 run programs at -O0 and -O2; 119/119 tests in Debug and Release. Rules as built: `docs/semantics.md` |
 | 3 ✅ | Blocks: block values, non-escaping closures, inlined `do:`/`to:do:`/`ifTrue:ifFalse:`; `for` over collections once they exist; `--explain-dispatch`. (Control statements were done in phase 2.) | Block/closure programs; dispatch report shows tier 0/1. **Done 2026-11-27:** block values and types, bare-`block` inference from message bodies, capture by reference, inlined `ifTrue:`/`ifFalse:`/`ifTrue:ifFalse:` (value-producing)/`to:do:`/`timesRepeat:`, `--explain-dispatch`; 134/134 tests in Debug and Release. `do:` and `for` over collections wait for phase 5 collections |
 | 4 ✅ | Classes: layout, `new`, ARC insertion, static dispatch + CHA, class objects, selectors, `bob_msgSend` + cache, protocols | Polymorphism tests; leak report shows 0 bytes at exit. **Done 2026-11-27:** classes (fields, initializers, accessors, `self`/`super`, static messages, `extends`), protocols (required/default, refinement, conformance checks), dispatch tiers 1/1v/2 chosen by closed-hierarchy analysis, MASM `bob_msgSend` with per-class cache, ARC with leak report at exit, minimal class optionals (`C?`, `nil`, `ifNotNil:`). 146/146 tests in Debug and Release; every run program leak-free at -O0 and -O2 |
-| 5 ✅ | Built-ins: `string` (UTF-8, views, conversions), `array`, `dictionary`, `hashtable`, `set` with element-type inference and inferred unions, COW | String/collection test suite incl. grapheme cases. **Done 2026-11-27:** enums (ordinal messages, `fromValue:`, enum sets as bitmasks, exhaustive `case`), subranges (checked in, free out), distinct and `@[alias]` named types, optionals of every value type; immutable ARC strings with byte/codepoint/grapheme views (UAX #29 tables from Unicode 16.0 via `tools/unicodegen`, all of `GraphemeBreakTest.txt` passes), conversions and `printString`; COW `array`, `dictionary`, `hashtable`, `set`, fixed arrays indexed by enums or subranges; element types inferred from literals and first stores; mixed literals give a shared class/protocol or a closed union (`case`, `ifKindOf:do:`, `printString`); `main:` gets real `args`. 166/166 tests (Release; no Debug LLVM on the build machine); run programs leak-free at -O0 and -O2. Rules as built: `docs/semantics.md`. Not done yet: per-call-site specialisation of `nums:array` parameters (an annotation is required), opaque string indices and slicing, normalisation/case mapping, `select:`/`collect:`, shortest round-trip real printing |
+| 5 ✅ | Built-ins: `string` (UTF-8, views, conversions), `array`, `dictionary`, `hashtable`, `set` with element-type inference and inferred unions, COW | String/collection test suite incl. grapheme cases. **Done 2026-11-27:** enums (ordinal messages, `fromValue:`, enum sets as bitmasks, exhaustive `case`), subranges (checked in, free out), distinct and `@[alias]` named types, optionals of every value type; immutable ARC strings with byte/codepoint/grapheme views (UAX #29 tables from Unicode 16.0 via `tools/unicodegen`, all of `GraphemeBreakTest.txt` passes), conversions and `printString`; COW `array`, `dictionary`, `hashtable`, `set`, fixed arrays indexed by enums or subranges; element types inferred from literals and first stores; mixed literals give a shared class/protocol or a closed union (`case`, `ifKindOf:do:`, `printString`; unions removed again on 2026-11-27, §4.5); `main:` gets real `args`. 166/166 tests (Release; no Debug LLVM on the build machine); run programs leak-free at -O0 and -O2. Rules as built: `docs/semantics.md`. Not done yet: per-call-site specialisation of `nums:array` parameters (an annotation is required), opaque string indices and slicing, normalisation/case mapping, `select:`/`collect:`, shortest round-trip real printing |
 | 6 ✅ | Compile-time execution via ORC; `compiler` object; `meta`; static asserts; constant tables. Revisit type-returning compile-time messages under the §4.5 leash rules | Compile-time CRC table and layout asserts work; decision made on `RingBuffer of: T`. **Done 2026-11-27:** unit-level constants (always compile-time, dependency-ordered, embedded as read-only data), `@[compiletime]` messages, expressions and blocks, the `compiler` object (`error:`/`warning:`/`note:` at the sending line), `meta` (size, alignment, typeName, name, type, count, members, elementType, fields), compile-time code JIT compiled with ORC against the hosted runtime (`bobrtHosted`), traps and endless loops reported as compile errors, layout rules shared by `meta` and checked against LLVM. A CRC-32 table generated at compile time checks `"123456789"`, and record layout asserts fail compilation at the asserting line. `RingBuffer of: T`: leash rules confirmed, built as a separate step after this phase. Not yet: compile-time unrolling and splicing over `meta fields`, `compiler target`/`readFile:`, synthesising messages and classes |
 | 7 ✅ | Modules/libraries: interface files, imports, separate compilation, versioning | Multi-module program with a static lib. **Done 2026-11-27:** the Object Pascal unit model (§11.5): `interface { }` / `implementation { }` sections, `bobc` builds a module or lib into a `.lib` (or `-c` `.obj`) plus a generated `.bobi` interface (bob syntax, no bodies, types and constants written out, escape summaries), imports found next to the source or on `--module-path=`, transitive, with semver checks and Pascal-style interface fingerprints (`recompile X`), unqualified names with module qualification on a clash, cross-module direct, vtable and protocol dispatch, stack placement and compile-time code through imported code. A program built from a module and a static lib passes; implementation-only changes keep the fingerprint. Not yet: `extends` on imported classes, dictionary constants in interfaces, dynamic libraries |
-| 8 | Reflection levels + Reflector capability; escaping closures; `weak`/`unowned`; a runtime query for whether an object is on the stack or the heap (a separate header flag bit, since string literals are immortal too) | Reflection tests per level, including denied access |
+| 8 (in progress) | Reflection levels + Reflector capability; escaping closures; `weak`/`unowned`; a runtime query for whether an object is on the stack or the heap (a separate header flag bit, since string literals are immortal too) | Reflection tests per level, including denied access. **Done 2026-11-27, part 1:** escaping closures (inferred escape, stack environments vs ARC heap closures, shared boxes for mutable captures, block fields/results/optionals; block types later rewritten as `{ T [R] }`), `@[weak]`/`@[unowned]` fields and variables (zeroing weak, trapping unowned, weak counts in the header), the header's stack flag and `bobObjectIsOnStack`, all across modules; 195/195 tests in Debug and Release. **Part 2:** itable dispatch for protocol sends (`docs/proposals.md` §2, Stage 1): read-only witness tables per class and protocol, protocol messages may return records, `bob_msgSend` kept for reflection only, reaching messages through selector-dropping thunks (§2 Stage 2: instance messages take `(self, args…)`); as fast as a vtable send with one receiver, a tie with `bob_msgSend` when polymorphic; 200/200 tests. Not yet: reflection levels and the Reflector, the language query for stack placement, containers of blocks |
 | 9 | Systems profile: `unsafe`, pointers, volatile, packed/align, inline asm, freestanding target | Boots a UEFI "hello" or a minimal kernel under QEMU |
 | 10 | Python bindings over the semantic model | Script enumerates classes/sends in a module |
 
 ---
 
 ## 13. Open questions (summary)
-Decided: `x := 4;` implicit declaration with inference (§3.3); phase 4 choices (confirm or change): object creation without `new` (§4.3a: `p: Point;`, constructor messages from public fields, required fields must be passed, automatic per-class `init`, `copy`, stack placement by escape analysis and checked `@[stack]`, records stay values), outside code reaches public fields through synthesized accessors `p x`/`p x: v`, `=`/`<>` on references compare identity, records can't hold references, every instance message gets a vtable slot, protocol messages can't return records yet (docs/semantics.md); `<>` for not equal and `shl`/`shr` word operators, no `<< >> == ~= ??` (§3.2); parameters and `for` variables are read-only, `and`/`or` short-circuit, runtime traps exit with code 101, program messages must be `@[static]` (docs/semantics.md); no `@` on keyword parts (§3.4); conventional operator precedence (§3.4); no symbol literals (§9); `@[protocol] class` replaces a `protocol` keyword (§4.4); concrete classes are closed to their module and there's no `@[open]` (§4.3, §5.4); unary binds tightest, no `->` (§3.4); no cascades (§3.4); compact message declarations with optional rename (§3.6); records allow both layout-prefix inheritance and embedding (§4.2); overflow traps by default, `@[overflow:]` at any level (§4.1); byte-wise string equality (§7.2); reflection access by capabilities, header declarations later (§9); generated import libs with SDK fallback (§11.2); inferred container element types, inferred unions for mixed contents, `array of: T` annotation (§4.5); compile-time reflection via `meta` (§8.3); records can't implement protocols (§4.4); no generic syntax; type-returning compile-time messages, tightly restricted, are the planned answer for user containers, revisited in phase 6 (§4.5); enums `enum Name : type { a := 1; }`, no implicit integer conversion, Pascal ordinal features, `set of: Enum` bitsets instead of flags, enum-indexed arrays, `case x of { … } else { … }` statement with Pascal labels (§4.6); formal control statements `if/else if/else`, `while`, `for … in`, `loop`, `break`, `continue`, braces always required, `whileTrue:`/`caseOf:` removed (§3.5); Pascal subranges, `type Name := ...`, `[ ]`-only grouping in type positions; named types are distinct by default, with `@[alias]` (§4.7).
+Decided: `x := 4;` implicit declaration with inference (§3.3); phase 4 choices (confirm or change): object creation without `new` (§4.3a: `p: Point;`, constructor messages from public fields, required fields must be passed, automatic per-class `init`, `copy`, stack placement by escape analysis and checked `@[stack]`, records stay values), outside code reaches public fields through synthesized accessors `p x`/`p x: v`, `=`/`<>` on references compare identity, records can't hold references, every instance message gets a vtable slot, protocol messages can't return records yet (docs/semantics.md); `<>` for not equal and `shl`/`shr` word operators, no `<< >> == ~= ??` (§3.2); parameters and `for` variables are read-only, `and`/`or` short-circuit, runtime traps exit with code 101, program messages must be `@[static]` (docs/semantics.md); no `@` on keyword parts (§3.4); conventional operator precedence (§3.4); no symbol literals (§9); `@[protocol] class` replaces a `protocol` keyword (§4.4); concrete classes are closed to their module and there's no `@[open]` (§4.3, §5.4); unary binds tightest, no `->` (§3.4); no cascades (§3.4); compact message declarations with optional rename (§3.6); records allow both layout-prefix inheritance and embedding (§4.2); overflow traps by default, `@[overflow:]` at any level (§4.1); byte-wise string equality (§7.2); reflection access by capabilities, header declarations later (§9); generated import libs with SDK fallback (§11.2); inferred container element types, mixed contents only through a shared class or protocol (inferred unions removed 2026-11-27), `array of: T` annotation (§4.5); compile-time reflection via `meta` (§8.3); records can't implement protocols (§4.4); no generic syntax; type-returning compile-time messages, tightly restricted, are the planned answer for user containers, revisited in phase 6 (§4.5); enums `enum Name : type { a := 1; }`, no implicit integer conversion, Pascal ordinal features, `set of: Enum` bitsets instead of flags, enum-indexed arrays, `case x of { … } else { … }` statement with Pascal labels (§4.6); formal control statements `if/else if/else`, `while`, `for … in`, `loop`, `break`, `continue`, braces always required, `whileTrue:`/`caseOf:` removed (§3.5); Pascal subranges, `type Name := ...`, `[ ]`-only grouping in type positions; named types are distinct by default, with `@[alias]` (§4.7).
+
+Phase 8 choices (confirm or change): escape of blocks is inferred, no `@[escaping]`; capture is by reference everywhere (mutable captures of heap closures are boxed, read-only ones copied), and each loop pass declares a new variable; a block field with no initializer is required; a bare `block` is only inferred for parameters and initialized locals; `@[weak]`/`@[unowned]` are attributes, weak needs an optional type (inferred for `@[weak] x := …`), unowned fields are required; objects held weakly go on the heap; a destroyed object's memory lingers until its weak references are gone; `ifNotNil:` bindings are released when their block ends.
 
 Phase 7 decisions: modules follow Object Pascal units (§11.5): export by `interface { }` / `implementation { }` sections, generated interfaces with fingerprints, unqualified names that clash into an error (decided). Phase 7 choices (confirm or change): `module` and `lib` build the same way (a static `.lib` plus `.bobi`); the interface is text in bob syntax rather than binary; versions follow semver (same major, at least the requested minor.patch); a unit's own declarations shadow imports; `extends` on imported classes and dictionary/hashtable constants in interfaces aren't supported yet.
 
-Phase 6 decisions: constants are declared `@[constant] NAME := expr;` or `@[constant] name: T := expr;` at unit level, always immutable and computed at compile time; other unit-level declarations are errors, leaving them free for mutable globals in phase 9 (decided); `RingBuffer of: T` keeps the §4.5 plan and is built as its own step (decided). Phase 6 choices (confirm or change): compile-time code doesn't see the variables of the message it's written in; `meta size` of a class is its object size, header included; `meta fields` is available only in compile-time code (FieldMeta objects can't be embedded); dictionary, hashtable, hash-set and union constants are rebuilt where they're used, while strings and arrays are shared read-only data; compile-time code is stopped after 20 seconds (docs/semantics.md).
+Phase 6 decisions: constants are declared `@[constant] NAME := expr;` or `@[constant] name: T := expr;` at unit level, always immutable and computed at compile time; other unit-level declarations are errors, leaving them free for mutable globals in phase 9 (decided); `RingBuffer of: T` keeps the §4.5 plan and is built as its own step (decided). Phase 6 choices (confirm or change): compile-time code doesn't see the variables of the message it's written in; `meta size` of a class is its object size, header included; `meta fields` is available only in compile-time code (FieldMeta objects can't be embedded); dictionary, hashtable and hash-set constants are rebuilt where they're used, while strings and arrays are shared read-only data; compile-time code is stopped after 20 seconds (docs/semantics.md).
 
-Phase 5 choices (confirm or change): arrays are **0-based**; an empty string or container is a null pointer (no allocation), so only class optionals are nullable pointers and every other `T?` is `{present, value}`; strings are immutable (sharing makes COW unnecessary for them); enum and subrange variables start at the first member or low bound, not 0; an inferred container takes its element type from the **first** store, and later stores must match (no widening to a protocol after the fact); message parameters must annotate container element types until per-call-site specialisation exists; `for` over a dictionary or hashtable is an error (use `keys`, `values`, `keysAndValuesDo:`), while `do:` visits values; a union member can't be a class reference or optional; `string + x` needs a string on both sides (`printString` otherwise) (docs/semantics.md).
+Phase 5 choices (confirm or change): arrays are **0-based**; an empty string or container is a null pointer (no allocation), so only class optionals are nullable pointers and every other `T?` is `{present, value}`; strings are immutable (sharing makes COW unnecessary for them); enum and subrange variables start at the first member or low bound, not 0; an inferred container takes its element type from the **first** store, and later stores must match (no widening to a protocol after the fact); message parameters must annotate container element types until per-call-site specialisation exists; `for` over a dictionary or hashtable is an error (use `keys`, `values`, `keysAndValuesDo:`), while `do:` visits values; `string + x` needs a string on both sides (`printString` otherwise) (docs/semantics.md).
 
 Still open:
 1. Can records have messages (statically dispatched helpers via `extends`, as in §3.6), or are they pure field layouts with no messages at all (§4.2)? Undecided, deferred. Leaning towards "no messages on records" (records strictly for data). The draft still shows record messages in §3.6 and §4.2 until this is decided.

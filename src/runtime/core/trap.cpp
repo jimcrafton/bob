@@ -41,6 +41,8 @@ const char* reasonText(int32_t reason)
         return "out of memory";
     case bob::abi::TrapReason::doesNotUnderstand:
         return "message not understood";
+    case bob::abi::TrapReason::unownedDestroyed:
+        return "unowned reference to a destroyed object";
     }
     return "unknown trap";
 }

@@ -314,8 +314,7 @@ void Analyzer::checkExports(const Unit* unit)
         return;
     }
     // A type an interface can mention: built in, imported, or declared in the
-    // interface section; containers of those. Unions can't be written in a type
-    // position, so an interface can't carry them.
+    // interface section; containers of those.
     std::function<bool(const Type*)> visible = [&](const Type* type) -> bool {
         type = canonical(type);
         if (type == nullptr || type->kind == TypeKind::error) {
@@ -328,7 +327,6 @@ void Analyzer::checkExports(const Unit* unit)
             return type->classInfo->origin.module != nullptr || type->classInfo->origin.exported || type->classInfo == model_.fieldMetaClass;
         case TypeKind::enumType:
             return type->enumInfo->origin.module != nullptr || type->enumInfo->origin.exported;
-        case TypeKind::unionType:
         case TypeKind::stringView:
         case TypeKind::metaInfo:
             return false;
@@ -357,9 +355,7 @@ void Analyzer::checkExports(const Unit* unit)
     auto require = [&](const Type* type, SourceRange range, const std::string& what) {
         if (!visible(type)) {
             error(range, "sema.privateInInterface",
-                  what + " uses '" + typeName(type) + "', which " +
-                      (isUnion(canonical(type)) ? "is an inferred union; an interface needs the type written out"
-                                                : "isn't in the interface section; move it there or keep this declaration in 'implementation'"));
+                  what + " uses '" + typeName(type) + "', which isn't in the interface section; move it there or keep this declaration in 'implementation'");
         }
     };
     auto checkMessage = [&](const MessageInfo* message, const std::string& owner) {

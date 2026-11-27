@@ -103,7 +103,7 @@ std::string describe(const SendInfo& send, const SemanticModel& model)
     case SendKind::vtableCall:
         return "tier 1v, vtable slot " + std::to_string(send.slot) + " of '" + send.classInfo->name + "' (overridden below it)";
     case SendKind::dynamicSend:
-        return "tier 2, bob_msgSend (receiver is the protocol '" + send.classInfo->name + "')";
+        return "tier 2, itable '" + send.classInfo->name + "' slot " + std::to_string(send.slot) + " (receiver is a protocol)";
     case SendKind::fieldGet:
         return "tier 0, inlined field read";
     case SendKind::fieldSet:
@@ -124,11 +124,8 @@ std::string describe(const SendInfo& send, const SemanticModel& model)
     case SendKind::inlineEnumDo:
     case SendKind::inlineDo:
         return "tier 0, inlined loop over " + type + " (no closure created)";
-    case SendKind::unionIfKindOf:
-    case SendKind::unionIsKindOf:
-        return "tier 0, inlined tag test for " + type;
     case SendKind::printString:
-        return type.find('|') != std::string::npos ? "tier 0, switch on the union tag, direct call per member" : "tier 1, runtime call (" + type + " printString)";
+        return "tier 1, runtime call (" + type + " printString)";
     case SendKind::stringConcat:
     case SendKind::stringCompare:
     case SendKind::stringPredicate:
@@ -207,12 +204,21 @@ std::string explainDispatch(const SemanticModel& model, const ast::AstArena& are
         if (block->captures.empty()) {
             text += ", captures nothing";
         }
-        else {
+        else if (model.stackBlocks.count(block) != 0) {
             text += ", captures ";
             for (size_t i = 0; i < block->captures.size(); ++i) {
                 text += (i == 0 ? "" : ", ") + block->captures[i]->name;
             }
             text += " by reference (stack environment, no allocation)";
+        }
+        else {
+            text += ", captures ";
+            for (size_t i = 0; i < block->captures.size(); ++i) {
+                const LocalInfo* captured = block->captures[i];
+                text += (i == 0 ? "" : ", ") + captured->name + (captured->readOnly ? " (copied)" : " (boxed)");
+            }
+            auto why = model.blockEscapes.find(block);
+            text += " -> heap closure" + (why != model.blockEscapes.end() ? " (" + why->second + ")" : std::string());
         }
         lines.push_back({node->range.begin, text});
     }

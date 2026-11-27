@@ -32,6 +32,15 @@ import shapes, 2.0;
 
             pct: Percent := 40;
             failures := failures + (self check: pct + 1 = 41 id: 9);
+
+            # Closures and weak references across the module boundary.
+            triple := geometry scaler: 3;
+            failures := failures + (self check: (triple value: 5) = 15 id: 10);
+            offset := 100;
+            watcher := geometry watch: sq with: { :n: int32 | n + offset };
+            offset := 200;
+            failures := failures + (self check: (watcher fire: 1) = 201 id: 11);
+            failures := failures + (self check: (watcher target ifNil: { 0 } ifNotNil: { :s | s area }) = 16 id: 12);
             return failures;
         }
     }

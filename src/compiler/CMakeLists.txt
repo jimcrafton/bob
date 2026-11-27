@@ -8,6 +8,7 @@ add_library(bobCompiler STATIC
     codegen/codegenContainers.cpp
     codegen/codegenValues.cpp
     codegen/codegenCompileTime.cpp
+    codegen/codegenClosures.cpp
     compiletime/evaluator.cpp
     driver/driver.cpp
     driver/driverOptions.cpp

@@ -160,8 +160,8 @@ import core.collections, 2.0.0;
             # 3.4 precedence
             t := 2 + 3 * 4;
             u := (4 + 5) toString + " yes";
-            ok := x & 1 = 0 and y < 10 or z >= 3;
-            s := a shl 2 | b ^ k % 3 shr 1;
+            ok := (x and 1) = 0 and y < 10 or z >= 3;
+            s := a shl 2 or b xor k % 3 shr 1;
             eq := a = b;
             ne := a <> b;
 

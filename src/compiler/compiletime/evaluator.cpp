@@ -112,11 +112,6 @@ ConstValue readValue(const uint8_t* address, const Type* type)
             value.elements.push_back(readValue(address + offset, type->inner));
         }
         break;
-    case TypeKind::unionType: {
-        std::memcpy(&value.tag, address, 4);
-        value.elements.push_back(readValue(address + 8, type->members[value.tag]));
-        break;
-    }
     case TypeKind::array: {
         const auto* array = *reinterpret_cast<BobArray* const*>(address);
         if (array != nullptr) {

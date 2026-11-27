@@ -174,10 +174,15 @@ const Type* Analyzer::resolveNamedType(NamedTypeInfo* info)
             error(decl->storageType, "sema.invalidStorage", "a storage type ('" + info->name + " : T') only applies to subranges");
         }
         const Type* base = resolveType(decl->type);
-        if (base == types_.error()) {
-            type = base;
+        if (base == types_.error() || rejectBareBlock(decl->type, base, "a named type")) {
+            type = types_.error();
         }
         else if (info->isAlias) {
+            type = base;
+        }
+        else if (isBlock(base) || (isOptional(base) && isBlock(base->inner))) {
+            // Blocks match by shape, so naming one just gives the shape a name.
+            info->isAlias = true;
             type = base;
         }
         else if (isNumeric(base) || base == types_.boolType() || base->kind == TypeKind::character) {
@@ -755,7 +760,7 @@ void Analyzer::checkEnumCase(const CaseStmt* statement, const Type* subject)
         auto body = nodeCast<BlockLiteral>(entry->body);
         if (body != nullptr) {
             if (!body->params.empty()) {
-                error(body->params.front(), "sema.invalidCaseBinding", "only a 'case' over a union binds the matched value");
+                error(body->params.front(), "sema.invalidCaseBinding", "a case entry doesn't bind a value; use the subject itself");
             }
             pushScope();
             checkStatements(body->statements);
@@ -806,21 +811,9 @@ namespace bob::sema::detail {
 const Type* Analyzer::literalExpectation(const Type* expected, bool isRealLiteral) const
 {
     expected = canonical(expected);
+    (void)isRealLiteral;
     if (isOptional(expected)) {
         expected = expected->inner;
-    }
-    if (isUnion(expected)) {
-        const Type* preferred = isRealLiteral ? types_.real64() : types_.int32();
-        const Type* fallback = nullptr;
-        for (const Type* member : expected->members) {
-            if (member == preferred) {
-                return member;
-            }
-            if (fallback == nullptr && (isReal(member) || (!isRealLiteral && isInteger(member)))) {
-                fallback = member;
-            }
-        }
-        return fallback;
     }
     return expected;
 }

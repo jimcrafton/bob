@@ -15,9 +15,18 @@ struct BobObjectHeader {
 
 // `flags` bits.
 enum : uint32_t {
-    // Compile-time constants (string literals): never retained, released or freed.
+    // Compile-time constants (string literals) and stack objects: never retained,
+    // released or freed.
     bobObjectImmortal = 1,
+    // Lives in a stack frame (an object placed by escape analysis, or a block's environment).
+    bobObjectStack = 2,
+    // The object was destroyed (its count reached 0) but weak or unowned
+    // references keep its memory until the last of them lets go.
+    bobObjectDestroyed = 4,
 };
+// The upper bits of `flags` count weak and unowned references.
+inline constexpr uint32_t bobWeakCountShift = 8;
+inline constexpr uint32_t bobWeakCountUnit = 1u << bobWeakCountShift;
 
 struct BobMethodEntry {
     const char* selector;
@@ -25,6 +34,21 @@ struct BobMethodEntry {
 };
 
 struct BobMethodCache;
+
+// One per protocol, emitted by every module that uses it as a link-once global,
+// so its address is its identity program-wide (like selectors).
+struct BobProtocol {
+    const char* name;
+    // Witness slots: refined protocols' messages first, then the protocol's own.
+    uint64_t messageCount;
+};
+
+// A class's witness table for one protocol it conforms to (directly, through
+// refinement or through a superclass): one implementation per protocol slot.
+struct BobConformance {
+    const BobProtocol* protocol;
+    void* const* witness;
+};
 
 // One per class, emitted by the compiler as a mutable global. The vtable (one
 // implementation pointer per slot) follows the fixed part.
@@ -35,8 +59,10 @@ struct BobClass {
     void (*destroy)(void* object);
     const BobMethodEntry* methods;
     uint32_t methodCount;
-    uint32_t reserved;
+    uint32_t conformanceCount;
+    // Used only by bob_msgSend (reflection); protocol sends go through `conformances`.
     BobMethodCache* cache;
+    const BobConformance* conformances;
     // void* vtable[];
 };
 
@@ -90,7 +116,7 @@ extern BobClass bobTableClass;
 namespace bob::abi {
 
 inline constexpr uint32_t objectHeaderSize = 16;
-inline constexpr uint32_t classVtableOffset = 56;
+inline constexpr uint32_t classVtableOffset = 64;
 inline constexpr uint32_t stringCountOffset = 16;
 inline constexpr uint32_t stringBytesOffset = 24;
 inline constexpr uint32_t arrayCountOffset = 16;

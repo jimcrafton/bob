@@ -34,6 +34,8 @@ enum class TrapReason : int32_t {
     invalidUtf8 = 10,
     outOfMemory = 11,
     doesNotUnderstand = 12,
+    // phase 8
+    unownedDestroyed = 13, // reading an unowned reference whose object is gone
 };
 
 }

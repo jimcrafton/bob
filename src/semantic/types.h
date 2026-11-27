@@ -38,7 +38,6 @@ enum class TypeKind : uint8_t {
     hashtable,
     set,
     fixedArray,
-    unionType,
     // The result of `x meta`: compile-time information about `inner` (a type).
     metaInfo,
     // The `compiler` object, reachable only from compile-time code.
@@ -95,9 +94,6 @@ struct Type {
     // Containers whose element type is inferred from first use (`b: array;`)
     // start pending; once known, `resolved` points to the canonical type.
     const Type* resolved = nullptr;
-
-    // unionType: the member types, in a canonical order.
-    std::vector<const Type*> members;
 };
 
 class TypeTable {
@@ -136,7 +132,6 @@ public:
     const Type* hashtableOf(const Type* key, const Type* value);
     const Type* setOf(const Type* element);
     const Type* fixedArrayOf(const Type* element, const Type* index, uint64_t count);
-    const Type* unionOf(std::vector<const Type*> members);
     const Type* stringView(int view);
     // The type of `x meta` for a subject type, and of the `compiler` object.
     const Type* metaInfoOf(const Type* subject);
@@ -156,7 +151,6 @@ private:
     std::unordered_map<const Type*, const Type*> metas_;
     std::unordered_map<const Type*, const Type*> optionals_;
     std::map<std::pair<int, std::pair<const Type*, const Type*>>, const Type*> containers_;
-    std::map<std::vector<const Type*>, const Type*> unions_;
     const Type* nil_ = nullptr;
     const Type* error_ = nullptr;
     const Type* void_ = nullptr;
@@ -180,7 +174,6 @@ bool isOptional(const Type* type);
 bool isEnum(const Type* type);
 bool isSubrange(const Type* type);
 bool isString(const Type* type);
-bool isUnion(const Type* type);
 bool isStringView(const Type* type);
 // array, dictionary, hashtable and non-bitmask set: heap buffers with value semantics.
 bool isDynamicContainer(const Type* type);

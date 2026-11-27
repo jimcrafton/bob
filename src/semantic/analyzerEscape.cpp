@@ -12,6 +12,11 @@
 // itself, and every alias is declared in the same function and loop body as
 // the allocation (so the next iteration, or the frame's exit, can't leave a
 // variable pointing at reused memory).
+//
+// Block literals are analysed the same way: a block keeps its environment in
+// the creating frame unless its value escapes, or is assigned to a variable
+// declared elsewhere. A block that escapes becomes a heap closure, and every
+// variable it captures escapes with it (the closure keeps them alive).
 
 #include "analyzerInternal.h"
 
@@ -54,6 +59,32 @@ struct Definition {
     NodeId statement = 0;
     const LocalInfo* from = nullptr;
 };
+
+// A block literal compiled to its own function.
+struct BlockSite {
+    const BlockInfo* info = nullptr;
+    const Node* literal = nullptr;
+    // The variable it's assigned to, if any.
+    const LocalInfo* local = nullptr;
+    // Where it's created.
+    Scope scope;
+    // Set when the value escapes where it's created (returned, stored, passed on).
+    Escape direct;
+    bool escapes = false;
+    std::string why;
+};
+
+bool holdsBlock(const Type* type)
+{
+    type = canonical(type);
+    return isBlock(type) || (isOptional(type) && isBlock(type->inner));
+}
+
+// Values whose escape matters: object references and blocks.
+bool carriesEscape(const Type* type)
+{
+    return isReference(canonical(type)) || holdsBlock(type);
+}
 
 struct Effect {
     enum Kind { none, escape, alias } kind = none;
@@ -132,9 +163,11 @@ public:
             if (hasBody(message.get())) {
                 analyze(message.get());
                 placeObjects(message.get());
+                placeBlocks();
                 findStackOnlyLocals();
             }
         }
+        findBoxedLocals();
     }
 
 private:
@@ -153,6 +186,7 @@ private:
         declared_.clear();
         tracked_.clear();
         sites_.clear();
+        blockSites_.clear();
         definitions_.clear();
         scope_ = Scope{};
         nextLoop_ = 0;
@@ -165,6 +199,7 @@ private:
         for (const Node* statement : static_cast<const StatementGroup*>(message->decl->body)->statements) {
             walkStatement(statement);
         }
+        resolveBlocks();
     }
 
     bool updateSummary(MessageInfo* message)
@@ -185,7 +220,7 @@ private:
 
     static bool isTracked(const LocalInfo* local)
     {
-        return local != nullptr && isReference(canonical(local->type));
+        return local != nullptr && carriesEscape(local->type);
     }
 
     const LocalInfo* find(const LocalInfo* local)
@@ -299,6 +334,7 @@ private:
             }
             return;
         case NodeKind::blockLiteral:
+            addBlockSite(static_cast<const BlockLiteral*>(node), effect);
             walkBlockFunction(static_cast<const BlockLiteral*>(node));
             return;
         case NodeKind::unarySend:
@@ -312,6 +348,26 @@ private:
             }
             return;
         }
+    }
+
+    void addBlockSite(const BlockLiteral* literal, const Effect& effect)
+    {
+        const BlockInfo* info = model_.blockOf(literal);
+        if (info == nullptr || info->inlined) {
+            return;
+        }
+        BlockSite site;
+        site.info = info;
+        site.literal = literal;
+        site.scope = scope_;
+        if (effect.kind == Effect::escape) {
+            site.direct = Escape{literal, effect.why};
+        }
+        else if (effect.kind == Effect::alias && isTracked(effect.target)) {
+            site.local = effect.target;
+            tracked_.insert(effect.target);
+        }
+        blockSites_.push_back(site);
     }
 
     // A block that becomes its own function: its frame is separate, and its
@@ -485,7 +541,7 @@ private:
                 define(bound, node, receiver, false);
             }
             walkExpression(receiver, bound != nullptr ? aliasEffect(bound) : noEffect());
-            Effect valueEffect = isReference(canonical(send->resultType)) ? effect : noEffect();
+            Effect valueEffect = carriesEscape(send->resultType) ? effect : noEffect();
             for (const Node* argument : arguments) {
                 walkInlined(argument, valueEffect, false);
             }
@@ -493,7 +549,7 @@ private:
         }
         case SendKind::inlineIf: {
             walkExpression(receiver, noEffect());
-            Effect valueEffect = isReference(canonical(send->resultType)) ? effect : noEffect();
+            Effect valueEffect = carriesEscape(send->resultType) ? effect : noEffect();
             for (const Node* argument : arguments) {
                 walkInlined(argument, valueEffect, false);
             }
@@ -509,10 +565,6 @@ private:
         case SendKind::inlineEnumDo:
             walkExpression(receiver, noEffect());
             walkInlined(arguments.back(), noEffect(), true);
-            return;
-        case SendKind::unionIfKindOf:
-            walkExpression(receiver, noEffect());
-            walkInlined(arguments.back(), noEffect(), false);
             return;
         case SendKind::containerAtIfAbsent:
             walkExpression(receiver, noEffect());
@@ -543,6 +595,16 @@ private:
         return send != nullptr && send->kind == SendKind::constructObject ? value : nullptr;
     }
 
+    // A weak or unowned variable must see its object destroyed when the last
+    // strong reference goes, which a stack object never is.
+    static Effect valueEffect(const LocalInfo* local)
+    {
+        if (local != nullptr && local->ownership != Ownership::strong) {
+            return escapeEffect("held by a weak or unowned reference");
+        }
+        return aliasEffect(local);
+    }
+
     void addSite(const Node* statement, const LocalInfo* local, const Node* allocation, const ClassInfo* info)
     {
         Site site;
@@ -566,7 +628,7 @@ private:
                 declare(local);
             }
             if (decl->initializer != nullptr) {
-                walkExpression(decl->initializer, aliasEffect(local));
+                walkExpression(decl->initializer, valueEffect(local));
             }
             auto object = model_.defaultObjects.find(decl->id);
             if (object != model_.defaultObjects.end()) {
@@ -585,7 +647,7 @@ private:
                 if (model_.implicitDeclarations.count(assignment->id) != 0) {
                     declare(local);
                 }
-                walkExpression(assignment->value, aliasEffect(local));
+                walkExpression(assignment->value, valueEffect(local));
                 if (const Node* send = constructorSend(assignment->value)) {
                     addSite(assignment, local, send, model_.sendOf(send)->classInfo);
                 }
@@ -672,7 +734,7 @@ private:
 
     void define(const LocalInfo* local, const Node* statement, const Node* value, bool allocates)
     {
-        if (!isTracked(local)) {
+        if (local == nullptr || !isReference(canonical(local->type))) {
             return;
         }
         Definition definition;
@@ -797,6 +859,88 @@ private:
         }
     }
 
+    // Whether a block outlives the frame that creates it: its value escapes, or
+    // it's assigned to a variable declared in another function or outside the
+    // loop that creates it.
+    bool outlivesFrame(BlockSite& site)
+    {
+        if (site.direct.site != nullptr) {
+            site.why = site.direct.why;
+            return true;
+        }
+        if (site.local == nullptr) {
+            return false;
+        }
+        if (const Escape* escape = escaped(site.local)) {
+            site.why = escape->why;
+            return true;
+        }
+        const LocalInfo* root = find(site.local);
+        for (const LocalInfo* other : tracked_) {
+            if (find(other) != root) {
+                continue;
+            }
+            auto declared = declared_.find(other);
+            if (declared == declared_.end() || declared->second.owner != site.scope.owner ||
+                !isPrefix(site.scope.loops, declared->second.loops)) {
+                site.why = "it's assigned to '" + other->name + "', which outlives " +
+                           (site.scope.loops.empty() ? std::string("the frame") : std::string("one pass of the loop"));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // A heap closure keeps what it captures alive, so those variables escape
+    // too; that can in turn make blocks held in them escape.
+    void resolveBlocks()
+    {
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (BlockSite& site : blockSites_) {
+                if (site.escapes || !outlivesFrame(site)) {
+                    continue;
+                }
+                site.escapes = true;
+                changed = true;
+                for (const LocalInfo* captured : site.info->captures) {
+                    if (isTracked(captured) && escaped(captured) == nullptr) {
+                        markEscape(captured, site.literal, "captured by a block that outlives its frame");
+                    }
+                }
+            }
+        }
+    }
+
+    void placeBlocks()
+    {
+        for (const BlockSite& site : blockSites_) {
+            if (site.escapes) {
+                model_.blockEscapes[site.info] = site.why;
+            }
+            else {
+                model_.stackBlocks.insert(site.info);
+            }
+        }
+    }
+
+    // Blocks that were never analysed (field initializers, compile-time code)
+    // stay heap closures, so only proven stack blocks are exempt.
+    void findBoxedLocals()
+    {
+        for (const auto& block : model_.blockInfos) {
+            if (block->inlined || model_.stackBlocks.count(block.get()) != 0) {
+                continue;
+            }
+            for (const LocalInfo* captured : block->captures) {
+                if (!captured->readOnly) {
+                    model_.boxedLocals.insert(captured);
+                }
+            }
+        }
+    }
+
     SemanticModel& model_;
     DiagnosticEngine& diagnostics_;
     MessageInfo* message_ = nullptr;
@@ -805,6 +949,7 @@ private:
     std::map<const LocalInfo*, Scope> declared_;
     std::set<const LocalInfo*> tracked_;
     std::vector<Site> sites_;
+    std::vector<BlockSite> blockSites_;
     std::map<const LocalInfo*, std::vector<Definition>> definitions_;
     Scope scope_;
     int nextLoop_ = 0;

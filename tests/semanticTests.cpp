@@ -74,6 +74,17 @@ TEST(Semantic, LiteralTakesTypeFromOtherOperand)
     EXPECT_EQ(localNamed(*a, "v")->type->name, "int64");
 }
 
+TEST(Semantic, AndOrXorAreLogicalOrBitwiseByOperands)
+{
+    auto a = analyzeMain("x := 6;\nm := x and 3;\nk := 5 xor x;\nb := true xor false;\nc := x > 1 and x < 9;\nbad := x and 3 = 0;\nreturn 0;");
+    EXPECT_EQ(localNamed(*a, "m")->type->name, "int32");
+    EXPECT_EQ(localNamed(*a, "k")->type->name, "int32");
+    EXPECT_EQ(localNamed(*a, "b")->type->name, "bool");
+    EXPECT_EQ(localNamed(*a, "c")->type->name, "bool");
+    EXPECT_TRUE(a->hasCode("sema.typeMismatch")) << a->text(); // `x and (3 = 0)`: parenthesise the mask
+    EXPECT_EQ(a->diagnostics.errorCount(), 1u) << a->text();
+}
+
 TEST(Semantic, ImplicitDeclarationCantReadItself)
 {
     auto a = analyzeMain("count := count + 1;\nreturn 0;");
@@ -204,7 +215,7 @@ TEST(Semantic, BareBlockParameterIsInferredFromTheBody)
     EXPECT_EQ(a->diagnostics.errorCount(), 0u) << a->text();
     const bob::sema::LocalInfo* f = localNamed(*a, "f");
     ASSERT_NE(f, nullptr);
-    EXPECT_EQ(f->type->name, "block takes: [int32] returns: int32");
+    EXPECT_EQ(f->type->name, "{ int32 [int32] }");
     const bob::sema::LocalInfo* n = localNamed(*a, "n");
     ASSERT_NE(n, nullptr);
     EXPECT_EQ(n->type->name, "int32");
@@ -236,17 +247,127 @@ TEST(Semantic, BreakDoesNotCrossABlockFunction)
     EXPECT_EQ(a->diagnostics.errorCount(), 1u) << a->text();
 }
 
-TEST(Semantic, BlocksCantEscape)
+TEST(Semantic, BlockTypesInFieldsAndResults)
 {
-    auto a = analyzeMain("return 0;", "@[static] msg make [block takes: [int32] returns: int32] { return { :x | x }; }",
-                         "record Holder { f: block; }");
-    EXPECT_NE(a->text().find("a block as a message's return type"), std::string::npos) << a->text();
-    EXPECT_NE(a->text().find("a block as a record field"), std::string::npos) << a->text();
+    auto a = analyzeMain("e: { } := { };\nreturn 0;",
+                         "@[static] msg make [{ int32 [int32] }] { return { :x | x }; }\n"
+                         "@[static] msg bare [block] { return { 1 }; }\n"
+                         "@[static] msg old: f:[block takes: [int32]] { }",
+                         "record Holder { f: { [int32] }; }\n"
+                         "class Button { public { onPress: { [int32] }; onHover: block?; } }\n"
+                         "class Hidden { private { run: { [int32] }; } }\n"
+                         "class Bare { public { f: block; } }");
+    EXPECT_TRUE(a->hasCode("sema.referenceInRecord")) << a->text();
+    EXPECT_NE(a->text().find("a bare 'block' can't be the type of a field"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("a bare 'block' can't be a message's return type"), std::string::npos) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.invalidOptional")) << a->text(); // a bare `block?` can't be inferred
+    EXPECT_NE(a->text().find("private field 'run' needs an initializer"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("block types are written in braces"), std::string::npos) << a->text();
+    EXPECT_EQ(a->diagnostics.errorCount(), 6u) << a->text();
+    EXPECT_EQ(localNamed(*a, "e")->type->name, "{ }");
+}
+
+namespace {
+
+// The block function that captures `name`.
+const bob::sema::BlockInfo* blockCapturing(const Analyzed& analyzed, const std::string& name)
+{
+    for (const auto& info : analyzed.model.blockInfos) {
+        for (const bob::sema::LocalInfo* captured : info->captures) {
+            if (!info->inlined && captured->name == name) {
+                return info.get();
+            }
+        }
+    }
+    return nullptr;
+}
+
+bool isStackBlock(const Analyzed& analyzed, const std::string& captured)
+{
+    return analyzed.model.stackBlocks.count(blockCapturing(analyzed, captured)) != 0;
+}
+
+bool isBoxed(const Analyzed& analyzed, const std::string& name)
+{
+    return analyzed.model.boxedLocals.count(localNamed(analyzed, name)) != 0;
+}
+
+}
+
+TEST(Semantic, NamedBlockTypesNameTheShape)
+{
+    auto a = analyzeMain("f: Transform := { :x: int32 | x * 2 };\ng: { int32 [int32] } := f;\nh: Handler := nil;\nreturn f value: 1;", "",
+                         "type Transform := { int32 [int32] };\n"
+                         "type Handler := { [int32] }?;\n"
+                         "type Bare := block;");
+    EXPECT_NE(a->text().find("a bare 'block' can't be a named type"), std::string::npos) << a->text();
+    EXPECT_EQ(a->diagnostics.errorCount(), 1u) << a->text(); // Transform and its shape are the same type
+    EXPECT_TRUE(bob::sema::sameBlockShape(localNamed(*a, "f")->type, localNamed(*a, "g")->type));
+    EXPECT_EQ(localNamed(*a, "f")->type->name, "{ int32 [int32] }");
+    EXPECT_TRUE(a->model.namedType("Transform")->isAlias);
+}
+
+TEST(Semantic, EscapingBlocksBecomeHeapClosures)
+{
+    auto a = analyzeMain("k := 1;\nf := { k + 1 };\nf value;\n"
+                         "j := 2;\ng := self keep: { j };\n"
+                         "q := 3;\nh: { [int32] }?;\nloop { h := { q }; break; }\n"
+                         "return 0;",
+                         "@[static] msg make [{ [int32] }] { n := 0; return { n := n + 1; n }; }\n"
+                         "@[static] msg keep: f:{ [int32] } [{ [int32] }] { return f; }\n"
+                         "@[static] msg adder: p:int32 [{ int32 [int32] }] { return { :x: int32 | x + p }; }");
+    EXPECT_EQ(a->diagnostics.errorCount(), 0u) << a->text();
+    EXPECT_TRUE(isStackBlock(*a, "k"));
+    EXPECT_FALSE(isBoxed(*a, "k"));
+    EXPECT_FALSE(isStackBlock(*a, "n")); // returned
+    EXPECT_TRUE(isBoxed(*a, "n"));
+    EXPECT_FALSE(isStackBlock(*a, "j")); // passed to a message that keeps it
+    EXPECT_TRUE(isBoxed(*a, "j"));
+    EXPECT_FALSE(isStackBlock(*a, "q")); // assigned to a variable that outlives the loop
+    EXPECT_FALSE(isStackBlock(*a, "p"));
+    EXPECT_FALSE(isBoxed(*a, "p"));      // read-only: copied into the closure
+    EXPECT_NE(a->model.blockEscapes.at(blockCapturing(*a, "n")).find("returned"), std::string::npos);
+}
+
+TEST(Semantic, WeakAndUnownedReferences)
+{
+    auto a = analyzeMain("n: Leaf;\n@[weak] me := n;\n@[weak] bad: Leaf := n;\n@[unowned] o: Leaf;\n@[weak] count := 3;\nme := n;\n"
+                         "x := 1;\n@[weak] x := 2;\nreturn 0;",
+                         "",
+                         "class Leaf { public { size: int32; } }\n"
+                         "class Node { public { @[weak] parent: Node?; @[unowned] owner: Node; @[weak] strongType: Node; } }");
+    EXPECT_EQ(localNamed(*a, "me")->ownership, bob::sema::Ownership::weak);
+    EXPECT_EQ(localNamed(*a, "me")->type->name, "Leaf?"); // inferred weak references become optional
+    EXPECT_NE(a->text().find("its type must be optional: 'Leaf?'"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("its type must be optional: 'Node?'"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("'o' is @[unowned] and needs a value"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("only references to objects can be @[weak]"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("@[weak] goes on the declaration of 'x'"), std::string::npos) << a->text();
+    EXPECT_EQ(a->diagnostics.errorCount(), 5u) << a->text();
+    const bob::sema::ClassInfo* node = a->model.classNamed("Node");
+    EXPECT_EQ(node->field("parent")->ownership, bob::sema::Ownership::weak);
+    EXPECT_TRUE(node->field("owner")->required); // an unowned field must be passed
+}
+
+TEST(Semantic, CapturedObjectsLeaveTheStack)
+{
+    auto a = analyzeMain("local: Box;\nf := { local size };\nf value;\nreturn 0;",
+                         "@[static] msg make [{ [int32] }] { kept: Box; return { kept size }; }",
+                         "class Box { public { size: int32 := 4; } }");
+    EXPECT_EQ(a->diagnostics.errorCount(), 0u) << a->text();
+    bool localOnStack = false;
+    bool keptOnStack = false;
+    for (const auto& [id, object] : a->model.stackObjects) {
+        localOnStack = localOnStack || object.local->name == "local";
+        keptOnStack = keptOnStack || object.local->name == "kept";
+    }
+    EXPECT_TRUE(localOnStack);
+    EXPECT_FALSE(keptOnStack);
 }
 
 TEST(Semantic, BlockArityMismatch)
 {
-    auto a = analyzeMain("return self apply: { :a :b | a } to: 1;", "@[static] msg apply: f:[block takes: [int32] returns: int32] to: x:int32 [int32] { return f value: x; }");
+    auto a = analyzeMain("return self apply: { :a :b | a } to: 1;", "@[static] msg apply: f:{ int32 [int32] } to: x:int32 [int32] { return f value: x; }");
     EXPECT_TRUE(a->hasCode("sema.blockArity")) << a->text();
 }
 
@@ -378,11 +499,11 @@ TEST(Semantic, SubrangesCheckConstantsAndDistinctTypesDontMix)
 
 TEST(Semantic, ContainerElementTypesAreInferred)
 {
-    auto a = analyzeMain("a := [1, 2];\nb: array;\nb add: \"x\";\nm := [7, \"s\", 1.5];\nd: dictionary;\nd at: \"k\" put: 2.5;\n"
+    auto a = analyzeMain("a := [1, 2];\nb: array;\nb add: \"x\";\nm := [7, 1.5];\nd: dictionary;\nd at: \"k\" put: 2.5;\n"
                          "unused: array;\nreturn 0;");
     EXPECT_EQ(bob::sema::typeName(localNamed(*a, "a")->type), "array of: int32");
     EXPECT_EQ(bob::sema::typeName(localNamed(*a, "b")->type), "array of: string");
-    EXPECT_EQ(bob::sema::typeName(localNamed(*a, "m")->type), "array of: [int32 | real64 | string]");
+    EXPECT_EQ(bob::sema::typeName(localNamed(*a, "m")->type), "array of: real64");
     EXPECT_EQ(bob::sema::typeName(localNamed(*a, "d")->type), "dictionary of: real64");
     EXPECT_TRUE(a->hasCode("sema.cannotInferElement")) << a->text();
 }
@@ -396,11 +517,17 @@ TEST(Semantic, StringsHaveViewsNotLengths)
     EXPECT_EQ(localNamed(*a, "b")->type->name, "int64");
 }
 
-TEST(Semantic, UnionsMustBeNarrowed)
+TEST(Semantic, MixedElementsNeedACommonType)
 {
-    auto a = analyzeMain("m := [1, \"a\"];\nn := (m at: 0) + 1;\ncase m at: 0 of { int32: { :i | } }\nreturn 0;");
-    EXPECT_TRUE(a->hasCode("sema.unknownMessage")) << a->text();
-    EXPECT_TRUE(a->hasCode("sema.caseNotExhaustive")) << a->text();
+    auto a = analyzeMain("m := [1, \"a\", 2];\nok := [1, 2.5];\nsq: Square;\nci: Circle;\nshapes := [sq, ci];\nreturn 0;", "",
+                         "@[protocol] class Shape { msg area [int32]; }\n"
+                         "class Square implements Shape { msg area [int32] { return 4; } }\n"
+                         "class Circle implements Shape { msg area [int32] { return 3; } }");
+    EXPECT_NE(a->text().find("these elements have no common type ('int32', 'string')"), std::string::npos) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.mixedElementTypes")) << a->text();
+    EXPECT_EQ(a->diagnostics.errorCount(), 1u) << a->text();
+    EXPECT_EQ(bob::sema::typeName(localNamed(*a, "ok")->type), "array of: real64");
+    EXPECT_EQ(bob::sema::typeName(localNamed(*a, "shapes")->type), "array of: Shape"); // a shared protocol
 }
 
 TEST(Semantic, MutatingSendsNeedAVariable)

@@ -51,6 +51,7 @@ enum class TokenKind : uint8_t {
     kwCase,
     kwShl,
     kwShr,
+    kwXor,
 };
 
 enum class TriviaKind : uint8_t {

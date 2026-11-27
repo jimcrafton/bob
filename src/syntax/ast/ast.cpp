@@ -168,6 +168,8 @@ const char* nodeKindName(NodeKind kind)
         return "TupleElement";
     case NodeKind::typeMessage:
         return "TypeMessage";
+    case NodeKind::blockType:
+        return "BlockType";
     case NodeKind::error:
         return "Error";
     }
@@ -360,6 +362,12 @@ std::vector<ChildRef> childrenOf(const Node* node)
         addAll(out, "argument", n->arguments);
         break;
     }
+    case NodeKind::blockType: {
+        auto n = static_cast<const BlockType*>(node);
+        addAll(out, "param", n->params);
+        addOne(out, "result", n->result);
+        break;
+    }
     case NodeKind::import:
     case NodeKind::integerLiteral:
     case NodeKind::realLiteral:
@@ -537,6 +545,7 @@ std::vector<Property> propertiesOf(const Node* node)
     case NodeKind::attributedExpr:
     case NodeKind::optionalType:
     case NodeKind::tupleType:
+    case NodeKind::blockType:
     case NodeKind::error:
         break;
     }
@@ -589,6 +598,7 @@ bool isTypeNode(const Node* node)
     case NodeKind::optionalType:
     case NodeKind::tupleType:
     case NodeKind::typeMessage:
+    case NodeKind::blockType:
         return true;
     default:
         return false;

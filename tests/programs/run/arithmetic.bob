@@ -17,7 +17,7 @@ program arithmetic, 0.1.0
             failures := failures + (self check: 7 / 2 = 3 id: 3);
             failures := failures + (self check: -7 / 2 = -3 id: 4);
             failures := failures + (self check: -7 % 3 = -1 id: 5);
-            failures := failures + (self check: (6 & 3) = 2 and (6 | 3) = 7 and (6 ^ 3) = 5 id: 6);
+            failures := failures + (self check: (6 and 3) = 2 and (6 or 3) = 7 and (6 xor 3) = 5 and (true xor false) id: 6);
             failures := failures + (self check: 1 shl 10 = 1024 id: 7);
             failures := failures + (self check: -16 shr 2 = -4 id: 8);
             failures := failures + (self check: 200u8 shr 3 = 25u8 id: 9);

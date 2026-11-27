@@ -1,5 +1,7 @@
 #include "semanticModel.h"
 
+#include <algorithm>
+
 namespace bob::sema {
 
 namespace {
@@ -106,6 +108,51 @@ int ClassInfo::slotOf(const std::string& selector) const
         }
     }
     return -1;
+}
+
+std::vector<std::string> ClassInfo::witnessSelectors() const
+{
+    std::vector<std::string> slots;
+    auto add = [&](const std::string& selector) {
+        if (std::find(slots.begin(), slots.end(), selector) == slots.end()) {
+            slots.push_back(selector);
+        }
+    };
+    for (const ClassInfo* refined : protocols) {
+        for (const std::string& selector : refined->witnessSelectors()) {
+            add(selector);
+        }
+    }
+    for (const MessageInfo* message : methodList) {
+        add(message->selector);
+    }
+    return slots;
+}
+
+int ClassInfo::witnessSlotOf(const std::string& selector) const
+{
+    std::vector<std::string> slots = witnessSelectors();
+    auto it = std::find(slots.begin(), slots.end(), selector);
+    return it == slots.end() ? -1 : static_cast<int>(it - slots.begin());
+}
+
+std::vector<const ClassInfo*> ClassInfo::conformedProtocols() const
+{
+    std::vector<const ClassInfo*> result;
+    std::vector<const ClassInfo*> pending;
+    for (const ClassInfo* info = this; info != nullptr; info = info->superclass) {
+        pending.insert(pending.end(), info->protocols.begin(), info->protocols.end());
+    }
+    while (!pending.empty()) {
+        const ClassInfo* protocol = pending.front();
+        pending.erase(pending.begin());
+        if (std::find(result.begin(), result.end(), protocol) != result.end()) {
+            continue;
+        }
+        result.push_back(protocol);
+        pending.insert(pending.end(), protocol->protocols.begin(), protocol->protocols.end());
+    }
+    return result;
 }
 
 ClassInfo* SemanticModel::classNamed(std::string_view name) const

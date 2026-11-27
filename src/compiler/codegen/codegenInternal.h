@@ -58,6 +58,10 @@ private:
     llvm::StructType* objectType(const sema::ClassInfo* info);
     llvm::StructType* classInfoType(size_t vtableSize);
     llvm::GlobalVariable* selectorGlobal(const std::string& selector);
+    // Protocol dispatch through itables (docs/proposals.md §2).
+    llvm::GlobalVariable* protocolGlobal(const sema::ClassInfo* protocol);
+    llvm::Function* witnessFunction();
+    std::pair<llvm::Constant*, uint32_t> emitConformances(const sema::ClassInfo* info);
     void declareClass(const sema::ClassInfo* info);
     void emitClass(const sema::ClassInfo* info);
     void emitCopy(const sema::MessageInfo* message);
@@ -73,6 +77,7 @@ private:
     llvm::Value* fieldAddress(llvm::Value* object, const sema::FieldInfo* field);
     llvm::Value* selfValue();
     llvm::FunctionType* methodType(const sema::MessageInfo* message);
+    llvm::Function* reflectionThunk(const sema::MessageInfo* message);
 
     // reference counting
     void retainValue(llvm::Value* value, const Type* type);
@@ -89,6 +94,13 @@ private:
     void releaseLocals();
     void emitReturn(llvm::Value* value);
 
+    // LLVM 23's getTerminator() asserts a well-formed block instead of
+    // returning null, so this works on both 22 and 23.
+    bool blockTerminated() const
+    {
+        const llvm::BasicBlock* block = builder_.GetInsertBlock();
+        return !block->empty() && block->back().isTerminator();
+    }
     void ensureLiveBlock();
     void emitStatements(const std::vector<Node*>& statements);
     void emitStatement(const Node* statement);
@@ -101,9 +113,43 @@ private:
     llvm::Value* addressOf(const sema::LocalInfo* local);
     llvm::AllocaInst* entryAlloca(llvm::Type* type, const std::string& name);
 
+    // ---- closures (codegenClosures.cpp) ----
+    // A block value is {function, environment}. The environment is null (nothing
+    // captured) or an object: a stack record with the immortal flag for blocks
+    // that don't outlive their frame, otherwise a reference-counted heap closure.
     llvm::StructType* blockValueType();
     llvm::FunctionType* blockFunctionType(const Type* blockType);
     llvm::Value* emitBlockLiteral(const BlockLiteral* literal);
+    bool isHeapBlock(const sema::BlockInfo* info) const;
+    // A heap closure holds read-only captures (parameters, self, loop variables)
+    // by value; everything else is the address of the variable (inside its box,
+    // for a boxed variable).
+    bool capturedByValue(const sema::BlockInfo* info, const sema::LocalInfo* local) const;
+    llvm::StructType* environmentType(const sema::BlockInfo* info);
+    llvm::GlobalVariable* environmentClass(const sema::BlockInfo* info);
+    // A runtime class with no messages: just a size and a destroy function.
+    llvm::GlobalVariable* plainClass(const std::string& name, llvm::StructType* layout, llvm::Function* destroy);
+    bool isBoxed(const sema::LocalInfo* local) const;
+    llvm::GlobalVariable* boxClass(const sema::LocalInfo* local);
+    // The box object holding the variable stored at `address`.
+    llvm::Value* boxOf(llvm::Value* address);
+    // Gives a boxed variable a new box; the frame lets go of the old one, which
+    // closures made earlier still share.
+    void allocateBox(const sema::LocalInfo* local);
+    // Stack slots for a function's variables (a box pointer for boxed ones).
+    void createSlots(const std::vector<sema::LocalInfo*>& locals);
+
+    // Fields and variables by ownership. A weak or unowned one holds the pointer
+    // with a weak count; reading it gives an owned (+1) strong reference.
+    llvm::Value* loadHeld(llvm::Value* address, const Type* type, sema::Ownership ownership, const std::string& name);
+    // Stores an owned value, letting go of the old one.
+    void storeHeld(llvm::Value* address, llvm::Value* owned, const Type* type, sema::Ownership ownership);
+    // Stores an owned value into memory that holds nothing yet (a new object's field).
+    void initializeHeld(llvm::Value* address, llvm::Value* owned, const Type* type, sema::Ownership ownership);
+    void dropHeld(llvm::Value* value, const Type* type, sema::Ownership ownership);
+    void copyHeld(llvm::Value* value, const Type* type, sema::Ownership ownership);
+    // The field an assignment target names (`x` inside the class, `p.x`), if any.
+    const sema::FieldInfo* assignedField(const Node* target) const;
     llvm::Function* emitBlockFunction(const sema::BlockInfo* info);
     llvm::Value* emitInlinedBody(const BlockLiteral* literal, const Type* resultType);
     llvm::Value* emitInvoke(const Node* receiver, const std::vector<Node*>& arguments, const Type* blockType);
@@ -132,21 +178,12 @@ private:
     llvm::Function* runtimeFunction(const char* name, llvm::Type* result, std::vector<llvm::Type*> params);
     llvm::Constant* defaultValue(const Type* type);
     uint64_t sizeOf(const Type* type);
-    llvm::StructType* unionType(const Type* type);
-    // Value conversions the analyzer allowed implicitly: T -> T?, member -> union,
-    // checked conversions into subranges. Everything else goes through widen().
+    // Value conversions the analyzer allowed implicitly: T -> T?, checked
+    // conversions into subranges. Everything else goes through widen().
     llvm::Value* coerce(llvm::Value* value, const Type* from, const Type* to);
     llvm::Value* optionalPresent(llvm::Value* value, const Type* type);
     llvm::Value* optionalValue(llvm::Value* value, const Type* type);
     llvm::Value* makeOptional(llvm::Value* present, llvm::Value* value, const Type* type);
-    llvm::Value* unionTag(llvm::Value* value);
-    llvm::Value* unionMember(llvm::Value* value, const Type* unionType, size_t member);
-    llvm::Value* unionWrap(llvm::Value* value, const Type* unionType, size_t member);
-    size_t unionIndex(const Type* unionType, const Type* member) const;
-    // Runs `body(memberIndex, memberValue)` in a switch on the union's tag; returns
-    // the phi of the bodies' results when `resultType` isn't void.
-    llvm::Value* switchOnUnion(llvm::Value* value, const Type* type, llvm::Type* resultType,
-                               const std::function<llvm::Value*(size_t, llvm::Value*)>& body);
     // A function `void (ptr element)` that retains or releases a value of `type` in memory.
     llvm::Function* elementCallback(const Type* type, bool retain);
     llvm::Constant* elementDescriptor(const Type* type);
@@ -163,7 +200,6 @@ private:
     void emitOrdinalLoop(const sema::LocalInfo* local, const Type* elementType, llvm::Value* low, llvm::Value* high,
                          const std::vector<Node*>& body, llvm::Value* setMask);
     llvm::Value* emitOptionalCompare(const BinarySend* send, const sema::SendInfo& info);
-    llvm::Value* emitUnionSend(const Node* node, const sema::SendInfo& send);
 
     // ---- compile time (codegenCompileTime.cpp) ----
     void emitThunk();
@@ -214,6 +250,8 @@ private:
     std::unordered_map<const sema::ClassInfo*, llvm::Function*> initsFunctions_;
     std::unordered_map<const sema::ClassInfo*, llvm::Function*> destroyFunctions_;
     std::unordered_map<std::string, llvm::GlobalVariable*> selectors_;
+    std::unordered_map<const sema::ClassInfo*, llvm::GlobalVariable*> protocolGlobals_;
+    std::unordered_map<const sema::MessageInfo*, llvm::Function*> reflectionThunks_;
     llvm::Function* function_ = nullptr;
     const sema::MessageInfo* message_ = nullptr;
     const sema::BlockInfo* block_ = nullptr;
@@ -227,8 +265,10 @@ private:
         const sema::ClassInfo* classInfo;
     };
     std::unordered_map<ast::NodeId, StackSlot> stackSlots_;
+    std::unordered_map<const sema::BlockInfo*, llvm::StructType*> environmentTypes_;
+    std::unordered_map<const sema::BlockInfo*, llvm::GlobalVariable*> environmentClasses_;
+    std::unordered_map<const sema::LocalInfo*, llvm::GlobalVariable*> boxClasses_;
 
-    std::unordered_map<const Type*, llvm::StructType*> unionTypes_;
     std::unordered_map<const Type*, llvm::Function*> retainCallbacks_;
     std::unordered_map<const Type*, llvm::Function*> releaseCallbacks_;
     std::unordered_map<const Type*, llvm::Constant*> descriptors_;

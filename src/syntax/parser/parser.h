@@ -112,6 +112,7 @@ private:
     ast::Node* parseType(bool allowTypeMessage);
     ast::Node* parseTypeTerm();
     ast::Node* parseBracketType();
+    ast::Node* parseBlockType();
     ast::Node* parseOptionalSuffix(ast::Node* inner, uint32_t begin);
 
     const lexer::TokenStream& stream_;

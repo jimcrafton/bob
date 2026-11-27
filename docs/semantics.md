@@ -23,7 +23,6 @@ What the analyzer (`bobSemantic`, `src/semantic`) and code generator (`src/compi
 | `T?` | optionals of any value type, see [Optionals](#optionals-phase-5) |
 | `string`, `char` | see [Strings](#strings-phase-5) |
 | `array`, `dictionary`, `hashtable`, `set`, fixed arrays | see [Containers](#containers-phase-5) |
-| `A \| B` | inferred unions, see [Unions](#inferred-unions-phase-5) |
 
 Not yet: `int128`, tuples, `slice`, `pointer`, distinct record and class types.
 
@@ -44,9 +43,9 @@ An untyped literal takes its type from context: the declared type, the parameter
 |---|---|---|
 | `+ - * /` | numeric, both sides converted to their common type | common type |
 | `%` | integers | common type |
-| `& \| ^` | integers | common type |
+| `and`, `or`, `xor` | integers | common type, **bitwise** |
 | `= <> < <= > >=` | numeric (`=` and `<>` also on `bool`) | `bool`; for reals `<>` is true when either side is NaN |
-| `and`, `or` | `bool` | `bool`, **short-circuit** |
+| `and`, `or`, `xor` | `bool` | `bool`; `and`/`or` **short-circuit** |
 | `x negated`, `x abs` | signed integer or real (`abs` also unsigned) | same |
 | `b not` | `bool` | `bool` |
 | `x asInt8 … asUInt64 asReal32 asReal64` | numeric | target type, **checked** |
@@ -62,18 +61,27 @@ An untyped literal takes its type from context: the declared type, the parameter
 ## Statements
 `if`/`else if`/`else`, `while`, `loop`, `break`, `continue`, `return`, statement groups, and:
 - `for i in a to: b { … }` visits `a`…`b` inclusive (nothing if `a > b`), and it's correct up to the type's maximum (`250u8 to: 255u8`). The bounds must be integers. The loop variable has their common type, or the declared type (`for b: uint8 in …`). Intervals aren't values yet: `k := 1 to: 3` is `sema.intervalOutsideFor`. `for` also iterates enums, subranges, enum intervals (`Color red to: Color blue`), string views and containers (below).
-- `case x of { … } else { … }` on integers and `char`. Labels are integer literals or `(lo to: hi)` ranges and must not overlap. Because an integer can't be covered completely, `else` is required (`sema.caseNotExhaustive`). A `case` over an enum, a subrange or a union can cover every value and leave `else` out (below).
+- `case x of { … } else { … }` on integers and `char`. Labels are integer literals or `(lo to: hi)` ranges and must not overlap. Because an integer can't be covered completely, `else` is required (`sema.caseNotExhaustive`). A `case` over an enum or a subrange can cover every value and leave `else` out (below). Entries don't bind values (`sema.invalidCaseBinding`).
 
-## Blocks (phase 3)
+## Blocks (phase 3, escaping in phase 8)
 - **Values.** `{ :a :b | statements }` is a closure. Its value is its last statement when that's an expression, so `{ :i: int32 | i * i }` returns `i * i`. Call it with `value`, `value:`, `value:value:` and so on.
-- **Types** are written as a type message when needed: `[block takes: [int32, int32] returns: bool]`, `[block takes: [int32]]` (no result), `[block returns: int32]` (no parameters), or plain `block`.
+- **Types** are written in braces when needed, with the result in brackets: `{ int32, int32 [bool] }`, `{ int32 }` (no result), `{ [int32] }` (no parameters), `{ }` (neither), or plain `block` (inferred, below). A message returning a block writes it inside its result brackets: `msg adder: n:int32 [{ int32 [int32] }]`. The old `[block takes: … returns: …]` form is `sema.invalidBlockType`.
+- **Named block types.** `type Transform := { int32 [int32] };` names a shape, so `msg adder: n:int32 [Transform]` reads better than nesting braces in brackets. A named block type (or optional block, `type Handler := { [int32] }?;`) is always an alias, with or without `@[alias]`: blocks match by shape, so any block of that shape is a `Transform`. `type B := block;` is `sema.cannotInferBlock`. Exported ones appear in interfaces as `@[alias] type …`.
 - **Inference.**
   - A message parameter typed plain `block` gets its type from how the body uses it. `f value: x` fixes the parameter types, and a result used as `int32` fixes the result. Passing it to another message's block parameter fixes it from there.
   - If the body doesn't pin it down (never invoked, or only in a cycle of messages), you get `sema.cannotInferBlock`, asking for the annotation.
   - A block literal's parameter types come from the expected block type. Without one, write them, as in `{ :i: int32 | … }`.
   - A local declared `b: block := …` takes its type from the initializer.
-- **Capture by reference.** A block reads and writes the variables it uses from enclosing code directly. Its environment is a stack record of pointers to those variables, with no allocation.
-- **No escaping (until phase 8).** A block can be passed as an argument, held in a local, and invoked. It can't be a message's return type or a record field (`sema.unsupported`), so it never outlives the frame that created it.
+  - A bare `block` can't be a message's return type, a field type or `block?`, since nothing there can infer it (`sema.cannotInferBlock`, `sema.invalidOptional`).
+- **Capture by reference.** A block reads and writes the variables it uses from enclosing code directly, whether or not it escapes.
+- **Escaping (phase 8).** A block can be returned, stored in a class field (`onPress: { int32 [int32] };`, or optional `{ … }?`), stored in a local, and passed on. There's no `@[escaping]` annotation: escape is inferred by the same whole-program analysis that places objects on the stack (below).
+  - A block whose value never outlives the frame that creates it keeps a **stack environment**: a record of pointers to the captured variables, with no allocation (`SemanticModel::stackBlocks`).
+  - Any other block is a **heap closure**: a reference-counted object holding its captures. It escapes when it's returned (also from another block), stored in a field, passed to a message that keeps that parameter, passed to a block, captured by a heap closure, or assigned to a variable declared in another function or outside the loop that creates it. `SemanticModel::blockEscapes` records why.
+  - A heap closure **copies** read-only captures (parameters, `self`, loop variables, `ifNotNil:` bindings) and retains them. A mutable variable it captures is **boxed**: it lives in a small heap object shared by the frame and every closure that captures it, so all of them see the same variable (`SemanticModel::boxedLocals`). A variable declared inside a loop gets a new box on each pass, so closures made in different passes don't share it.
+  - Whatever a heap closure captures escapes with it: a captured object goes on the heap, a captured `self` or parameter counts as kept in the message's escape summary.
+  - Blocks hold a reference, so a record can't have a block field (`sema.referenceInRecord`). Containers of blocks aren't supported yet.
+  - A class field of block type with no initializer is **required**: the constructor message must pass it (`Button onPress: { … }`). A private one needs an initializer.
+- **Values and ARC.** A block value is `{function, environment}`, and block values are reference counted like strings: copying retains the environment, dropping it releases it. A stack environment carries the immortal flag, so those calls return at once, and a block that captures nothing has a null environment.
 - **Inlined messages.** These compile to plain branches and loops, with no closure:
   - `b ifTrue: { … }`, `ifFalse:`, `ifTrue:ifFalse:`, `ifFalse:ifTrue:` with block literals. The two-branch forms produce a value when both branches end in expressions of a common type: `m := (x > 3) ifTrue: { 100 } ifFalse: { 200 };`.
   - `a to: b do: { :i | … }` behaves like `for i in a to: b`.
@@ -81,7 +89,7 @@ An untyped literal takes its type from context: the declared type, the parameter
 
   Non-literal arguments are `sema.inlinedNeedsBlock`. `break`/`continue` inside `to:do:` and `timesRepeat:` apply to them, and inside the `ifTrue:` family they apply to the surrounding loop.
 - **`return`** is allowed only in code that runs in the message's own frame: its body and inlined blocks. Inside any other block it's `sema.returnInBlock`, because it would have to unwind through whoever called the block. Make the value the block's last expression instead. Likewise, `break`/`continue` can't leave a block function.
-- **Code generation.** A non-inlined block becomes an internal function `bob.<program>.<message>.blockN(env, args…)`. A block value is `{function pointer, environment pointer}`, and calling it is an indirect call. `bobc --explain-dispatch` lists every send and block with how it was compiled.
+- **Code generation.** A non-inlined block becomes an internal function `bob.<program>.<message>.blockN(env, args…)`, and calling a block value is an indirect call. An environment is `{class*, refCount, flags, captures…}`: each capture is the variable's address (in its box, for a boxed variable) or, for a copied capture, the value. A heap closure's class releases its captures when it's destroyed. `bobc --explain-dispatch` lists every send and block with how it was compiled, including whether a block's environment is on the stack or a heap closure, and why.
 
 ## Classes, protocols and ARC (phase 4)
 **Declaring**
@@ -115,7 +123,7 @@ There's no `new` (design §4.3a).
 
 **Where objects live** (`bobc --explain-dispatch` reports each allocation)
 - An object created by `x: C;` or `x := C f: …` goes **on the stack** when it provably doesn't outlive the function that creates it:
-  - Nothing it's assigned to escapes. Escaping means it's stored into a field or container, returned, passed to a block, used as a key, or passed to a message that keeps that parameter or `self`.
+  - Nothing it's assigned to escapes. Escaping means it's stored into a field or container, returned, passed to a block, used as a key, captured by a heap closure, held by a weak or unowned variable, or passed to a message that keeps that parameter or `self`.
   - Each message's summary of what it keeps is computed over the whole program, to a fixed point, so recursion is handled. Vtable and protocol sends use every implementation that could run.
   - No `init` in the class chain keeps `self`.
   - Every variable it's assigned to is declared in the same function and the same loop body. That lets the next pass of a loop, or the frame's exit, reuse the memory safely.
@@ -153,18 +161,21 @@ There's no `new` (design §4.3a).
 |---|---|---|
 | class `C` | one implementation in `C` and everything below it | **tier 1**: direct call |
 | class `C` | overridden somewhere below `C` | **tier 1v**: load `isa`, call through vtable slot |
-| protocol `P` | any | **tier 2**: `bob_msgSend(self, selector, args…)` |
+| protocol `P` | any | **tier 2**: itable. Load `isa`, find the class's witness table for `P` (`bobWitness`), call through the message's slot |
 | `super` | any | direct call to the superclass's implementation |
 
-- Instance messages compile to `bob.<Class>.<selector>(self, selector, args…)`. Protocol defaults compile to `bob.<Protocol>.<selector>`, which dispatches sends to `self` dynamically.
+- Instance messages compile to `bob.<Class>.<selector>(self, args…)`. Protocol defaults compile to `bob.<Protocol>.<selector>`; their sends to `self` go through the itable.
+- The method table (`{selector, implementation}`, for `bob_msgSend` and reflection) points at a thunk per message, `….msgSend(self, selector, args…)`, which drops the selector and tail-calls the message.
 - Every class gets a vtable slot for each of its instance messages, with inherited slots first.
-- Messages that can be reached through `bob_msgSend` (protocol messages) can't return records yet.
+- **Itables (phase 8).** A protocol's slots are the messages of the protocols it refines first (in the order it names them, without repeats), then its own, in declaration order. Every class has a witness table for each protocol it conforms to, directly, by refinement or through a superclass, filled with its own implementation, an inherited one or the protocol default. A value of a refined protocol can be used as the protocol it refines, because each protocol has its own table. Adding or reordering protocol messages changes the interface, so importers recompile.
+- Protocol messages can return records.
 
 **Object layout and runtime**
 - An object is `{class*, refCount: uint32, flags: uint32, fields…}`, with inherited fields first and the object allocated from the process heap.
-- The class info (`BobClass` in `src/shared/objectModel.h`) holds the superclass, name, instance size, `destroy` function, method table `{selector, implementation}` and the cache pointer, followed by the vtable.
+- The class info (`BobClass` in `src/shared/objectModel.h`) holds the superclass, name, instance size, `destroy` function, method table `{selector, implementation}`, the conformance count, the method cache, and the conformance list `{protocol, witness table}`, followed by the vtable (at offset 64).
+- A protocol descriptor (`BobProtocol`: name and slot count) is emitted link-once by every module that uses the protocol, so its address identifies it program-wide, like a selector. `bobWitness` scans the class's conformance list for it. It only reads immutable tables, so nothing in protocol dispatch is written at run time.
 - Selectors are unique strings, compared by address.
-- `bob_msgSend` (MASM) probes a per-class cache and falls back to `bobMsgSendLookup`, which walks the superclass chain. An unknown selector traps.
+- `bob_msgSend` (MASM) probes a per-class cache and falls back to `bobMsgSendLookup`, which walks the superclass chain. An unknown selector traps. No generated code uses it any more; it stays for reflection (`perform:`).
 
 **Reference counting (ARC)** (atomic counts)
 - Variables and fields own one reference. Parameters and `self` are borrowed.
@@ -174,7 +185,18 @@ There's no `new` (design §4.3a).
 - A function releases its class-typed locals when it returns. Variables declared in a loop release their previous value on each new declaration.
 - Values loaded from fields, or from variables captured by a block, are retained while in use, because the callee could overwrite their source.
 - When the count reaches 0, the class's `destroy` releases the object's reference fields and the memory is freed.
-- Cycles aren't collected. `weak`/`unowned` come with escaping closures in phase 8.
+- Cycles aren't collected; break them with `weak` or `unowned` references (below).
+- An `ifNotNil:` binding is released when its block ends, unless a block captures it.
+
+**Weak and unowned references** (phase 8)
+- `@[weak]` and `@[unowned]` go on a class field or on a variable's declaration: `@[weak] parent: Node?;`, `@[weak] me := self;`, `@[unowned] owner: Customer;`. Neither keeps its object alive.
+- A **weak** reference reads as `nil` once its object is destroyed, so its type must be optional (`sema.invalidOwnership` otherwise). An implicit declaration (`@[weak] me := self;`) gets the optional type `Node?` by itself.
+- An **unowned** reference keeps its declared type. Reading it after its object is destroyed traps (`unowned reference to a destroyed object`, exit 101). An unowned class field with no initializer is required, and an unowned variable needs a value, because a default-constructed object would have no owner and be destroyed at once.
+- Only object references can be weak or unowned. The attribute goes on the declaration, not on a later assignment.
+- Reading either gives a strong reference for the rest of the statement, so the object can't vanish while it's in use.
+- An object assigned to a weak or unowned variable goes on the heap, because it has to be destroyed when its last strong reference goes, which a stack object never is.
+- In the runtime, weak and unowned references count in the upper bits of the header's `flags`. When the strong count reaches 0 the object is destroyed (its fields released), and its memory is kept until the last weak or unowned reference lets go. The object header also has a stack flag (`bobObjectIsOnStack` in the runtime), set for stack objects and stack environments. The language query for it comes with reflection.
+- Interfaces (`.bobi`) carry `@[weak]` and `@[unowned]` on exported fields.
 - **Leak report:** at exit, the runtime prints `bob: leak: N object(s), M bytes still allocated at exit` to stderr if anything is still alive. The test harness requires every program to report nothing, except `leakCycle.bob`, which checks that the report works.
 
 ## Enums, subranges and named types (phase 5)
@@ -217,6 +239,7 @@ There's no `new` (design §4.3a).
 - A named numeric, `bool` or `char` type is **distinct**. It has the base's storage and operators, but mixes only with itself: `p + q` is a `PhysAddr`, untyped literals adopt it, and assigning a `uint64` or a `VirtAddr` is `sema.typeMismatch`.
 - `p value` gives the base, and `PhysAddr fromValue: n` makes one.
 - `@[alias] type Handle := uint64;` is just another name for `uint64`.
+- A named block type is always an alias (see [Blocks](#blocks-phase-3-escaping-in-phase-8)).
 - Distinct record and class types aren't supported yet.
 
 ## Optionals (phase 5)
@@ -242,7 +265,7 @@ There's no `new` (design §4.3a).
 - `=` and `<` compare byte-wise, which for UTF-8 is codepoint order.
 - `startsWith:`, `endsWith:`, `includesSubstring:`, `isEmpty`.
 - `s split: ","` gives `array of: string` (empty pieces are kept), and `", " join: parts` joins one.
-- `x printString` works on numbers, `bool`, `char`, enums (the member name), strings and unions of these. Reals print up to 15 significant digits, so the output isn't yet the shortest form that round-trips.
+- `x printString` works on numbers, `bool`, `char`, enums (the member name) and strings. Reals print up to 15 significant digits, so the output isn't yet the shortest form that round-trips.
 - `s toUtf8` gives `array of: uint8`. `string fromUtf8: bytes` gives `string?`, nil if the bytes aren't valid. `string fromUtf8Lossy: bytes` replaces each invalid byte with U+FFFD.
 - The grapheme tables are generated from the UCD by `tools/unicodegen` (see building.md). The runtime's segmenter passes all of Unicode's `GraphemeBreakTest.txt` (`Unicode.GraphemeBreakConformance`).
 
@@ -262,7 +285,7 @@ Element types are inferred. You write `array of: T` (or a similar type message) 
 - From the first store into a bare `array`/`dictionary`/`hashtable`/`set` local, field or `[array]` result: `add:`, `at:put:`, an assignment, or a returned value. Later stores must match.
 - Reading the elements before anything is stored is `sema.cannotInferElement`. So is never storing anything.
 - Message **parameters** must spell out the element type (`nums:[array of: int32]`). Specialising a message per element type at each call site (design §4.5) is still to come.
-- **Mixed literals**: classes that share a superclass or protocol give that type. Otherwise the element type is the closed union of the element types (see below).
+- **Mixed literals**: the elements must share a type. Values that convert to one type give it (`[1, 2.5]` is `real64`), and objects that share a superclass or protocol give that class or protocol. Anything else is `sema.mixedElementTypes`, which names the types (there are no inferred unions; removed 2026-11-27).
 
 **Value semantics**
 - Containers are values. `b := a` shares one buffer until either variable changes it, which copies it first.
@@ -286,17 +309,6 @@ Element types are inferred. You write `array of: T` (or a similar type message) 
 - Strings, arrays and tables are runtime buffers with an object header (`src/shared/objectModel.h`), counted by the leak report.
 - Generated code describes each element type to the runtime with a `BobElementType`: its size, retain/release callbacks, and whether equality and hashing use the raw bytes or string contents.
 
-## Inferred unions (phase 5)
-- A literal that mixes unrelated types, such as `[7, 8, "oiudf", 1.5]`, has a closed union as its element type (`int32 | real64 | string`).
-- Each value is stored as a tag plus the value inline, so primitives aren't boxed.
-- Messages every member understands: `printString` compiles to a switch on the tag with a direct call per member.
-- Anything else needs narrowing first:
-  - `u ifKindOf: int32 do: { :n | … }`
-  - `u isKindOf: string`
-  - `case u of { int32: { :n | … } string: { :s | … } }`, which binds the narrowed value when an entry has one label, and must cover every member or have an `else`.
-- Using a union where a specific type is needed is an error naming the union.
-- A union member can't be a class reference or optional.
-
 ## Compile time (phase 6)
 Compile-time code is ordinary bob, type checked like everything else. `bobc` compiles it with the same code generator and runs it inside the compiler (an LLVM ORC JIT) against a build of the runtime linked into the compiler (`bobrtHosted`). Its results are embedded in the program.
 
@@ -308,8 +320,8 @@ Compile-time code is ordinary bob, type checked like everything else. `bobc` com
   - A constant needs a value (`sema.invalidConstant`).
 - A unit-level declaration without `@[constant]` is `sema.unitLevelVariable`: mutable globals aren't supported yet.
 - Constants are visible in every message, and may refer to each other in any order. They're evaluated in dependency order, and a cycle is an error (`sema.constantCycle` or `compiletime.cycle`).
-- Assigning to one is `sema.assignToConstant`. A constant's value must be **embeddable**: numbers, `bool`, `char`, enums, subranges, enum sets, strings, records, fixed arrays, optionals and unions of those, or arrays, sets, dictionaries and hashtables of those (`sema.notEmbeddable` otherwise; objects and blocks exist only while code runs).
-- **How constants are embedded:** strings and arrays become immortal read-only objects shared by every use (a 256-entry table exists once in the binary). Records and scalars become immediate constants. Dictionaries, hashtables, hash sets and unions are rebuilt where they're used.
+- Assigning to one is `sema.assignToConstant`. A constant's value must be **embeddable**: numbers, `bool`, `char`, enums, subranges, enum sets, strings, records, fixed arrays and optionals of those, or arrays, sets, dictionaries and hashtables of those (`sema.notEmbeddable` otherwise; objects and blocks exist only while code runs).
+- **How constants are embedded:** strings and arrays become immortal read-only objects shared by every use (a 256-entry table exists once in the binary). Records and scalars become immediate constants. Dictionaries, hashtables and hash sets are rebuilt where they're used.
 - Constants have value semantics like any container: `mine := TABLE; mine add: x;` copies first.
 - Any other statement at unit level must be in a `@[compiletime] { … }` block (`sema.unitLevelCode`).
 
@@ -335,7 +347,7 @@ Compile-time code is ordinary bob, type checked like everything else. `bobc` com
 | `x meta name` | the variable's, field's or type's name |
 | `x meta type` | the same information, for the type (so `self meta type fields` works) |
 | `T meta count` | members of an enum, elements of a fixed array, values of a subrange, fields of a record |
-| `Color meta members` | `array of: Color` (a union gives its member type names) |
+| `Color meta members` | `array of: Color` |
 | `c meta elementType` | `meta` of a container's or optional's element type |
 | `T meta fields` | `array of: FieldMeta` (`name`, `typeName`, `offset`, `size`), only in compile-time code. Outside the class, only public fields |
 
@@ -349,7 +361,7 @@ The model is Object Pascal's units (design §11.5).
 **Units and sections**
 - `module name, 1.4.11` and `lib name, 2.0.0` units are compiled on their own.
 - Their unit-level declarations go in an `interface { … }` section, which is what importers see, or `implementation { … }` (or no section), which stays private.
-- An interface declaration can't use an implementation type (`sema.privateInInterface`). That includes the private fields of an exported class, because importers need its layout. It also rules out an inferred union, which can't be written as a type, and a dictionary or hashtable constant.
+- An interface declaration can't use an implementation type (`sema.privateInInterface`). That includes the private fields of an exported class, because importers need its layout. It also rules out a dictionary or hashtable constant.
 - A program has no sections (`sema.sectionInProgram`).
 
 **Building**

@@ -30,9 +30,19 @@ struct Origin {
     bool exported = false;
 };
 
+// How a field or variable holds a class reference (design §6.1).
+enum class Ownership : uint8_t {
+    strong,
+    // `@[weak]`: doesn't keep the object alive and reads as nil once it's destroyed (type `C?`).
+    weak,
+    // `@[unowned]`: doesn't keep the object alive; reading it once the object is destroyed traps.
+    unowned,
+};
+
 struct FieldInfo {
     std::string name;
     const Type* type = nullptr;
+    Ownership ownership = Ownership::strong;
     uint32_t index = 0;
     const ast::FieldDecl* decl = nullptr;
     // Class fields only: declaring class, visibility, initializer run by `new`.
@@ -64,6 +74,7 @@ struct BlockInfo;
 struct LocalInfo {
     std::string name;
     const Type* type = nullptr;
+    Ownership ownership = Ownership::strong;
     const ast::Node* decl = nullptr;
     bool isParameter = false;
     bool readOnly = false;
@@ -76,8 +87,9 @@ struct LocalInfo {
 
 // A block literal. Inlined blocks (literal arguments of ifTrue:, to:do:, ...)
 // run in the enclosing function and own no variables. Other blocks compile to
-// their own function and reach captured variables through an environment of
-// pointers (capture by reference; blocks don't escape their creating frame).
+// their own function and reach captured variables through an environment
+// (capture by reference): a stack record when the block doesn't outlive its
+// frame (SemanticModel::stackBlocks), otherwise a heap closure.
 struct BlockInfo {
     const ast::BlockLiteral* node = nullptr;
     const Type* type = nullptr;
@@ -161,6 +173,12 @@ struct ClassInfo {
     // Instance message visible on this class or protocol (own, inherited, protocol default).
     MessageInfo* lookup(const std::string& selector) const;
     int slotOf(const std::string& selector) const;
+    // Protocol: its witness-table slots. Refined protocols' messages come first
+    // (in the order they're refined), then its own in declaration order.
+    std::vector<std::string> witnessSelectors() const;
+    int witnessSlotOf(const std::string& selector) const;
+    // Class: every protocol it conforms to, directly, by refinement or through a superclass.
+    std::vector<const ClassInfo*> conformedProtocols() const;
 };
 
 struct EnumMemberInfo {
@@ -210,10 +228,9 @@ struct ConstValue {
     uint64_t bits = 0;
     double real = 0.0;
     std::string text;                // string
-    std::vector<ConstValue> elements; // array, fixed array, set, record fields, the value of an optional or union member
+    std::vector<ConstValue> elements; // array, fixed array, set, record fields, the value of an optional
     std::vector<std::pair<ConstValue, ConstValue>> entries; // dictionary, hashtable
     bool present = true;             // optional
-    uint32_t tag = 0;                // union: member index
 };
 
 // Something evaluated during compilation: a unit-level constant, a
@@ -358,10 +375,6 @@ enum class SendKind : uint8_t {
     metaInfo,          // `x meta` itself (`op` is the variable's name, if any)
     metaFields,        // `T meta fields`: an array of FieldMeta, built where it's used
     compilerDiagnostic,// `compiler error:` / `warning:` / `note:`
-
-    // unions
-    unionIfKindOf,     // u ifKindOf: T do: { :x | ... }; `operandType` is T
-    unionIsKindOf,     // u isKindOf: T
 };
 
 // How a send node is implemented. `operandType` is the type every operand is
@@ -449,6 +462,14 @@ public:
     ClassInfo* fieldMetaClass = nullptr;
     // Locals that only ever hold stack objects (or nil): no retain/release on them.
     std::unordered_set<const LocalInfo*> stackOnlyLocals;
+    // Block functions whose environment lives in the creating frame, because the
+    // block provably doesn't outlive it. Every other block is a heap closure.
+    std::unordered_set<const BlockInfo*> stackBlocks;
+    // Why a block analysed in a message body became a heap closure (for tools).
+    std::unordered_map<const BlockInfo*, std::string> blockEscapes;
+    // Mutable variables captured by a heap closure: they live in a heap box that
+    // the frame and the closures share, so every one sees the same variable.
+    std::unordered_set<const LocalInfo*> boxedLocals;
 
     const Type* typeOf(const ast::Node* node) const;
     const LocalInfo* localOf(const ast::Node* node) const;

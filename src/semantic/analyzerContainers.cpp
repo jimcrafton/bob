@@ -1,4 +1,4 @@
-// Strings, built-in containers, element-type inference and inferred unions (phase 5).
+// Strings, built-in containers and element-type inference (phase 5).
 
 #include "analyzerInternal.h"
 
@@ -24,14 +24,6 @@ bool isEquatable(const Type* type)
 bool isPrintable(const Type* type)
 {
     type = decay(canonical(type));
-    if (isUnion(type)) {
-        for (const Type* member : type->members) {
-            if (!isPrintable(member)) {
-                return false;
-            }
-        }
-        return true;
-    }
     return isNumeric(type) || isEnum(type) || isString(type) || type->kind == TypeKind::boolType || type->kind == TypeKind::character;
 }
 
@@ -225,24 +217,19 @@ const Type* Analyzer::mergeElementTypes(const std::vector<const Type*>& elementT
         }
     }
     if (common == nullptr) {
-        std::vector<const Type*> members;
-        for (const Type* type : types) {
-            if (isOptional(type) || isReference(type)) {
-                error(site, "sema.invalidElementType",
-                      "'" + typeName(type) + "' can't be mixed with other element types; classes mix only when they share a class or protocol");
-                return types_.error();
-            }
-            if (isUnion(type)) {
-                members.insert(members.end(), type->members.begin(), type->members.end());
-            }
-            else {
-                members.push_back(type);
+        std::string names;
+        for (size_t i = 0; i < types.size(); ++i) {
+            if (names.find("'" + typeName(types[i]) + "'") == std::string::npos) {
+                names += (names.empty() ? "" : ", ") + ("'" + typeName(types[i]) + "'");
             }
         }
-        common = types_.unionOf(members);
+        error(site, "sema.mixedElementTypes",
+              "these elements have no common type (" + names +
+                  "); every element must convert to one type, or be objects sharing a class or protocol");
+        return types_.error();
     }
     if (sawNil) {
-        if (isUnion(common) || isOptional(common)) {
+        if (isOptional(common)) {
             error(site, "sema.invalidElementType", "nil can't be mixed into '" + typeName(common) + "'");
             return types_.error();
         }
@@ -522,9 +509,7 @@ const Type* Analyzer::checkStringBinary(const BinarySend* send, const Type* left
         return types_.boolType();
     }
     check(send->argument, nullptr);
-    error(send->selectorRange, "sema.unknownMessage",
-          "'" + typeName(left) + "' doesn't understand '" + op + "'" +
-              (isUnion(left) ? "; narrow it first with 'ifKindOf: T do: { :x | ... }' or a 'case'" : ""));
+    error(send->selectorRange, "sema.unknownMessage", "'" + typeName(left) + "' doesn't understand '" + op + "'");
     return types_.error();
 }
 
@@ -751,115 +736,6 @@ const Type* Analyzer::checkContainerKeyword(const KeywordSend* send, const Type*
         return record(SendKind::inlineDo, types_.voidType());
     }
     return nullptr;
-}
-
-// ---------------------------------------------------------------------------
-// unions
-
-const Type* Analyzer::checkUnionUnary(const UnarySend* send, const Type* receiver)
-{
-    error(send->selectorRange, "sema.unknownMessage",
-          "not every member of '" + typeName(receiver) + "' understands '" + send->selector +
-              "'; narrow it first with 'ifKindOf: T do: { :x | ... }' or a 'case'");
-    return types_.error();
-}
-
-const Type* Analyzer::checkUnionKeyword(const KeywordSend* send, const Type* receiver, const Type* expected)
-{
-    (void)expected;
-    const std::string& selector = send->selector;
-    if (selector != "ifKindOf:do:" && selector != "isKindOf:") {
-        return nullptr;
-    }
-    const Type* meta = check(send->arguments[0], nullptr);
-    if (meta == types_.error()) {
-        return meta;
-    }
-    const Type* member = meta->kind == TypeKind::meta ? canonical(meta->instance) : nullptr;
-    if (member == nullptr || std::find(receiver->members.begin(), receiver->members.end(), member) == receiver->members.end()) {
-        error(send->arguments[0], "sema.typeMismatch", "'" + typeName(receiver) + "' never holds a '" + typeName(member != nullptr ? member : meta) + "'");
-        return types_.error();
-    }
-    if (selector == "isKindOf:") {
-        addSend(send, SendKind::unionIsKindOf, selector, member, types_.boolType());
-        return types_.boolType();
-    }
-    if (!checkInlinedEach(send->arguments[1], "ifKindOf:do:", member, 0)) {
-        return types_.error();
-    }
-    addSend(send, SendKind::unionIfKindOf, selector, member, types_.voidType());
-    return types_.voidType();
-}
-
-// `case v of { int32: { :n | ... } string: { :s | ... } }`. Each label names a
-// member type; the case range is the member's tag.
-void Analyzer::checkUnionCase(const CaseStmt* statement, const Type* subject)
-{
-    std::vector<bool> covered(subject->members.size(), false);
-    for (const Node* node : statement->entries) {
-        auto entry = nodeCast<CaseEntry>(node);
-        if (entry == nullptr) {
-            continue;
-        }
-        std::vector<CaseRange> ranges;
-        const Type* narrowed = nullptr;
-        for (const Node* label : entry->labels) {
-            const Type* meta = check(label, nullptr);
-            const Type* member = meta->kind == TypeKind::meta ? canonical(meta->instance) : nullptr;
-            auto it = member != nullptr ? std::find(subject->members.begin(), subject->members.end(), member) : subject->members.end();
-            if (it == subject->members.end()) {
-                if (meta != types_.error()) {
-                    error(label, "sema.typeMismatch", "case labels over '" + typeName(subject) + "' name its member types");
-                }
-                continue;
-            }
-            size_t tag = static_cast<size_t>(it - subject->members.begin());
-            if (covered[tag]) {
-                error(label, "sema.overlappingCaseLabels", "'" + member->name + "' is already handled");
-                continue;
-            }
-            covered[tag] = true;
-            ranges.push_back({tag, tag});
-            narrowed = entry->labels.size() == 1 ? member : nullptr;
-        }
-        model_.caseRanges[entry->id] = ranges;
-        auto body = nodeCast<BlockLiteral>(entry->body);
-        if (body == nullptr) {
-            continue;
-        }
-        BlockInfo* info = newBlockInfo(body, true);
-        pushScope();
-        if (!body->params.empty()) {
-            auto param = static_cast<const BlockParam*>(body->params.front());
-            if (narrowed == nullptr || body->params.size() > 1) {
-                error(param, "sema.invalidCaseBinding", "an entry binds the value only when it has exactly one type label");
-            }
-            else {
-                LocalInfo* local = declareLocal(param->name, narrowed, param, param->range);
-                local->readOnly = true;
-                info->params.push_back(local);
-                model_.localRefs[param->id] = local;
-            }
-        }
-        checkStatements(body->statements);
-        popScope();
-    }
-    bool complete = std::all_of(covered.begin(), covered.end(), [](bool b) { return b; });
-    if (complete) {
-        model_.exhaustiveCases.insert(statement->id);
-    }
-    if (statement->elseBody != nullptr) {
-        checkGroup(statement->elseBody);
-    }
-    else if (!complete) {
-        std::string missing;
-        for (size_t i = 0; i < covered.size(); ++i) {
-            if (!covered[i]) {
-                missing += (missing.empty() ? "" : ", ") + subject->members[i]->name;
-            }
-        }
-        error(statement, "sema.caseNotExhaustive", "this 'case' doesn't handle every member of '" + typeName(subject) + "' (missing: " + missing + ")");
-    }
 }
 
 }

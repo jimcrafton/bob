@@ -29,15 +29,39 @@ TEST(Parser, ArithmeticPrecedence)
               "      argument: Int value=4\n");
 }
 
-TEST(Parser, BitwiseBindsTighterThanComparison)
+TEST(Parser, BitwiseOperatorsAreWords)
 {
-    EXPECT_EQ(expectClean("x & mask = 0;"),
+    // `and` binds tighter than `xor` and `or`, as for bools.
+    EXPECT_EQ(expectClean("x and mask xor 1;"),
               "ExprStmt\n"
-              "  expression: Binary selector==\n"
-              "    receiver: Binary selector=&\n"
+              "  expression: Binary selector=xor\n"
+              "    receiver: Binary selector=and\n"
               "      receiver: Ident name=x\n"
               "      argument: Ident name=mask\n"
-              "    argument: Int value=0\n");
+              "    argument: Int value=1\n");
+    for (const char* source : {"x & 1;", "x | 1;", "x ^ 1;"}) {
+        std::string diagnostics;
+        dumpFirstItem(source, &diagnostics);
+        EXPECT_NE(diagnostics.find("bitwise operations are words"), std::string::npos) << diagnostics;
+    }
+}
+
+TEST(Parser, BlockTypesAreWrittenInBraces)
+{
+    EXPECT_EQ(expectClean("f: { int32, string [bool] };"),
+              "VarDecl name=f\n"
+              "  type: BlockType\n"
+              "    param: Type name=int32\n"
+              "    param: Type name=string\n"
+              "    result: Type name=bool\n");
+    EXPECT_EQ(expectClean("g: { [array of: int32] }?;"),
+              "VarDecl name=g\n"
+              "  type: Optional\n"
+              "    inner: BlockType\n"
+              "      result: TypeMessage selector=of:\n"
+              "        receiver: Type name=array\n"
+              "        argument: Type name=int32\n");
+    EXPECT_EQ(expectClean("h: { };"), "VarDecl name=h\n  type: BlockType\n");
 }
 
 TEST(Parser, ShiftsBindLikeMultiplication)

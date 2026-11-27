@@ -56,6 +56,20 @@ void writeNumber(long long value)
     writeError(text);
 }
 
+volatile long* flagsOf(BobObjectHeader* header)
+{
+    return reinterpret_cast<volatile long*>(&header->flags);
+}
+
+void freeObject(BobObjectHeader* header)
+{
+    BobClass* cls = header->isa;
+    _InterlockedDecrement64(&liveObjects);
+    uint64_t size = cls->instanceSize != 0 ? cls->instanceSize : HeapSize(GetProcessHeap(), 0, header);
+    _InterlockedExchangeAdd64(&liveBytes, -static_cast<long long>(size));
+    HeapFree(GetProcessHeap(), 0, header);
+}
+
 BobMethodCache* cacheOf(BobClass* cls)
 {
     if (cls->cache == nullptr) {
@@ -129,14 +143,88 @@ void bobRelease(void* object)
     if (_InterlockedDecrement(reinterpret_cast<volatile long*>(&header->refCount)) != 0) {
         return;
     }
+    // Hold the memory while destroying: the object's own fields may drop the
+    // last weak reference to it.
+    _InterlockedExchangeAdd(flagsOf(header), static_cast<long>(bobWeakCountUnit));
+    _InterlockedOr(flagsOf(header), static_cast<long>(bobObjectDestroyed));
     BobClass* cls = header->isa;
     if (cls->destroy != nullptr) {
         cls->destroy(object);
     }
-    _InterlockedDecrement64(&liveObjects);
-    uint64_t size = cls->instanceSize != 0 ? cls->instanceSize : HeapSize(GetProcessHeap(), 0, object);
-    _InterlockedExchangeAdd64(&liveBytes, -static_cast<long long>(size));
-    HeapFree(GetProcessHeap(), 0, object);
+    bobWeakRelease(object);
+}
+
+void bobWeakRetain(void* object)
+{
+    if (object != nullptr && (static_cast<BobObjectHeader*>(object)->flags & bobObjectImmortal) == 0) {
+        _InterlockedExchangeAdd(flagsOf(static_cast<BobObjectHeader*>(object)), static_cast<long>(bobWeakCountUnit));
+    }
+}
+
+void bobWeakRelease(void* object)
+{
+    if (object == nullptr) {
+        return;
+    }
+    auto* header = static_cast<BobObjectHeader*>(object);
+    if ((header->flags & bobObjectImmortal) != 0) {
+        return;
+    }
+    long after = _InterlockedExchangeAdd(flagsOf(header), -static_cast<long>(bobWeakCountUnit)) - static_cast<long>(bobWeakCountUnit);
+    if ((static_cast<uint32_t>(after) >> bobWeakCountShift) == 0 && (after & bobObjectDestroyed) != 0) {
+        freeObject(header);
+    }
+}
+
+void* bobWeakLoad(void* object)
+{
+    if (object == nullptr) {
+        return nullptr;
+    }
+    auto* header = static_cast<BobObjectHeader*>(object);
+    if ((header->flags & bobObjectImmortal) != 0) {
+        return object;
+    }
+    // Retain only while the count is above 0: once it reaches 0 the object is gone for good.
+    auto* count = reinterpret_cast<volatile long*>(&header->refCount);
+    long seen = *count;
+    while (seen != 0) {
+        long previous = _InterlockedCompareExchange(count, seen + 1, seen);
+        if (previous == seen) {
+            return object;
+        }
+        seen = previous;
+    }
+    return nullptr;
+}
+
+void* bobUnownedLoad(void* object)
+{
+    void* strong = bobWeakLoad(object);
+    if (strong == nullptr && object != nullptr) {
+        bobRuntimeTrap(static_cast<int32_t>(bob::abi::TrapReason::unownedDestroyed));
+    }
+    return strong;
+}
+
+bool bobObjectIsOnStack(void* object)
+{
+    return object != nullptr && (static_cast<BobObjectHeader*>(object)->flags & bobObjectStack) != 0;
+}
+
+void* const* bobWitness(const BobClass* cls, const void* protocol)
+{
+    for (uint32_t i = 0; i < cls->conformanceCount; ++i) {
+        if (cls->conformances[i].protocol == protocol) {
+            return cls->conformances[i].witness;
+        }
+    }
+    writeError("bob: '");
+    writeError(cls->name);
+    writeError("' doesn't conform to '");
+    writeError(static_cast<const BobProtocol*>(protocol)->name);
+    writeError("'\n");
+    bobRuntimeTrap(static_cast<int32_t>(bob::abi::TrapReason::doesNotUnderstand));
 }
 
 // Slow path of bob_msgSend: walk the class chain for the selector (selectors

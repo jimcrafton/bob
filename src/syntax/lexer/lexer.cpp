@@ -39,7 +39,7 @@ TokenKind reservedWordKind(std::string_view word)
         {"else", TokenKind::kwElse},         {"while", TokenKind::kwWhile}, {"for", TokenKind::kwFor},
         {"in", TokenKind::kwIn},             {"loop", TokenKind::kwLoop},   {"break", TokenKind::kwBreak},
         {"continue", TokenKind::kwContinue}, {"case", TokenKind::kwCase},   {"shl", TokenKind::kwShl},
-        {"shr", TokenKind::kwShr},
+        {"shr", TokenKind::kwShr},           {"xor", TokenKind::kwXor},
     };
     for (const Entry& entry : reserved) {
         if (entry.word == word) {

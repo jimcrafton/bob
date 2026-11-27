@@ -87,6 +87,8 @@ const char* tokenKindName(TokenKind kind)
         return "kwShl";
     case TokenKind::kwShr:
         return "kwShr";
+    case TokenKind::kwXor:
+        return "kwXor";
     }
     return "unknown";
 }
@@ -136,6 +138,7 @@ bool isReservedWord(TokenKind kind)
     case TokenKind::kwCase:
     case TokenKind::kwShl:
     case TokenKind::kwShr:
+    case TokenKind::kwXor:
         return true;
     default:
         return false;

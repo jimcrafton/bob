@@ -95,9 +95,11 @@ private:
     bool canAccessField(const FieldInfo* field) const;
     ClassInfo* currentClass() const { return context_.message != nullptr ? context_.message->owner : nullptr; }
     const Type* resolveType(const Node* node);
-    const Type* resolveBlockType(const TypeMessage* message);
+    const Type* resolveBlockType(const BlockType* block);
     bool requireValueType(const Node* node, const Type* type);
-    bool rejectEscapingBlock(const Node* node, const Type* type, const char* where);
+    bool rejectBareBlock(const Node* node, const Type* type, const char* where);
+    static bool isOwnershipAttribute(const Attribute* attribute);
+    Ownership ownershipOf(const Node* declaration, const Type*& type, bool inferred);
     OverflowMode overflowFrom(const Node* node, OverflowMode inherited, std::initializer_list<std::string_view> allowed);
 
     void ensureChecked(MessageInfo* message);
@@ -163,7 +165,7 @@ private:
     bool isCheckedConversion(const Type* from, const Type* to) const;
     void checkEnumCase(const CaseStmt* statement, const Type* subject);
     bool isAssignableTarget(const Node* node) const;
-    // The type an untyped literal adopts from what is expected (unwrapping T? and unions).
+    // The type an untyped literal adopts from what is expected (unwrapping T?).
     const Type* literalExpectation(const Type* expected, bool isRealLiteral) const;
 
     // modules (analyzerModules.cpp)
@@ -201,17 +203,14 @@ private:
     void noteCall(const Node* site, const MessageInfo* target);
     void noteConstruct(const ClassInfo* info);
 
-    // strings, containers and unions (analyzerContainers.cpp)
+    // strings and containers (analyzerContainers.cpp)
     // Recorded on the `for` statement: the iterable may itself be a send (`s bytes`).
     const Type* checkCollectionIterable(const ForStmt* statement);
-    void checkUnionCase(const CaseStmt* statement, const Type* subject);
     const Type* checkStringUnary(const UnarySend* send, const Type* receiver);
     const Type* checkStringKeyword(const KeywordSend* send, const Type* receiver, const Type* expected);
     const Type* checkStringBinary(const BinarySend* send, const Type* left);
     const Type* checkContainerUnary(const UnarySend* send, const Type* receiver);
     const Type* checkContainerKeyword(const KeywordSend* send, const Type* receiver, const Type* expected);
-    const Type* checkUnionUnary(const UnarySend* send, const Type* receiver);
-    const Type* checkUnionKeyword(const KeywordSend* send, const Type* receiver, const Type* expected);
     // Gives a pending container its element (and key) type; false on a conflict.
     bool settleContainer(const Type* pending, const Type* key, const Type* element, const Node* site);
     // A pending container meets a concrete one (assignment, argument, return).
@@ -222,7 +221,7 @@ private:
     void finalizePendingContainers();
     // A mutating send (`add:`, `at:put:`) needs its receiver to be a variable or field.
     void requireMutable(const Node* receiver, const std::string& selector);
-    // The element type a mixed literal stores: one type, a shared protocol, or a union.
+    // The element type of a literal's elements: one type they all convert to, or a shared class or protocol.
     const Type* mergeElementTypes(const std::vector<const Type*>& types, const Node* site);
 
     void pushScope() { scopes_.emplace_back(); }

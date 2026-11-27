@@ -2,12 +2,12 @@
 program blocks, 0.1.0
 {
     extends blocks {
-        # f is a bare 'block': inferred as 'block takes: [int32] returns: int32' from the body
+        # f is a bare 'block': inferred as '{ int32 [int32] }' from the body
         @[static] msg apply: f:block to: x:int32 [int32] {
             return f value: x;
         }
 
-        # inferred as 'block takes: [int32]' (the result is never used)
+        # inferred as '{ int32 }' (the result is never used)
         @[static] msg upTo: n:int32 each: f:block {
             for i in 1 to: n {
                 f value: i;
@@ -19,7 +19,7 @@ program blocks, 0.1.0
             return self apply: f to: (self apply: f to: x);
         }
 
-        @[static] msg combine: a:int32 with: b:int32 using: f:[block takes: [int32, int32] returns: int32] [int32] {
+        @[static] msg combine: a:int32 with: b:int32 using: f:{ int32, int32 [int32] } [int32] {
             return f value: a value: b;
         }
 

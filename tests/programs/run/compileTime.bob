@@ -36,8 +36,8 @@ program compileTime, 0.1.0
             for n in 0 to: 255 {
                 c := n asUInt32;
                 for k in 1 to: 8 {
-                    if (c & 1u32) <> 0u32 {
-                        c := 0xEDB88320u32 ^ (c shr 1);
+                    if (c and 1u32) <> 0u32 {
+                        c := 0xEDB88320u32 xor (c shr 1);
                     } else {
                         c := c shr 1;
                     }
@@ -66,9 +66,9 @@ program compileTime, 0.1.0
         @[static] msg crc32: s:string [uint32] {
             crc := 0xFFFFFFFFu32;
             for b in s bytes {
-                crc := (CRC_TABLE at: (crc ^ b asUInt32) & 255u32) ^ (crc shr 8);
+                crc := (CRC_TABLE at: ((crc xor b asUInt32) and 255u32)) xor (crc shr 8);
             }
-            return crc ^ 0xFFFFFFFFu32;
+            return crc xor 0xFFFFFFFFu32;
         }
 
         @[static] msg main: args:array [int32] {

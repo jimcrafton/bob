@@ -22,12 +22,12 @@ std::string hostDataLayout()
 {
     llvm::InitializeNativeTarget();
     std::string error;
-    std::string triple = llvm::sys::getDefaultTargetTriple();
+    llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
     const llvm::Target* target = llvm::TargetRegistry::lookupTarget(triple, error);
     if (target == nullptr) {
         return "";
     }
-    std::unique_ptr<llvm::TargetMachine> machine(target->createTargetMachine(llvm::Triple(triple), "generic", "", {}, std::nullopt));
+    std::unique_ptr<llvm::TargetMachine> machine(target->createTargetMachine(triple, "generic", "", {}, std::nullopt));
     return machine->createDataLayout().getStringRepresentation();
 }
 
@@ -48,7 +48,8 @@ TEST(Layout, MatchesTheCodeGenerator)
     class Derived inherits Base { public { c: uint16; s: string; n: Nested; } }
     extends layout {
         @[static] msg main: args:array [int32] {
-            u := [1, "x", 2.5];
+            f := { :x: int32 | x + 1 };
+            g: { int32 [int32] }? := f;
             o: Mixed? := nil;
             c: char := 'a';
             return 0;
@@ -73,9 +74,6 @@ TEST(Layout, MatchesTheCodeGenerator)
     for (const auto& local : model.locals) {
         if (bob::sema::isValueType(local->type)) {
             types.push_back(local->type);
-            if (bob::sema::isUnion(bob::sema::canonical(local->type)->inner)) {
-                types.push_back(bob::sema::canonical(local->type)->inner);
-            }
         }
     }
     ASSERT_GT(types.size(), 15u);
