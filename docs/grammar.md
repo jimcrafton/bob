@@ -13,11 +13,11 @@ This is the grammar the `bobSyntax` parser accepts (phase 1). `docs/design.md` �
 | version | three or more dot-separated integers: `1.4.11` | only meaningful in unit headers and imports |
 | string | `"…"` | escapes `\n \t \r \0 \\ \" \' \u{1F600}`. Must be valid UTF-8, no raw newlines |
 | char | `'…'` | exactly one Unicode scalar value after escapes |
-| binaryOperator | `<=` `>=`, or one of `+ - * / % & \| ^ < > = ?` | maximal munch over that set. There are no `<< >> == ~= ??` operators: `<<` lexes as two `<`, and `~` is an invalid character |
+| binaryOperator | `<=` `>=` `<>`, or one of `+ - * / % & \| ^ < > = ?` | maximal munch over that set. There are no `<< >> == ~= ??` operators: `<<` lexes as two `<`, and `~` is an invalid character. `and`, `or`, `shl` and `shr` are reserved words that act as binary operators |
 | punctuation | `:=` `:` `;` `,` `.` `(` `)` `{` `}` `[` `]` `@[` | |
 | comments | `# …` to end of line, `#{ … }#` block (not nested) | trivia |
 
-**Reserved words** (never identifiers): `return self super nil true false and or if else while for in loop break continue case`.
+**Reserved words** (never identifiers): `return self super nil true false and or shl shr if else while for in loop break continue case`.
 
 **Contextual words** are ordinary identifiers that only mean something at the start of a declaration: `program lib module import namespace class record enum type extends inherits implements public private msg`. So `obj class` is a unary send, and `msg` or `type` can be variable names.
 
@@ -108,13 +108,13 @@ array       = '[' [expression {',' expression} [',']] ']'
 ```
 | Precedence (high → low) | Operators |
 |---|---|
-| 5 | `*` `/` `%` `&` |
+| 5 | `*` `/` `%` `&` `shl` `shr` |
 | 4 | `+` `-` `\|` `^`, and any other operator |
-| 3 | `=` `<` `<=` `>` `>=` |
+| 3 | `=` `<>` `<` `<=` `>` `>=` |
 | 2 | `and` |
 | 1 | `or` |
 
-Shifts are keyword messages (`x shiftLeft: 2`), not operators.
+As in Pascal, `shl` and `shr` bind like multiplication: `1 + x shl 2` is `1 + (x shl 2)`.
 
 `?` is only valid as an optional-type suffix. `-` directly before a number in operand position is a negative literal (`a -1` is still subtraction).
 

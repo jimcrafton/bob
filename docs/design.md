@@ -69,7 +69,7 @@ A unit has a header, `import`s, then a `{ ... }` body with namespaces, classes, 
 ### 3.2 Lexical
 - Comments: `# to end of line`, `#{ ... }#` block.
 - Statement terminator: `;`. (Smalltalk uses `.`, but bob uses `.` for qualification `core.io.out` and field access `p.x`.)
-- Assignment: `:=`. Equality: `=`. **[Decided]** There are no `<<`, `>>`, `==`, `~=` or `??` operators. Shifts are the keyword messages `shiftLeft:`/`shiftRight:`, and "not equal" is currently written `(a = b) not` (see §13).
+- Assignment: `:=`. Equality: `=`. **[Decided]** Not equal is Pascal's `<>`. Shifts are Pascal's word operators `shl` and `shr` (`x shl 2`), reserved words that bind like `*`. There are no `<<`, `>>`, `==`, `~=` or `??` operators.
 - Literals: `123`, `0x7F`, `0b1010`, `1_000_000`, `3.25`, `1e-9`, `"utf-8 string"`, `'é'` (unicode scalar / `char`), `true`, `false`, `nil`, array `[1, 2, 3]`.
 - Suffix-typed literals **[Proposed]**: `10u8`, `3.0r32`. Otherwise literals are polymorphic and take their type from context, defaulting to `int32`/`real64`.
 
@@ -108,9 +108,9 @@ x := (p distanceTo: q) sqrt;
 
   | Level | Operators |
   |---|---|
-  | 1 | `*` `/` `%` `&` |
+  | 1 | `*` `/` `%` `&` `shl` `shr` |
   | 2 | `+` `-` `|` `^` |
-  | 3 | `=` `<` `<=` `>` `>=` |
+  | 3 | `=` `<>` `<` `<=` `>` `>=` |
   | 4 | `and` |
   | 5 | `or` |
 
@@ -256,7 +256,7 @@ import core.io;
 - Messages on primitives are *intrinsics* (inline LLVM instructions) or direct calls into the runtime. They never go through dynamic dispatch.
 - **[Decided]** Integer overflow traps by default (Swift model). The compiler removes the check wherever it can prove no overflow is possible.
   - Explicit messages, always available whatever the mode: `a wrapAdd: b` (two's complement), `a satAdd: b` (clamp), `a checkedAdd: b` (returns `T?`, `nil` on overflow). The same exists for sub/mul.
-  - `@[overflow: trap | wrap | saturate]` changes how `+ - *`, `negated` and `shiftLeft:` behave. It can attach to a module, a class or record, a message, a `{ }` statement block, or a single parenthesised expression. The innermost attribute wins.
+  - `@[overflow: trap | wrap | saturate]` changes how `+ - *`, `negated` and `shl` behave. It can attach to a module, a class or record, a message, a `{ }` statement block, or a single parenthesised expression. The innermost attribute wins.
     ```
     @[overflow: wrap] module kernel.mm, 0.1.0 { ... }
     h := @[overflow: wrap] (h * 31 + c);
@@ -861,10 +861,8 @@ Runtime unit tests: gtest needs the CRT, so `bobTests` compiles the runtime sour
 ---
 
 ## 13. Open questions (summary)
-Decided: `x := 4;` implicit declaration with inference (§3.3); no `@` on keyword parts (§3.4); conventional operator precedence (§3.4); no symbol literals (§9); `@[protocol] class` replaces a `protocol` keyword (§4.4); concrete classes are closed to their module and there's no `@[open]` (§4.3, §5.4); unary binds tightest, no `->` (§3.4); no cascades (§3.4); compact message declarations with optional rename (§3.6); records allow both layout-prefix inheritance and embedding (§4.2); overflow traps by default, `@[overflow:]` at any level (§4.1); byte-wise string equality (§7.2); reflection access by capabilities, header declarations later (§9); generated import libs with SDK fallback (§11.2); inferred container element types, inferred unions for mixed contents, `array of: T` annotation (§4.5); compile-time reflection via `meta` (§8.3); records can't implement protocols (§4.4); no generic syntax; type-returning compile-time messages, tightly restricted, are the planned answer for user containers, revisited in phase 6 (§4.5); enums `enum Name : type { a := 1; }`, no implicit integer conversion, Pascal ordinal features, `set of: Enum` bitsets instead of flags, enum-indexed arrays, `case x of { … } else { … }` statement with Pascal labels (§4.6); formal control statements `if/else if/else`, `while`, `for … in`, `loop`, `break`, `continue`, braces always required, `whileTrue:`/`caseOf:` removed (§3.5); Pascal subranges, `type Name := ...`, `[ ]`-only grouping in type positions; named types are distinct by default, with `@[alias]` (§4.7).
+Decided: `x := 4;` implicit declaration with inference (§3.3); `<>` for not equal and `shl`/`shr` word operators, no `<< >> == ~= ??` (§3.2); parameters and `for` variables are read-only, `and`/`or` short-circuit, runtime traps exit with code 101, program messages must be `@[static]` (docs/semantics.md); no `@` on keyword parts (§3.4); conventional operator precedence (§3.4); no symbol literals (§9); `@[protocol] class` replaces a `protocol` keyword (§4.4); concrete classes are closed to their module and there's no `@[open]` (§4.3, §5.4); unary binds tightest, no `->` (§3.4); no cascades (§3.4); compact message declarations with optional rename (§3.6); records allow both layout-prefix inheritance and embedding (§4.2); overflow traps by default, `@[overflow:]` at any level (§4.1); byte-wise string equality (§7.2); reflection access by capabilities, header declarations later (§9); generated import libs with SDK fallback (§11.2); inferred container element types, inferred unions for mixed contents, `array of: T` annotation (§4.5); compile-time reflection via `meta` (§8.3); records can't implement protocols (§4.4); no generic syntax; type-returning compile-time messages, tightly restricted, are the planned answer for user containers, revisited in phase 6 (§4.5); enums `enum Name : type { a := 1; }`, no implicit integer conversion, Pascal ordinal features, `set of: Enum` bitsets instead of flags, enum-indexed arrays, `case x of { … } else { … }` statement with Pascal labels (§4.6); formal control statements `if/else if/else`, `while`, `for … in`, `loop`, `break`, `continue`, braces always required, `whileTrue:`/`caseOf:` removed (§3.5); Pascal subranges, `type Name := ...`, `[ ]`-only grouping in type positions; named types are distinct by default, with `@[alias]` (§4.7).
 
 Still open:
 1. Can records have messages (statically dispatched helpers via `extends`, as in §3.6), or are they pure field layouts with no messages at all (§4.2)? Undecided, deferred. Leaning towards "no messages on records" (records strictly for data). The draft still shows record messages in §3.6 and §4.2 until this is decided.
 2. Blocks as a unifying concept (§5.6): closures, pre/post conditions, error-trapping blocks, thread blocks. Ideas only so far.
-3. "Not equal": with `~=` removed, it's `(a = b) not` for now. Options: Pascal's `<>`, `!=`, or a message such as `notEqual:`. Shift messages are provisionally named `shiftLeft:`/`shiftRight:`.
-

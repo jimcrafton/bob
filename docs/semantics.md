@@ -37,7 +37,7 @@ An untyped literal takes its type from context: the declared type, the parameter
 | `+ - * /` | numeric, both sides converted to their common type | common type |
 | `%` | integers | common type |
 | `& \| ^` | integers | common type |
-| `= < <= > >=` | numeric (`=` also on `bool`) | `bool` |
+| `= <> < <= > >=` | numeric (`=` and `<>` also on `bool`) | `bool`; for reals `<>` is true when either side is NaN |
 | `and`, `or` | `bool` | `bool`, **short-circuit** |
 | `x negated`, `x abs` | signed integer or real (`abs` also unsigned) | same |
 | `b not` | `bool` | `bool` |
@@ -45,12 +45,11 @@ An untyped literal takes its type from context: the declared type, the parameter
 | `a max: b`, `a min: b` | numeric | common type |
 | `a wrapAdd:`/`wrapSub:`/`wrapMul: b` | integers | always wraps |
 | `a satAdd:`/`satSub:`/`satMul: b` | integers | always saturates |
-| `x shiftLeft: n`, `x shiftRight: n` | integer receiver, any integer amount | receiver type; `shiftRight:` is arithmetic for signed types |
+| `x shl n`, `x shr n` | integer value, any integer amount | value's type; `shr` is arithmetic for signed types |
 | `Point x: 1 y: 2` | every field, in declaration order | the record |
 | `p.x` | record | field type; assignable when `p` is a variable |
 | `self m: …`, `prog m: …` | per the message's parameter types | its return type |
 
-There's no "not equal" operator yet (`(a = b) not`). See `docs/design.md` §13.
 
 ## Statements
 `if`/`else if`/`else`, `while`, `loop`, `break`, `continue`, `return`, statement groups, and:
@@ -58,7 +57,7 @@ There's no "not equal" operator yet (`(a = b) not`). See `docs/design.md` §13.
 - `case x of { … } else { … }` on integers. Labels are integer literals or `(lo to: hi)` ranges and must not overlap. Because an integer can't be covered completely, `else` is required (`sema.caseNotExhaustive`). Enums and unions come in phase 5.
 
 ## Overflow and traps
-- `+ - *`, `negated`, `abs` and `shiftLeft:` follow the overflow mode: `trap` (default), `wrap` or `saturate`. It's set with `@[overflow: …]` on the unit, a message, a statement group or a parenthesised expression, and the innermost wins.
+- `+ - *`, `negated`, `abs` and `shl` follow the overflow mode: `trap` (default), `wrap` or `saturate`. It's set with `@[overflow: …]` on the unit, a message, a statement group or a parenthesised expression, and the innermost wins.
 - Division and remainder by zero always trap. Signed `MIN / -1` traps in `trap` mode, gives `MIN` in `wrap` and `MAX` in `saturate`. `MIN % -1` is `0` in the non-trapping modes.
 - A shift amount below 0 or at least the bit width always traps.
 - `asX` conversions trap when the value doesn't fit (including NaN and out-of-range reals). Real→integer truncates toward zero.
