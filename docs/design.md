@@ -52,6 +52,8 @@ Non-goals (for now)
 | Strings | `char`-based, byte indexed | Replace with the UTF-8 design (§7) |
 | Compile-time model | `compiletime.h` has Class/Record/Message/ScopedEnvironment | Re-derive it as a typed semantic model, built to be scriptable (§11.4) |
 
+**Reference model: Borland Object Pascal.** When a design question comes up (units and modules, the compilation model, language semantics), look first at how Borland's Object Pascal (Turbo Pascal 4 onwards, Delphi) handled it, and aim for that as often as possible. It's the reference for what works right. Where bob departs from it, the design says so and why. Phase 7's module system follows its unit model (§11.5).
+
 ---
 
 ## 3. Syntax
@@ -737,7 +739,7 @@ There are no implicit conversions between `string` and byte arrays or raw pointe
         compiler error: "Point layout changed";
     }
 }
-@[constant] TABLE := self crc32Table;        # array of uint32, computed while compiling, embedded as data
+@[constant] TABLE := self crc32Table;        # array of uint32, computed while compiling, embedded as data
 ```
 
 ### 8.3 Compile-time reflection: `meta` **[Decided]**
@@ -851,7 +853,51 @@ The semantic model (modules, types, classes, messages, send sites) is designed s
 ### 11.4a Tooling **[Decided]**
 The lexer, parser and AST are a separate library, `bobSyntax`, with no LLVM dependency, so tools for bob code (formatters, linters, language servers, doc generators, refactoring tools, Python bindings) can be built on the same front end as the compiler. The library is lossless (tokens plus trivia reproduce the source), error-tolerant (always a complete tree, with `Error` nodes), position-precise (node and name ranges), and generically walkable (`childrenOf` / `propertiesOf` / parent links / stable ids). It also has a JSON dump for tools in other languages. The contract is in `docs/tooling.md`. Later phases (semantic model, compile-time `compiler` object) follow the same rules.
 
-### 11.5 Repository layout
+### 11.5 Modules and libraries **[Decided 2026-11-27: the Object Pascal unit model]**
+A `module` or `lib` unit is compiled on its own, like a Pascal unit. Its compiled form carries its interface, so importers never read its source, and nobody writes a header by hand.
+```
+module geometry, 1.4.11
+import core, 1.0;
+{
+    interface {                       # what importers see
+        record Point { x: int32; y: int32; }
+        class Shape { … }
+        @[constant] ORIGIN := Point x: 0 y: 0;
+        extends geometry {
+            @[static] msg distance: a:Point to: b:Point [real64] { … }
+        }
+    }
+    implementation {                  # invisible outside (optional: unsectioned items count too)
+        record Cache { … }
+    }
+}
+```
+- **Export by section.** Unit-level declarations in an `interface { … }` block are what importers see. Everything else (in `implementation { … }`, or outside any section) is private to the module. The words differ from the `public`/`private` blocks inside classes on purpose: those control member visibility, these control what a unit exports. As in Pascal, the interface can't depend on the implementation: a public declaration whose signature or layout uses a private type is an error. This includes the private *fields* of a public class, whose types must be public because importers need the layout. Programs have no interface, so sections don't apply to them.
+- **Compiled output.**
+  - `bobc geometry.bob` writes `geometry.lib`, a static library.
+  - `bobc -c geometry.bob` writes `geometry.obj` instead.
+  - Either way it also writes `geometry.bobi`, the interface: the public declarations in bob syntax, without bodies, with every inferred type written out, plus the facts importers need:
+    - constant values as literals;
+    - which messages keep `self` or a parameter (escape summaries);
+    - the fingerprint of every interface it was compiled against.
+
+  `.bobi` corresponds to Delphi's `.dcu`, except that it's text, and the code is in the `.lib`.
+- **Importing.** `import geometry, 1.4;` finds `geometry.bobi` in the importing file's directory, then in each `--module-path=` directory. `core.io` becomes `core.io.bobi`. Imports are transitive: an interface lists its own imports. Linking a program adds the `.lib` (or `.obj`) next to each interface it imported.
+- **Names.** Imported names are used unqualified (`p := Point x: 1 y: 2;`).
+  - A unit's own declarations shadow imported ones, as in Pascal.
+  - If two imports both declare a name, using it unqualified is an error, where Pascal let the last unit win. Write `geometry.Point` instead.
+  - A module's messages are always sent to the module, `geometry distance: a to: b`, so they can't clash.
+- **Fingerprints.** Each interface records a hash of itself, and the hashes of the interfaces it was compiled against. When a program imports `a` and `b`, but `a` was compiled against a different interface of `b`, compilation fails, Pascal style: "'a' was compiled against a different interface of 'b'; recompile 'a'".
+  - Changing only implementation code doesn't change the fingerprint, so importers don't need recompiling.
+- **Versions.** `import geometry, 1.4;` accepts 1.4.0 and later with the same major version (1.x). No version accepts any. A mismatch is an error naming both versions.
+  - Versions are for people and package tools; fingerprints are what guarantee consistency.
+- **No initialization sections.** Pascal units could run code at program start. bob doesn't, for the reasons constants are compile-time (§8).
+- **Classes across modules** follow §5.4:
+  - Concrete classes are closed to their module, so an importer can't subclass them. Importers can implement imported protocols.
+  - `extends` on an imported class isn't supported yet.
+  - Selectors are merged across modules at link time, so protocol sends work across the boundary.
+- Compile-time code may use imported declarations. The JIT loads the imported libraries.
+### 11.6 Repository layout
 As built through phase 1 (build instructions: `docs/building.md`):
 ```
 CMakeLists.txt, CMakePresets.json
@@ -891,7 +937,7 @@ Runtime unit tests: gtest needs the CRT, so `bobTests` compiles the runtime sour
 | 4 ✅ | Classes: layout, `new`, ARC insertion, static dispatch + CHA, class objects, selectors, `bob_msgSend` + cache, protocols | Polymorphism tests; leak report shows 0 bytes at exit. **Done 2026-11-27:** classes (fields, initializers, accessors, `self`/`super`, static messages, `extends`), protocols (required/default, refinement, conformance checks), dispatch tiers 1/1v/2 chosen by closed-hierarchy analysis, MASM `bob_msgSend` with per-class cache, ARC with leak report at exit, minimal class optionals (`C?`, `nil`, `ifNotNil:`). 146/146 tests in Debug and Release; every run program leak-free at -O0 and -O2 |
 | 5 ✅ | Built-ins: `string` (UTF-8, views, conversions), `array`, `dictionary`, `hashtable`, `set` with element-type inference and inferred unions, COW | String/collection test suite incl. grapheme cases. **Done 2026-11-27:** enums (ordinal messages, `fromValue:`, enum sets as bitmasks, exhaustive `case`), subranges (checked in, free out), distinct and `@[alias]` named types, optionals of every value type; immutable ARC strings with byte/codepoint/grapheme views (UAX #29 tables from Unicode 16.0 via `tools/unicodegen`, all of `GraphemeBreakTest.txt` passes), conversions and `printString`; COW `array`, `dictionary`, `hashtable`, `set`, fixed arrays indexed by enums or subranges; element types inferred from literals and first stores; mixed literals give a shared class/protocol or a closed union (`case`, `ifKindOf:do:`, `printString`); `main:` gets real `args`. 166/166 tests (Release; no Debug LLVM on the build machine); run programs leak-free at -O0 and -O2. Rules as built: `docs/semantics.md`. Not done yet: per-call-site specialisation of `nums:array` parameters (an annotation is required), opaque string indices and slicing, normalisation/case mapping, `select:`/`collect:`, shortest round-trip real printing |
 | 6 ✅ | Compile-time execution via ORC; `compiler` object; `meta`; static asserts; constant tables. Revisit type-returning compile-time messages under the §4.5 leash rules | Compile-time CRC table and layout asserts work; decision made on `RingBuffer of: T`. **Done 2026-11-27:** unit-level constants (always compile-time, dependency-ordered, embedded as read-only data), `@[compiletime]` messages, expressions and blocks, the `compiler` object (`error:`/`warning:`/`note:` at the sending line), `meta` (size, alignment, typeName, name, type, count, members, elementType, fields), compile-time code JIT compiled with ORC against the hosted runtime (`bobrtHosted`), traps and endless loops reported as compile errors, layout rules shared by `meta` and checked against LLVM. A CRC-32 table generated at compile time checks `"123456789"`, and record layout asserts fail compilation at the asserting line. `RingBuffer of: T`: leash rules confirmed, built as a separate step after this phase. Not yet: compile-time unrolling and splicing over `meta fields`, `compiler target`/`readFile:`, synthesising messages and classes |
-| 7 | Modules/libraries: interface files, imports, separate compilation, versioning | Multi-module program with a static lib |
+| 7 ✅ | Modules/libraries: interface files, imports, separate compilation, versioning | Multi-module program with a static lib. **Done 2026-11-27:** the Object Pascal unit model (§11.5): `interface { }` / `implementation { }` sections, `bobc` builds a module or lib into a `.lib` (or `-c` `.obj`) plus a generated `.bobi` interface (bob syntax, no bodies, types and constants written out, escape summaries), imports found next to the source or on `--module-path=`, transitive, with semver checks and Pascal-style interface fingerprints (`recompile X`), unqualified names with module qualification on a clash, cross-module direct, vtable and protocol dispatch, stack placement and compile-time code through imported code. A program built from a module and a static lib passes; implementation-only changes keep the fingerprint. Not yet: `extends` on imported classes, dictionary constants in interfaces, dynamic libraries |
 | 8 | Reflection levels + Reflector capability; escaping closures; `weak`/`unowned`; a runtime query for whether an object is on the stack or the heap (a separate header flag bit, since string literals are immortal too) | Reflection tests per level, including denied access |
 | 9 | Systems profile: `unsafe`, pointers, volatile, packed/align, inline asm, freestanding target | Boots a UEFI "hello" or a minimal kernel under QEMU |
 | 10 | Python bindings over the semantic model | Script enumerates classes/sends in a module |
@@ -900,6 +946,8 @@ Runtime unit tests: gtest needs the CRT, so `bobTests` compiles the runtime sour
 
 ## 13. Open questions (summary)
 Decided: `x := 4;` implicit declaration with inference (§3.3); phase 4 choices (confirm or change): object creation without `new` (§4.3a: `p: Point;`, constructor messages from public fields, required fields must be passed, automatic per-class `init`, `copy`, stack placement by escape analysis and checked `@[stack]`, records stay values), outside code reaches public fields through synthesized accessors `p x`/`p x: v`, `=`/`<>` on references compare identity, records can't hold references, every instance message gets a vtable slot, protocol messages can't return records yet (docs/semantics.md); `<>` for not equal and `shl`/`shr` word operators, no `<< >> == ~= ??` (§3.2); parameters and `for` variables are read-only, `and`/`or` short-circuit, runtime traps exit with code 101, program messages must be `@[static]` (docs/semantics.md); no `@` on keyword parts (§3.4); conventional operator precedence (§3.4); no symbol literals (§9); `@[protocol] class` replaces a `protocol` keyword (§4.4); concrete classes are closed to their module and there's no `@[open]` (§4.3, §5.4); unary binds tightest, no `->` (§3.4); no cascades (§3.4); compact message declarations with optional rename (§3.6); records allow both layout-prefix inheritance and embedding (§4.2); overflow traps by default, `@[overflow:]` at any level (§4.1); byte-wise string equality (§7.2); reflection access by capabilities, header declarations later (§9); generated import libs with SDK fallback (§11.2); inferred container element types, inferred unions for mixed contents, `array of: T` annotation (§4.5); compile-time reflection via `meta` (§8.3); records can't implement protocols (§4.4); no generic syntax; type-returning compile-time messages, tightly restricted, are the planned answer for user containers, revisited in phase 6 (§4.5); enums `enum Name : type { a := 1; }`, no implicit integer conversion, Pascal ordinal features, `set of: Enum` bitsets instead of flags, enum-indexed arrays, `case x of { … } else { … }` statement with Pascal labels (§4.6); formal control statements `if/else if/else`, `while`, `for … in`, `loop`, `break`, `continue`, braces always required, `whileTrue:`/`caseOf:` removed (§3.5); Pascal subranges, `type Name := ...`, `[ ]`-only grouping in type positions; named types are distinct by default, with `@[alias]` (§4.7).
+
+Phase 7 decisions: modules follow Object Pascal units (§11.5): export by `interface { }` / `implementation { }` sections, generated interfaces with fingerprints, unqualified names that clash into an error (decided). Phase 7 choices (confirm or change): `module` and `lib` build the same way (a static `.lib` plus `.bobi`); the interface is text in bob syntax rather than binary; versions follow semver (same major, at least the requested minor.patch); a unit's own declarations shadow imports; `extends` on imported classes and dictionary/hashtable constants in interfaces aren't supported yet.
 
 Phase 6 decisions: constants are declared `@[constant] NAME := expr;` or `@[constant] name: T := expr;` at unit level, always immutable and computed at compile time; other unit-level declarations are errors, leaving them free for mutable globals in phase 9 (decided); `RingBuffer of: T` keeps the §4.5 plan and is built as its own step (decided). Phase 6 choices (confirm or change): compile-time code doesn't see the variables of the message it's written in; `meta size` of a class is its object size, header included; `meta fields` is available only in compile-time code (FieldMeta objects can't be embedded); dictionary, hashtable, hash-set and union constants are rebuilt where they're used, while strings and arrays are shared read-only data; compile-time code is stopped after 20 seconds (docs/semantics.md).
 

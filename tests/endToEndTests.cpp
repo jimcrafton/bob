@@ -307,3 +307,116 @@ TEST_F(EndToEnd, CompileTimeFailuresAreCompileErrors)
     EXPECT_NE(output.find("must be a constant: '@[constant] NAME := value;'"), std::string::npos) << output;
     EXPECT_EQ(output.find("error: no"), std::string::npos) << output;
 }
+
+namespace {
+
+std::string readProgramFile(const char* name)
+{
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
+        llvm::MemoryBuffer::getFile(std::string(BOB_TEST_PROGRAMS_DIR) + "/modules/" + name);
+    return buffer ? std::string((*buffer)->getBuffer()) : std::string();
+}
+
+}
+
+// Phase 7's exit criterion: a program built from a module and a static library,
+// each compiled on its own, Pascal-unit style (design §11.5).
+class Modules : public EndToEnd {
+protected:
+    void write(const std::string& name, const std::string& text)
+    {
+        std::error_code error;
+        llvm::raw_fd_ostream file(workPath(name.c_str()), error);
+        file << text;
+    }
+
+    int build(const std::string& name, std::string& output, bool compileOnly = false)
+    {
+        bob::driver::DriverOptions options;
+        options.inputPath = workPath(name.c_str());
+        options.runtimeDir = BOB_TEST_RUNTIME_DIR;
+        options.compileOnly = compileOnly;
+        output.clear();
+        llvm::raw_string_ostream out(output);
+        llvm::raw_string_ostream err(output);
+        bob::driver::Driver driver(out, err);
+        return driver.run(options);
+    }
+};
+
+TEST_F(Modules, ProgramWithAModuleAndAStaticLibrary)
+{
+    for (const char* name : {"geometry.bob", "shapes.bob", "app.bob"}) {
+        write(name, readProgramFile(name));
+    }
+    std::string output;
+    ASSERT_EQ(build("geometry.bob", output), 0) << output;
+    ASSERT_EQ(build("shapes.bob", output), 0) << output;
+    EXPECT_TRUE(llvm::sys::fs::exists(workPath("geometry.lib")));
+    EXPECT_TRUE(llvm::sys::fs::exists(workPath("shapes.bobi")));
+    ASSERT_EQ(build("app.bob", output), 0) << output;
+    RunResult run = runExe(workPath("app.exe"));
+    EXPECT_EQ(run.exitCode, 0);
+
+    // The interface holds declarations only: no bodies, no implementation section.
+    std::string interface = readProgramFile("geometry.bob");
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> written = llvm::MemoryBuffer::getFile(workPath("geometry.bobi"));
+    ASSERT_TRUE(static_cast<bool>(written));
+    std::string bobi = std::string((*written)->getBuffer());
+    EXPECT_EQ(bobi.find("Helper"), std::string::npos) << bobi;
+    EXPECT_EQ(bobi.find("return"), std::string::npos) << bobi;
+    EXPECT_NE(bobi.find("@[constant] SQUARES: array of: int32 := [1, 4, 9, 16, 25];"), std::string::npos) << bobi;
+
+    // Changing only implementation code keeps the interface, so dependents stay valid.
+    std::string fingerprint = bobi.substr(bobi.find("interface: \""), 30);
+    std::string changed = readProgramFile("geometry.bob");
+    changed.replace(changed.find("(a.x - b.x) abs"), 15, "((a.x - b.x) abs * 1)");
+    write("geometry.bob", changed);
+    ASSERT_EQ(build("geometry.bob", output), 0) << output;
+    ASSERT_EQ(build("app.bob", output), 0) << output;
+    written = llvm::MemoryBuffer::getFile(workPath("geometry.bobi"));
+    EXPECT_NE(std::string((*written)->getBuffer()).find(fingerprint), std::string::npos);
+
+    // Changing the interface makes units compiled against the old one stale.
+    const std::string oldName = "@[constant] NAME := \"geometry\";";
+    changed.replace(changed.find(oldName), oldName.size(), "@[constant] NAME := \"geometry2\";");
+    write("geometry.bob", changed);
+    ASSERT_EQ(build("geometry.bob", output), 0) << output;
+    EXPECT_NE(build("app.bob", output), 0);
+    EXPECT_NE(output.find("'shapes' was compiled against a different interface of 'geometry'"), std::string::npos) << output;
+    ASSERT_EQ(build("shapes.bob", output), 0) << output;
+    EXPECT_EQ(build("app.bob", output), 0) << output;
+}
+
+TEST_F(Modules, InterfaceRules)
+{
+    std::string output;
+    write("a.bob", "module a, 1.0.0\n{\n    interface { record Point { x: int32; } class Base { } }\n}\n");
+    write("b.bob", "module b, 2.1.0\n{\n    interface { record Point { y: int8; } }\n}\n");
+    ASSERT_EQ(build("a.bob", output), 0) << output;
+    ASSERT_EQ(build("b.bob", output), 0) << output;
+
+    // Two imports declare Point: unqualified use is ambiguous; qualified works.
+    write("clash.bob", "program clash, 1.0.0\nimport a;\nimport b;\n{\n    extends clash {\n        @[static] msg main: args:array [int32] {\n"
+                       "            p: Point;\n            q: a.Point;\n            return 0;\n        }\n    }\n}\n");
+    EXPECT_NE(build("clash.bob", output), 0);
+    EXPECT_NE(output.find("'Point' is declared in both 'a' and 'b'; write 'a.Point' or 'b.Point'"), std::string::npos) << output;
+
+    // Versions, closed classes, missing modules.
+    write("rules.bob", "program rules, 1.0.0\nimport a, 1.2;\nimport b, 1.0;\nimport nowhere;\n{\n    class Mine inherits a.Base { }\n"
+                       "    extends rules { @[static] msg main: args:array [int32] { return 0; } }\n}\n");
+    EXPECT_NE(build("rules.bob", output), 0);
+    EXPECT_NE(output.find("needs 'a' 1.2"), std::string::npos) << output;
+    EXPECT_NE(output.find("needs 'b' 1.0"), std::string::npos) << output;
+    EXPECT_NE(output.find("can't find module 'nowhere'"), std::string::npos) << output;
+    EXPECT_NE(output.find("classes are closed to their module"), std::string::npos) << output;
+
+    // An interface can't use an implementation type; programs have no sections.
+    write("leaky.bob", "module leaky, 1.0.0\n{\n    interface { record Pair { inner: Hidden; } }\n    implementation { record Hidden { v: int32; } }\n}\n");
+    EXPECT_NE(build("leaky.bob", output), 0);
+    EXPECT_NE(output.find("isn't in the interface section"), std::string::npos) << output;
+    write("sections.bob", "program sections, 1.0.0\n{\n    interface { record R { v: int32; } }\n"
+                          "    extends sections { @[static] msg main: args:array [int32] { return 0; } }\n}\n");
+    EXPECT_NE(build("sections.bob", output), 0);
+    EXPECT_NE(output.find("a program's declarations are all its own"), std::string::npos) << output;
+}

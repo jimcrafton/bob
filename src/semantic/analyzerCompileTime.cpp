@@ -86,7 +86,7 @@ void Analyzer::declareConstant(const Node* declaration)
             return;
         }
     }
-    if (isTypeName(name) || name == model_.program.name || name == "compiler" || model_.constantNamed(name) != nullptr) {
+    if (declaredHere(name) || name == "compiler") {
         error(nameRange, "sema.redeclared", "'" + name + "' is already declared");
         return;
     }
@@ -102,6 +102,7 @@ void Analyzer::declareConstant(const Node* declaration)
     auto constant = std::make_unique<ConstantInfo>();
     constant->name = name;
     constant->decl = declaration;
+    constant->origin = currentOrigin();
     constant->nameRange = nameRange;
     constant->typeNode = typeNode;
     constant->value = value;
@@ -437,6 +438,7 @@ ClassInfo* Analyzer::fieldMetaClass()
     }
     auto info = std::make_unique<ClassInfo>();
     info->name = "FieldMeta";
+    info->unitName = model_.program.name;
     info->type = types_.addClass(info.get());
     const std::pair<const char*, const Type*> fields[] = {
         {"name", types_.string()}, {"typeName", types_.string()}, {"offset", types_.int64()}, {"size", types_.int64()}};

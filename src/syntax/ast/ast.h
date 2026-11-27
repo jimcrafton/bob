@@ -15,6 +15,7 @@ enum class NodeKind : uint8_t {
     unit,
     import,
     namespaceDecl,
+    unitSection,
     classDecl,
     recordDecl,
     extendsDecl,
@@ -121,6 +122,13 @@ struct Unit : NodeOf<NodeKind::unit> {
     std::string version;
     SourceRange nameRange;
     std::vector<Import*> imports;
+    std::vector<Node*> items;
+};
+
+// `interface { … }` or `implementation { … }` at unit level (Pascal units): the
+// declarations a module exports, and the ones it keeps to itself.
+struct UnitSection : NodeOf<NodeKind::unitSection> {
+    bool isInterface = false;
     std::vector<Node*> items;
 };
 
@@ -381,13 +389,17 @@ struct TypeMessage : NodeOf<NodeKind::typeMessage> {
 struct ErrorNode : NodeOf<NodeKind::error> {
 };
 
+// Ids start after `firstId - 1`, so units analyzed together (a unit and the
+// interfaces it imports) can give their arenas disjoint id ranges.
 class AstArena {
 public:
+    explicit AstArena(NodeId firstId = 1) : firstId_(firstId) {}
+
     template <class T>
     T* make(SourceRange range)
     {
         auto node = std::make_unique<T>();
-        node->id = static_cast<NodeId>(nodes_.size() + 1);
+        node->id = static_cast<NodeId>(firstId_ + nodes_.size());
         node->range = range;
         T* raw = node.get();
         nodes_.push_back(std::move(node));
@@ -398,6 +410,7 @@ public:
     size_t size() const { return nodes_.size(); }
 
 private:
+    NodeId firstId_ = 1;
     std::vector<std::unique_ptr<Node>> nodes_;
 };
 

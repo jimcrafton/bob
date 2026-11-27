@@ -43,7 +43,10 @@ void analyzeEscapes(SemanticModel& model, DiagnosticEngine& diagnostics);
 
 class Analyzer {
 public:
-    Analyzer(SemanticModel& model, DiagnosticEngine& diagnostics) : model_(model), types_(model.types), diagnostics_(diagnostics) {}
+    Analyzer(SemanticModel& model, DiagnosticEngine& diagnostics, AnalyzeOptions options = {})
+        : model_(model), types_(model.types), diagnostics_(diagnostics), options_(std::move(options)), unitProgram_(&model.program)
+    {
+    }
 
     void run(const Unit* unit);
 
@@ -163,6 +166,21 @@ private:
     // The type an untyped literal adopts from what is expected (unwrapping T? and unions).
     const Type* literalExpectation(const Type* expected, bool isRealLiteral) const;
 
+    // modules (analyzerModules.cpp)
+    void loadImports(const std::vector<Import*>& imports, const std::string& directory, const ModuleInfo* importer);
+    ModuleInfo* loadModule(const Import* import, const std::string& directory, const ModuleInfo* importer);
+    // The unit's items with `interface { }` / `implementation { }` flattened out;
+    // `second` is true for the interface section.
+    std::vector<std::pair<const Node*, bool>> unitItems(const Unit* unit);
+    // A declaration of `name` already in the unit being declared (imports don't count).
+    bool declaredHere(const std::string& name) const;
+    Origin currentOrigin() const { return Origin{unitModule_, unitModule_ == nullptr && exporting_}; }
+    void checkUnambiguous(const std::string& name, SourceRange range);
+    // Interface attributes on an imported message: @[keeps:], @[default].
+    void applyInterfaceAttributes(MessageInfo* message, const MessageDecl* decl);
+    void checkExports(const Unit* unit);
+    bool importing() const { return unitModule_ != nullptr; }
+
     // compile-time code, constants, `meta`, `compiler` (analyzerCompileTime.cpp)
     void declareConstant(const Node* declaration);
     void declareUnitBlock(const StatementGroup* group);
@@ -230,6 +248,12 @@ private:
     OverflowMode unitOverflow_ = OverflowMode::trap;
     std::unordered_map<const MessageInfo*, int> checkState_;
     int blockCounter_ = 0;
+    AnalyzeOptions options_;
+    // The unit whose declarations are being collected: the compiled one, or an
+    // imported module (then `unitModule_` is set).
+    ModuleInfo* unitModule_ = nullptr;
+    ProgramInfo* unitProgram_ = nullptr;
+    bool exporting_ = false;
 };
 
 }

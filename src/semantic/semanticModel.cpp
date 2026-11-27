@@ -2,6 +2,41 @@
 
 namespace bob::sema {
 
+namespace {
+
+// The unit's own declaration first (it shadows imports), then the first imported
+// one. `module.Name` looks only in that module.
+template <class T>
+T* findNamed(const std::vector<std::unique_ptr<T>>& list, std::string_view name)
+{
+    std::string_view module;
+    size_t dot = name.rfind('.');
+    if (dot != std::string_view::npos) {
+        module = name.substr(0, dot);
+        name = name.substr(dot + 1);
+    }
+    T* imported = nullptr;
+    for (const auto& item : list) {
+        if (item->name != name) {
+            continue;
+        }
+        const ModuleInfo* origin = item->origin.module;
+        if (!module.empty()) {
+            if (origin != nullptr && origin->name == module) {
+                return item.get();
+            }
+            continue;
+        }
+        if (origin == nullptr) {
+            return item.get();
+        }
+        imported = imported != nullptr ? imported : item.get();
+    }
+    return imported;
+}
+
+}
+
 const FieldInfo* RecordInfo::field(std::string_view fieldName) const
 {
     for (const FieldInfo& info : fields) {
@@ -75,42 +110,22 @@ int ClassInfo::slotOf(const std::string& selector) const
 
 ClassInfo* SemanticModel::classNamed(std::string_view name) const
 {
-    for (const auto& info : classes) {
-        if (info->name == name) {
-            return info.get();
-        }
-    }
-    return nullptr;
+    return findNamed(classes, name);
 }
 
 ConstantInfo* SemanticModel::constantNamed(std::string_view name) const
 {
-    for (const auto& info : constants) {
-        if (info->name == name) {
-            return info.get();
-        }
-    }
-    return nullptr;
+    return findNamed(constants, name);
 }
 
 EnumInfo* SemanticModel::enumNamed(std::string_view name) const
 {
-    for (const auto& info : enums) {
-        if (info->name == name) {
-            return info.get();
-        }
-    }
-    return nullptr;
+    return findNamed(enums, name);
 }
 
 const NamedTypeInfo* SemanticModel::namedType(std::string_view name) const
 {
-    for (const auto& info : namedTypes) {
-        if (info->name == name) {
-            return info.get();
-        }
-    }
-    return nullptr;
+    return findNamed(namedTypes, name);
 }
 
 const EnumMemberInfo* EnumInfo::member(std::string_view memberName) const
@@ -166,9 +181,14 @@ const BlockInfo* SemanticModel::blockOf(const ast::Node* node) const
 
 const RecordInfo* SemanticModel::recordNamed(std::string_view name) const
 {
-    for (const auto& record : records) {
-        if (record->name == name) {
-            return record.get();
+    return findNamed(records, name);
+}
+
+ModuleInfo* SemanticModel::moduleNamed(std::string_view name) const
+{
+    for (const auto& module : modules) {
+        if (module->name == name) {
+            return module.get();
         }
     }
     return nullptr;

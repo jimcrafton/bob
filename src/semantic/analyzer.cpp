@@ -82,11 +82,11 @@ void Analyzer::run(const Unit* unit)
     model_.program.name = unit->unitKind == UnitKind::fragment ? "" : unit->name;
     model_.program.type = types_.addProgram(&model_.program);
     unitOverflow_ = overflowFrom(unit, OverflowMode::trap, {"overflow"});
-    for (const Import* import : unit->imports) {
-        unsupported(import, "importing modules ('import " + import->name + "')", "phase 7");
-    }
-
+    // Imported modules' declarations first (they come from their interfaces),
+    // then the unit's own, which shadow them.
+    loadImports(unit->imports, "", nullptr);
     collect(unit);
+    exporting_ = false;
     for (const auto& info : model_.enums) {
         resolveEnum(info.get());
     }
@@ -100,18 +100,29 @@ void Analyzer::run(const Unit* unit)
         resolveClass(info.get());
     }
     for (const auto& info : model_.classes) {
+        // An imported class's messages are declared as part of its module.
+        unitModule_ = const_cast<ModuleInfo*>(info->origin.module);
+        unitProgram_ = unitModule_ != nullptr ? &unitModule_->program : &model_.program;
         declareClassMembers(info.get(), info->decl->members);
     }
-    for (const Node* item : unit->items) {
+    unitModule_ = nullptr;
+    unitProgram_ = &model_.program;
+    for (const auto& [item, inInterface] : unitItems(unit)) {
+        exporting_ = inInterface;
         auto decl = nodeCast<ExtendsDecl>(item);
         auto target = decl != nullptr ? nodeCast<TypeName>(decl->target) : nullptr;
         if (target != nullptr) {
-            if (ClassInfo* info = model_.classNamed(target->name)) {
+            ClassInfo* info = model_.classNamed(target->name);
+            if (info != nullptr && info->origin.module != nullptr) {
+                unsupported(decl->target, "adding messages to an imported class ('extends " + target->name + "')", "a later phase");
+            }
+            else if (info != nullptr) {
                 addProtocols(info, decl->protocols);
                 declareClassMembers(info, decl->members);
             }
         }
     }
+    exporting_ = false;
     completeClasses();
     for (const auto& info : model_.classes) {
         resolveDefaultable(info.get());
@@ -137,6 +148,7 @@ void Analyzer::run(const Unit* unit)
     }
 
     finalizePendingContainers();
+    checkExports(unit);
     if (diagnostics_.errorCount() == 0) {
         analyzeEscapes(model_, diagnostics_);
     }
@@ -150,7 +162,9 @@ void Analyzer::run(const Unit* unit)
 
 void Analyzer::collect(const Unit* unit)
 {
-    for (const Node* item : unit->items) {
+    std::vector<std::pair<const Node*, bool>> items = unitItems(unit);
+    for (const auto& [item, inInterface] : items) {
+        exporting_ = inInterface;
         if (auto record = nodeCast<RecordDecl>(item)) {
             declareRecord(record);
         }
@@ -164,7 +178,8 @@ void Analyzer::collect(const Unit* unit)
             declareNamedType(typeDecl);
         }
     }
-    for (const Node* item : unit->items) {
+    for (const auto& [item, inInterface] : items) {
+        exporting_ = inInterface;
         switch (item->kind) {
         case NodeKind::recordDecl:
         case NodeKind::classDecl:
@@ -175,7 +190,7 @@ void Analyzer::collect(const Unit* unit)
             auto decl = static_cast<const ExtendsDecl*>(item);
             auto target = nodeCast<TypeName>(decl->target);
             std::string name = target != nullptr ? target->name : "";
-            if (!model_.program.name.empty() && name == model_.program.name) {
+            if (!unitProgram_->name.empty() && name == unitProgram_->name) {
                 declareProgramMessages(decl);
             }
             else if (model_.classNamed(name) != nullptr) {
@@ -222,12 +237,13 @@ void Analyzer::collect(const Unit* unit)
 
 void Analyzer::declareRecord(const RecordDecl* decl)
 {
-    if (isTypeName(decl->name) || model_.classNamed(decl->name) != nullptr || decl->name == model_.program.name) {
+    if (declaredHere(decl->name)) {
         error(decl->nameRange, "sema.redeclared", "'" + decl->name + "' is already declared");
         return;
     }
     auto record = std::make_unique<RecordInfo>();
     record->name = decl->name;
+    record->origin = currentOrigin();
     record->decl = decl;
     for (const Attribute* attribute : decl->attributes) {
         if (attribute->name == "packed" && attribute->value == nullptr) {
@@ -311,12 +327,14 @@ void Analyzer::resolveRecord(RecordInfo* record)
 
 void Analyzer::declareClass(const ClassDecl* decl)
 {
-    if (isTypeName(decl->name) || decl->name == model_.program.name) {
+    if (declaredHere(decl->name)) {
         error(decl->nameRange, "sema.redeclared", "'" + decl->name + "' is already declared");
         return;
     }
     auto info = std::make_unique<ClassInfo>();
     info->name = decl->name;
+    info->origin = currentOrigin();
+    info->unitName = unitProgram_->name;
     info->decl = decl;
     for (const Attribute* attribute : decl->attributes) {
         if (attribute->name == "protocol" && attribute->value == nullptr) {
@@ -375,6 +393,11 @@ void Analyzer::resolveClass(ClassInfo* info)
             else if (info->isProtocol) {
                 info->protocols.push_back(parent);
             }
+            else if (parent->origin.module != info->origin.module) {
+                error(decl->superclass, "sema.closedClass",
+                      "'" + parent->name + "' is a concrete class of module '" + (parent->origin.module != nullptr ? parent->origin.module->name : std::string("?")) +
+                          "', and classes are closed to their module; implement one of its protocols instead");
+            }
             else {
                 info->superclass = parent;
                 parent->subclasses.push_back(info);
@@ -405,7 +428,13 @@ void Analyzer::resolveClass(ClassInfo* info)
                 error(field->nameRange, "sema.redeclared", "'" + info->name + "' already has a field '" + field->name + "'");
                 continue;
             }
+            // In an interface, @[initialized] stands in for the initializer the module has.
+            const Node* initializer = field->initializer;
             for (const Attribute* attribute : field->attributes) {
+                if (info->origin.module != nullptr && attribute->name == "initialized") {
+                    initializer = attribute;
+                    continue;
+                }
                 unsupported(attribute, "the field attribute '@[" + attribute->name + "]'", "phase 9");
             }
             const Type* type = resolveType(field->type);
@@ -420,7 +449,7 @@ void Analyzer::resolveClass(ClassInfo* info)
             fieldInfo.decl = field;
             fieldInfo.owner = info;
             fieldInfo.isPublic = group->visibility == Visibility::publicScope;
-            fieldInfo.initializer = field->initializer;
+            fieldInfo.initializer = initializer;
             info->fields.push_back(fieldInfo);
         }
     }
@@ -487,7 +516,7 @@ MessageInfo* Analyzer::declareMethod(ClassInfo* info, const MessageDecl* decl)
         unsupported(decl, "class-side messages in protocols", "a later phase");
         return nullptr;
     }
-    if (decl->body == nullptr && !info->isProtocol) {
+    if (decl->body == nullptr && !info->isProtocol && !importing()) {
         error(decl->selectorRange, "sema.missingBody", "'" + decl->selector + "' needs a body; only protocols declare messages without one");
     }
 
@@ -496,11 +525,14 @@ MessageInfo* Analyzer::declareMethod(ClassInfo* info, const MessageDecl* decl)
     message->decl = decl;
     message->owner = info;
     message->isInstance = !isStatic;
-    message->isProtocolDefault = info->isProtocol && decl->body != nullptr;
-    message->isRequired = info->isProtocol && decl->body == nullptr;
-    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "static", "compiletime"});
+    // In an interface a protocol default has no body; @[default] marks it.
+    bool hasBody = decl->body != nullptr || (importing() && hasAttribute(decl, "default"));
+    message->isProtocolDefault = info->isProtocol && hasBody;
+    message->isRequired = info->isProtocol && !hasBody;
+    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "static", "compiletime", "keeps", "default"});
     message->compileTimeOnly = hasAttribute(decl, "compiletime");
-    message->symbolName = "bob." + info->name + (isStatic ? ".class." : ".") + decl->selector;
+    message->symbolName = "bob." + info->unitName + "." + info->name + (isStatic ? ".class." : ".") + decl->selector;
+    message->origin = info->origin;
 
     if (message->isInstance) {
         auto self = std::make_unique<LocalInfo>();
@@ -513,6 +545,9 @@ MessageInfo* Analyzer::declareMethod(ClassInfo* info, const MessageDecl* decl)
         model_.locals.push_back(std::move(self));
     }
     declareParams(message.get(), decl);
+    if (importing()) {
+        applyInterfaceAttributes(message.get(), decl);
+    }
 
     MessageInfo* raw = message.get();
     table[raw->selector] = raw;
@@ -578,7 +613,9 @@ void Analyzer::completeClass(ClassInfo* info)
             }
             seen.push_back(protocol);
             pending.insert(pending.end(), protocol->protocols.begin(), protocol->protocols.end());
-            for (const auto& [selector, declared] : protocol->methods) {
+            // In declaration order, so a module and its importers lay out the same vtable.
+            for (MessageInfo* declared : protocol->methodList) {
+                const std::string& selector = declared->selector;
                 MessageInfo* found = info->lookup(selector);
                 if (found == nullptr || found->owner == nullptr || found->owner->isProtocol) {
                     if (declared->isRequired) {
@@ -628,7 +665,7 @@ void Analyzer::completeClass(ClassInfo* info)
 // declaring class; each class's generated `init` runs its own fields' ones.
 void Analyzer::checkFieldInitializers(ClassInfo* info)
 {
-    if (info->initializer == nullptr) {
+    if (info->initializer == nullptr || info->origin.module != nullptr) {
         return;
     }
     MessageInfo* initializer = info->initializer;
@@ -925,21 +962,22 @@ void Analyzer::declareMessage(const MessageDecl* decl)
         error(decl->selectorRange, "sema.programMessageNotStatic",
               "messages on the program are class-side; mark '" + decl->selector + "' with @[static]");
     }
-    if (decl->body == nullptr) {
+    if (decl->body == nullptr && !importing()) {
         error(decl->selectorRange, "sema.missingBody", "'" + decl->selector + "' needs a body; only protocols declare messages without one");
     }
-    if (model_.program.bySelector.count(decl->selector) != 0) {
-        error(decl->selectorRange, "sema.redeclared", "'" + decl->selector + "' is already declared on '" + model_.program.name + "'");
+    if (unitProgram_->bySelector.count(decl->selector) != 0) {
+        error(decl->selectorRange, "sema.redeclared", "'" + decl->selector + "' is already declared on '" + unitProgram_->name + "'");
         return;
     }
 
     auto message = std::make_unique<MessageInfo>();
     message->selector = decl->selector;
     message->decl = decl;
-    message->symbolName = "bob." + model_.program.name + "." + decl->selector;
-    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "static", "compiletime"});
+    message->symbolName = "bob." + unitProgram_->name + "." + decl->selector;
+    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "static", "compiletime", "keeps"});
     message->compileTimeOnly = hasAttribute(decl, "compiletime");
-    message->isMain = decl->selector == "main" || decl->selector == "main:";
+    message->isMain = !importing() && (decl->selector == "main" || decl->selector == "main:");
+    message->origin = currentOrigin();
 
     for (const Node* node : decl->params) {
         auto param = static_cast<const MessageParam*>(node);
@@ -993,8 +1031,11 @@ void Analyzer::declareMessage(const MessageDecl* decl)
         model_.program.main = message.get();
     }
 
-    model_.program.bySelector[message->selector] = message.get();
-    model_.program.messages.push_back(message.get());
+    if (importing()) {
+        applyInterfaceAttributes(message.get(), decl);
+    }
+    unitProgram_->bySelector[message->selector] = message.get();
+    unitProgram_->messages.push_back(message.get());
     model_.messages.push_back(std::move(message));
 }
 
@@ -1004,6 +1045,7 @@ const Type* Analyzer::resolveType(const Node* node)
         return types_.voidType();
     }
     if (auto name = nodeCast<TypeName>(node)) {
+        checkUnambiguous(name->name, name->range);
         if (const Type* builtin = types_.builtin(name->name)) {
             // The bare container names infer their element types from first use.
             if ((isDynamicContainer(builtin) || builtin->kind == TypeKind::set) && builtin->inner == nullptr) {
@@ -1835,6 +1877,10 @@ const Type* Analyzer::checkIdentifier(const Identifier* identifier)
     if (!model_.program.name.empty() && identifier->name == model_.program.name) {
         return model_.program.type;
     }
+    if (const ModuleInfo* module = model_.moduleNamed(identifier->name)) {
+        return module->type;
+    }
+    checkUnambiguous(identifier->name, identifier->range);
     if (ConstantInfo* constant = model_.constantNamed(identifier->name)) {
         checkConstant(constant);
         model_.constantRefs[identifier->id] = constant;
@@ -1873,6 +1919,37 @@ const Type* Analyzer::checkIdentifier(const Identifier* identifier)
 
 const Type* Analyzer::checkFieldAccess(const FieldAccess* access)
 {
+    // `geometry.Point`, `geometry.ORIGIN`: a name qualified by an imported module.
+    if (auto prefix = nodeCast<Identifier>(access->receiver); prefix != nullptr && lookupLocal(prefix->name) == nullptr) {
+        if (const ModuleInfo* module = model_.moduleNamed(prefix->name)) {
+            remember(prefix, module->type);
+            std::string qualified = module->name + "." + access->field;
+            if (ConstantInfo* constant = model_.constantNamed(qualified)) {
+                checkConstant(constant);
+                model_.constantRefs[access->id] = constant;
+                if (context_.message != nullptr) {
+                    context_.message->constantsUsed.push_back(constant);
+                }
+                return constant->type;
+            }
+            if (const RecordInfo* record = model_.recordNamed(qualified)) {
+                return types_.metaOf(record->type);
+            }
+            if (const ClassInfo* info = model_.classNamed(qualified)) {
+                return types_.metaOf(info->type);
+            }
+            if (EnumInfo* info = model_.enumNamed(qualified)) {
+                resolveEnum(info);
+                return types_.metaOf(info->type);
+            }
+            if (const NamedTypeInfo* info = model_.namedType(qualified)) {
+                const Type* type = resolveNamedType(const_cast<NamedTypeInfo*>(info));
+                return type == types_.error() ? type : types_.metaOf(type);
+            }
+            error(access->fieldRange, "sema.unknownMember", "module '" + module->name + "' has no '" + access->field + "' in its interface");
+            return types_.error();
+        }
+    }
     const Type* receiver = check(access->receiver, nullptr);
     if (receiver == types_.error()) {
         return types_.error();
@@ -2735,7 +2812,12 @@ namespace bob::sema {
 
 void analyze(const ast::Unit* unit, SemanticModel& model, DiagnosticEngine& diagnostics)
 {
-    detail::Analyzer analyzer(model, diagnostics);
+    analyze(unit, model, diagnostics, AnalyzeOptions{});
+}
+
+void analyze(const ast::Unit* unit, SemanticModel& model, DiagnosticEngine& diagnostics, const AnalyzeOptions& options)
+{
+    detail::Analyzer analyzer(model, diagnostics, options);
     analyzer.run(unit);
 }
 

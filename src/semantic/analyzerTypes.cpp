@@ -31,7 +31,7 @@ uint64_t literalBits(const IntegerLiteral* literal)
 
 void Analyzer::declareEnum(const EnumDecl* decl)
 {
-    if (isTypeName(decl->name) || decl->name == model_.program.name) {
+    if (declaredHere(decl->name)) {
         error(decl->nameRange, "sema.redeclared", "'" + decl->name + "' is already declared");
         return;
     }
@@ -40,6 +40,7 @@ void Analyzer::declareEnum(const EnumDecl* decl)
     }
     auto info = std::make_unique<EnumInfo>();
     info->name = decl->name;
+    info->origin = currentOrigin();
     info->decl = decl;
     model_.enums.push_back(std::move(info));
 }
@@ -129,12 +130,13 @@ void Analyzer::resolveEnum(EnumInfo* info)
 
 void Analyzer::declareNamedType(const TypeAliasDecl* decl)
 {
-    if (isTypeName(decl->name) || decl->name == model_.program.name) {
+    if (declaredHere(decl->name)) {
         error(decl->nameRange, "sema.redeclared", "'" + decl->name + "' is already declared");
         return;
     }
     auto info = std::make_unique<NamedTypeInfo>();
     info->name = decl->name;
+    info->origin = currentOrigin();
     info->decl = decl;
     for (const Attribute* attribute : decl->attributes) {
         if (attribute->name == "alias" && attribute->value == nullptr) {

@@ -6,6 +6,7 @@
 #include <llvm/IR/Verifier.h>
 #include <llvm/IRReader/IRReader.h>
 #include <llvm/MC/TargetRegistry.h>
+#include <llvm/Object/ArchiveWriter.h>
 #include <llvm/Passes/OptimizationLevel.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/FileSystem.h>
@@ -152,6 +153,25 @@ std::optional<std::string> emitObjectFromIrFile(const std::string& irPath, const
     }
     if (std::optional<std::string> error = emitObjectFile(*module, objectPath, optLevel)) {
         return irPath + ": " + *error;
+    }
+    return std::nullopt;
+}
+
+}
+
+namespace bob::driver {
+
+std::optional<std::string> writeStaticLibrary(const std::string& libraryPath, const std::string& objectPath, const std::string& memberName)
+{
+    llvm::Expected<llvm::NewArchiveMember> member = llvm::NewArchiveMember::getFile(objectPath, true);
+    if (!member) {
+        return "cannot read '" + objectPath + "': " + llvm::toString(member.takeError());
+    }
+    member->MemberName = memberName;
+    std::vector<llvm::NewArchiveMember> members;
+    members.push_back(std::move(*member));
+    if (llvm::Error error = llvm::writeArchive(libraryPath, members, llvm::SymtabWritingMode::NormalSymtab, llvm::object::Archive::K_COFF, true, false)) {
+        return "cannot write '" + libraryPath + "': " + llvm::toString(std::move(error));
     }
     return std::nullopt;
 }

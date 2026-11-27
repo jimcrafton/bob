@@ -10,6 +10,8 @@ add_library(bobSemantic STATIC
     analyzerConstruction.cpp
     analyzerEscape.cpp
     analyzerCompileTime.cpp
+    analyzerModules.cpp
+    interfaceWriter.cpp
     layout.cpp
     explainDispatch.cpp
 )

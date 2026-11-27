@@ -59,11 +59,11 @@ int binaryPrecedence(std::string_view op)
     return 4;
 }
 
-ParsedUnit parseSource(std::string_view text, DiagnosticEngine& diagnostics)
+ParsedUnit parseSource(std::string_view text, DiagnosticEngine& diagnostics, ast::NodeId firstId)
 {
     ParsedUnit result;
     result.tokens = lexer::tokenize(text, diagnostics);
-    result.arena = std::make_unique<AstArena>();
+    result.arena = std::make_unique<AstArena>(firstId);
     Parser parser(result.tokens, *result.arena, diagnostics);
     result.unit = parser.parseUnit();
     return result;
@@ -383,7 +383,10 @@ Node* Parser::parseUnitItem()
     }
 
     Node* item = nullptr;
-    if (atWord("namespace") && at(TokenKind::identifier, 1)) {
+    if ((atWord("interface") || atWord("implementation")) && at(TokenKind::leftBrace, 1)) {
+        item = parseUnitSection();
+    }
+    else if (atWord("namespace") && at(TokenKind::identifier, 1)) {
         item = parseNamespace();
     }
     else if (atWord("class") && at(TokenKind::identifier, 1)) {
@@ -413,6 +416,19 @@ Node* Parser::parseUnitItem()
     item->attributes = std::move(attributes);
     item->range.begin = begin;
     return item;
+}
+
+// `interface { items }` or `implementation { items }` (Pascal unit sections).
+Node* Parser::parseUnitSection()
+{
+    const Token& word = advance();
+    UnitSection* section = make<UnitSection>(word.range.begin);
+    section->isInterface = word.text == "interface";
+    expect(TokenKind::leftBrace, "'{' to open the section");
+    parseList(section->items, [this]() { return parseUnitItem(); });
+    expect(TokenKind::rightBrace, "'}' to close the section");
+    section->range = rangeFrom(word.range.begin);
+    return section;
 }
 
 Node* Parser::parseNamespace()

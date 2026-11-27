@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ast/ast.h"
+#include "parser/parser.h"
 #include "types.h"
 
 #include <memory>
@@ -19,6 +20,15 @@ enum class OverflowMode : uint8_t {
 
 struct ClassInfo;
 struct MessageInfo;
+struct ModuleInfo;
+
+// Where a declaration comes from: `module` is null for the unit being compiled,
+// otherwise the imported module (design §11.5). `exported` marks the unit's own
+// declarations in its `interface { }` section.
+struct Origin {
+    const ModuleInfo* module = nullptr;
+    bool exported = false;
+};
 
 struct FieldInfo {
     std::string name;
@@ -36,6 +46,7 @@ struct FieldInfo {
 };
 
 struct RecordInfo {
+    Origin origin;
     std::string name;
     std::vector<FieldInfo> fields;
     bool packed = false;
@@ -79,6 +90,9 @@ struct BlockInfo {
 };
 
 struct MessageInfo {
+    Origin origin;
+    // Declared in an imported interface: no body here, the code is in its library.
+    bool imported = false;
     std::string selector;
     std::vector<LocalInfo*> params;
     std::vector<LocalInfo*> locals;
@@ -114,6 +128,9 @@ struct MessageInfo {
 };
 
 struct ClassInfo {
+    Origin origin;
+    // The unit that declares it (its symbols are `bob.<unit>.<Class>...`).
+    std::string unitName;
     std::string name;
     const ast::ClassDecl* decl = nullptr;
     bool isProtocol = false;
@@ -155,6 +172,7 @@ struct EnumMemberInfo {
 };
 
 struct EnumInfo {
+    Origin origin;
     std::string name;
     const ast::EnumDecl* decl = nullptr;
     const Type* storage = nullptr;
@@ -169,6 +187,7 @@ struct EnumInfo {
 
 // `type Name := ...;`
 struct NamedTypeInfo {
+    Origin origin;
     std::string name;
     const ast::TypeAliasDecl* decl = nullptr;
     const Type* type = nullptr;
@@ -214,6 +233,7 @@ struct CompileTimeItem {
 // `@[constant] NAME := expr;` or `@[constant] name: T := expr;` at unit level: an
 // immutable value computed at compile time.
 struct ConstantInfo {
+    Origin origin;
     std::string name;
     // The declaration (an Assignment or a VariableDecl), its name, its written type and value.
     const ast::Node* decl = nullptr;
@@ -373,6 +393,22 @@ struct CaseRange {
 };
 
 // All results are keyed by AST node id so tools can query them for any node.
+// An imported module or lib, read from its interface file.
+struct ModuleInfo {
+    std::string name;
+    std::string version;
+    std::string fingerprint;
+    std::string interfacePath;
+    // The compiled code next to the interface (`.lib`, else `.obj`); empty if missing.
+    std::string libraryPath;
+    // The modules this one was compiled against, with their interfaces' fingerprints.
+    std::vector<std::pair<std::string, std::string>> dependencies;
+    ProgramInfo program;
+    Type* type = nullptr;
+    std::string text;
+    std::unique_ptr<parser::ParsedUnit> parsed;
+};
+
 class SemanticModel {
 public:
     TypeTable types;
@@ -401,6 +437,8 @@ public:
     // Allocation statements whose object goes on the stack, keyed by the statement.
     std::unordered_map<ast::NodeId, StackObject> stackObjects;
     std::vector<std::unique_ptr<ConstantInfo>> constants;
+    // Imported modules, in load order (dependencies first).
+    std::vector<std::unique_ptr<ModuleInfo>> modules;
     std::vector<std::unique_ptr<CompileTimeItem>> compileTimeItems;
     std::vector<std::unique_ptr<ConstValue>> constValues;
     // Identifiers that name a unit-level constant.
@@ -420,6 +458,7 @@ public:
     const RecordInfo* recordNamed(std::string_view name) const;
     ClassInfo* classNamed(std::string_view name) const;
     ConstantInfo* constantNamed(std::string_view name) const;
+    ModuleInfo* moduleNamed(std::string_view name) const;
     EnumInfo* enumNamed(std::string_view name) const;
     const NamedTypeInfo* namedType(std::string_view name) const;
 };

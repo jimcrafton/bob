@@ -3,6 +3,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace bob::driver {
 
@@ -24,6 +25,8 @@ struct DriverOptions {
     std::string linkerPath;
     std::string runtimeDir;
     std::string sdkLibPath;
+    // Where `import` looks for interfaces (after the source file's own directory).
+    std::vector<std::string> modulePaths;
     bool compileOnly = false;
     bool verbose = false;
     bool showHelp = false;
@@ -33,6 +36,8 @@ struct DriverOptions {
 std::optional<std::string> parseDriverArguments(std::span<const std::string> args, DriverOptions& options);
 
 std::string defaultOutputPath(const DriverOptions& options);
+
+std::string replaceExtension(const std::string& path, const char* extension);
 
 const char* driverUsage();
 

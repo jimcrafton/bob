@@ -7,6 +7,7 @@
 #include "layout.h"
 #include "objectModel.h"
 
+#include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/IR/LLVMContext.h>
@@ -284,6 +285,24 @@ private:
         }
         if (llvm::Error error = (*jit)->getMainJITDylib().define(llvm::orc::absoluteSymbols(std::move(symbols)))) {
             return fail(item, llvm::toString(std::move(error)));
+        }
+        // Compile-time code may call into imported modules: load their code too.
+        for (const auto& module : model_.modules) {
+            if (module->libraryPath.empty()) {
+                continue;
+            }
+            if (llvm::StringRef(module->libraryPath).ends_with(".lib")) {
+                auto generator = llvm::orc::StaticLibraryDefinitionGenerator::Load((*jit)->getObjLinkingLayer(), module->libraryPath.c_str());
+                if (!generator) {
+                    return fail(item, llvm::toString(generator.takeError()));
+                }
+                (*jit)->getMainJITDylib().addGenerator(std::move(*generator));
+            }
+            else if (auto buffer = llvm::MemoryBuffer::getFile(module->libraryPath)) {
+                if (llvm::Error error = (*jit)->addObjectFile(std::move(*buffer))) {
+                    return fail(item, llvm::toString(std::move(error)));
+                }
+            }
         }
 
         const std::string thunk = "bob.compiletime.thunk";

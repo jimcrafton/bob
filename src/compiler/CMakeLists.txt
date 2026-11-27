@@ -1,5 +1,5 @@
 llvm_map_components_to_libnames(bobLlvmLibs
-    core irreader support target mc passes orcjit
+    core irreader support target mc passes orcjit object
     x86codegen x86asmparser x86desc x86info
 )
 

@@ -54,6 +54,15 @@ bobc --dump-tokens prog.bob        # token stream
 bobc --dump-ast prog.bob           # syntax tree, text
 bobc --dump-ast=json prog.bob      # syntax tree, JSON (see docs/tooling.md)
 ```
+A `module` or `lib` unit builds into a static library plus its interface. Build the modules first, then the program that imports them:
+```
+bobc geometry.bob                  # → geometry.lib + geometry.bobi
+bobc -c geometry.bob               # → geometry.obj + geometry.bobi
+bobc shapes.bob                    # a lib importing geometry: finds geometry.bobi next to shapes.bob
+bobc app.bob --module-path=libs    # also searches libs\ for interfaces; links each module's .lib
+```
+After changing only a module's implementation, rebuild just that module. If its interface changed, `bobc` says which dependents to recompile ("'shapes' was compiled against a different interface of 'geometry'"). `tests/programs/modules` has a working example.
+
 The grammar is in `docs/grammar.md`, the type rules in `docs/semantics.md`. Runtime traps (overflow, division by zero…) print to stderr and exit with code 101. If objects are still allocated when `main` returns, the runtime prints `bob: leak: …` to stderr.
 
 ## Test programs

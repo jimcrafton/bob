@@ -12,6 +12,10 @@
 extern "C" void __chkstk();
 
 namespace {
+int fltusedMarker = 0;
+}
+
+namespace {
 
 std::mutex collected;
 bob::hosted::RunResult* current = nullptr;
@@ -153,6 +157,8 @@ std::vector<Symbol> runtimeSymbols()
         {"memset", reinterpret_cast<void*>(&std::memset)},
         {"memcmp", reinterpret_cast<void*>(&std::memcmp)},
         {"__chkstk", reinterpret_cast<void*>(&__chkstk)},
+        // Object files that use floating point refer to this MSVC marker.
+        {"_fltused", &fltusedMarker},
     };
 }
 

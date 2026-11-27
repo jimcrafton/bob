@@ -23,4 +23,7 @@ std::optional<std::string> prepareModule(llvm::Module& module);
 // The x86-64 Windows data layout string; empty on failure with `error` set.
 std::string targetDataLayout(std::string& error);
 
+// Writes a COFF static library holding one object file (stored as `memberName`).
+std::optional<std::string> writeStaticLibrary(const std::string& libraryPath, const std::string& objectPath, const std::string& memberName);
+
 }

@@ -112,7 +112,10 @@ public:
     void run()
     {
         for (const auto& message : model_.messages) {
-            message->paramEscapes.assign(message->params.size(), false);
+            // Imported messages keep the summary their interface recorded.
+            if (!message->imported) {
+                message->paramEscapes.assign(message->params.size(), false);
+            }
         }
         bool changed = true;
         for (int round = 0; changed && round < 100; ++round) {

@@ -59,10 +59,10 @@ const char* messageKindName(MessageKind kind)
 
 Node* AstArena::byId(NodeId id) const
 {
-    if (id == 0 || id > nodes_.size()) {
+    if (id < firstId_ || id - firstId_ >= nodes_.size()) {
         return nullptr;
     }
-    return nodes_[id - 1].get();
+    return nodes_[id - firstId_].get();
 }
 
 const char* nodeKindName(NodeKind kind)
@@ -74,6 +74,8 @@ const char* nodeKindName(NodeKind kind)
         return "Import";
     case NodeKind::namespaceDecl:
         return "Namespace";
+    case NodeKind::unitSection:
+        return "Section";
     case NodeKind::classDecl:
         return "Class";
     case NodeKind::recordDecl:
@@ -192,6 +194,9 @@ std::vector<ChildRef> childrenOf(const Node* node)
     }
     case NodeKind::namespaceDecl:
         addAll(out, "item", static_cast<const NamespaceDecl*>(node)->items);
+        break;
+    case NodeKind::unitSection:
+        addAll(out, "item", static_cast<const UnitSection*>(node)->items);
         break;
     case NodeKind::classDecl: {
         auto n = static_cast<const ClassDecl*>(node);
@@ -402,6 +407,9 @@ std::vector<Property> propertiesOf(const Node* node)
     }
     case NodeKind::namespaceDecl:
         out.push_back({"name", static_cast<const NamespaceDecl*>(node)->name});
+        break;
+    case NodeKind::unitSection:
+        out.push_back({"kind", static_cast<const UnitSection*>(node)->isInterface ? "interface" : "implementation"});
         break;
     case NodeKind::classDecl:
         out.push_back({"name", static_cast<const ClassDecl*>(node)->name});

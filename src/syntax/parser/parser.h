@@ -19,7 +19,8 @@ struct ParsedUnit {
     ast::Unit* unit = nullptr;
 };
 
-ParsedUnit parseSource(std::string_view text, DiagnosticEngine& diagnostics);
+// `firstId`: the id of the first node (see AstArena).
+ParsedUnit parseSource(std::string_view text, DiagnosticEngine& diagnostics, ast::NodeId firstId = 1);
 
 // Recursive-descent parser for the grammar in docs/grammar.md. It never fails
 // as a whole: syntax errors become diagnostics plus ast::ErrorNode placeholders,
@@ -67,6 +68,7 @@ private:
 
     ast::Node* parseUnitItem();
     ast::Node* parseNamespace();
+    ast::Node* parseUnitSection();
     ast::Node* parseClass();
     ast::Node* parseClassMember();
     ast::Node* parseRecord();

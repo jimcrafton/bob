@@ -1,6 +1,6 @@
 # bob semantics (as implemented)
 
-What the analyzer (`bobSemantic`, `src/semantic`) and code generator (`src/compiler/codegen`) accept and produce as of phase 6. `docs/design.md` is the intent; this file is the current behaviour. Anything not listed here is reported as `sema.unsupported`, with the phase it's planned for.
+What the analyzer (`bobSemantic`, `src/semantic`) and code generator (`src/compiler/codegen`) accept and produce as of phase 7. `docs/design.md` is the intent; this file is the current behaviour. Anything not listed here is reported as `sema.unsupported`, with the phase it's planned for.
 
 ## Programs and messages
 - An executable is a `program name, version { … }` unit with an `extends name { … }` block. Messages there are **class-side** and must be marked `@[static]`. Inside them `self` is the program, so `self fact: 5` and `factorial fact: 5` are the same direct call.
@@ -342,6 +342,52 @@ Compile-time code is ordinary bob, type checked like everything else. `bobc` com
 - The layout rules live in the semantic library (`layout.h`).
 - `Layout.MatchesTheCodeGenerator` checks them against LLVM's for every kind of type.
 - Not yet: unrolling compile-time loops over `meta fields` into code (splicing), `compiler target`, `compiler readFile:`, and synthesising messages or classes.
+
+## Modules and libraries (phase 7)
+The model is Object Pascal's units (design §11.5).
+
+**Units and sections**
+- `module name, 1.4.11` and `lib name, 2.0.0` units are compiled on their own.
+- Their unit-level declarations go in an `interface { … }` section, which is what importers see, or `implementation { … }` (or no section), which stays private.
+- An interface declaration can't use an implementation type (`sema.privateInInterface`). That includes the private fields of an exported class, because importers need its layout. It also rules out an inferred union, which can't be written as a type, and a dictionary or hashtable constant.
+- A program has no sections (`sema.sectionInProgram`).
+
+**Building**
+- `bobc geometry.bob` writes `geometry.lib`, a static library.
+- `bobc -c geometry.bob` writes `geometry.obj` instead.
+- Both also write `geometry.bobi`, the interface:
+  - the interface declarations in bob syntax, without bodies;
+  - every type spelled out, and every name qualified by its module;
+  - constant values as literals;
+  - escape summaries, as `@[keeps: "self p"]`;
+  - field initializers marked `@[initialized]`;
+  - protocol defaults marked `@[default]`;
+  - a header with its own fingerprint and those of the interfaces it was compiled against.
+- Importers read it with the ordinary parser and analyzer. It never needs editing.
+
+**Importing**
+- `import geometry, 1.4;` looks for `geometry.bobi` in the source file's directory, then in each `--module-path=` directory (`sema.importNotFound`).
+- `import x, 1.4;` accepts 1.4.0 and later with the same major version (`sema.importVersion`).
+- Imports are transitive.
+- A program links the `.lib` (or `.obj`) next to every interface it loaded.
+- If a module was compiled against a different interface of one of its dependencies than the one now present, compilation fails: `sema.staleModule` names the module to recompile.
+- A change to implementation code only doesn't change the fingerprint, so nothing else needs recompiling.
+
+**Names**
+- Imported names are used unqualified.
+- A unit's own declarations shadow imported ones.
+- When two imports declare the same name, unqualified use is `sema.ambiguousName`. Write `a.Point` (types and constants, in type positions and expressions).
+- A module's messages are sent to the module (`geometry quadrantOf: p`).
+
+**Across the boundary**
+- Imported classes, records, enums, named types, constants, protocols and module messages work as if declared locally.
+- Calls to imported code are direct, vtable or protocol sends, exactly as within a module. The interface gives the class hierarchy and the vtable order.
+- Imported objects can be placed on the stack when the interface's escape summaries allow it.
+- Compile-time code can call imported messages and build imported objects; the JIT loads the imported libraries.
+- A concrete class can't inherit an imported concrete class (`sema.closedClass`), but it can implement an imported protocol.
+- `extends` on an imported class isn't supported yet.
+- Symbols carry their unit (`bob.geometry.Square.area`, `class.geometry.Square`).
+- Selectors are emitted once per module and merged by the linker, so protocol sends work across modules.
 
 ## Overflow and traps
 - `+ - *`, `negated`, `abs` and `shl` follow the overflow mode: `trap` (default), `wrap` or `saturate`. It's set with `@[overflow: …]` on the unit, a message, a statement group or a parenthesised expression, and the innermost wins.

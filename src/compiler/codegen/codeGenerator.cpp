@@ -36,13 +36,15 @@ std::unique_ptr<llvm::Module> Generator::run(const Unit* unit)
         bool isInitializer = message->owner != nullptr && message.get() == message->owner->initializer;
         // @[compiletime] messages only run inside evaluation modules (and the
         // synthesized contexts of compile-time items only as their thunk).
-        bool skip = isCompileTimeContext(message.get()) || (message->compileTimeOnly && evaluating_ == nullptr);
+        bool exported = message->origin.exported || (message->owner != nullptr && message->owner->origin.exported);
+        bool skip = isCompileTimeContext(message.get()) || (message->compileTimeOnly && evaluating_ == nullptr && !exported);
         if (!isInitializer && !message->isRequired && !skip) {
             declareMessage(message.get());
         }
     }
     for (const auto& message : model_.messages) {
-        if (functions_.count(message.get()) != 0) {
+        bool imported = message->imported || (message->owner != nullptr && message->owner->origin.module != nullptr);
+        if (functions_.count(message.get()) != 0 && !imported) {
             emitMessage(message.get());
         }
     }
@@ -94,7 +96,11 @@ llvm::GlobalVariable* Generator::selectorGlobal(const std::string& selector)
         return it->second;
     }
     llvm::Constant* text = llvm::ConstantDataArray::getString(context_, selector);
-    auto global = new llvm::GlobalVariable(*module_, text->getType(), true, llvm::GlobalValue::PrivateLinkage, text, "bob.sel." + selector);
+    // One copy program-wide: modules each emit it, and the linker keeps one (COMDAT),
+    // so selectors compare by address across module boundaries.
+    std::string name = "bob.sel." + selector;
+    auto global = new llvm::GlobalVariable(*module_, text->getType(), true, llvm::GlobalValue::LinkOnceODRLinkage, text, name);
+    global->setComdat(module_->getOrInsertComdat(name));
     selectors_[selector] = global;
     return global;
 }
@@ -119,15 +125,19 @@ void Generator::declareClass(const sema::ClassInfo* info)
     }
     objectType(info);
     llvm::Type* ptr = builder_.getPtrTy();
-    auto linkage = llvm::GlobalValue::InternalLinkage;
-    classGlobals_[info] = new llvm::GlobalVariable(*module_, classInfoType(info->vtable.size()), false, linkage, nullptr, "class." + info->name);
+    // An exported class is defined here for importers; an imported one is defined
+    // by its module (design §11.5). Symbols carry the declaring unit's name.
+    bool imported = info->origin.module != nullptr;
+    auto linkage = imported || info->origin.exported ? llvm::GlobalValue::ExternalLinkage : llvm::GlobalValue::InternalLinkage;
+    std::string prefix = info->unitName + "." + info->name;
+    classGlobals_[info] = new llvm::GlobalVariable(*module_, classInfoType(info->vtable.size()), false, linkage, nullptr, "class." + prefix);
     destroyFunctions_[info] = llvm::Function::Create(llvm::FunctionType::get(builder_.getVoidTy(), {ptr}, false), linkage,
-                                                     "bob." + info->name + ".destroy", module_.get());
+                                                     "bob." + prefix + ".destroy", module_.get());
     initFunctions_[info] = llvm::Function::Create(llvm::FunctionType::get(builder_.getVoidTy(), {ptr, builder_.getInt64Ty()}, false), linkage,
-                                                  "bob." + info->name + ".fields", module_.get());
+                                                  "bob." + prefix + ".fields", module_.get());
     initsFunctions_[info] = llvm::Function::Create(llvm::FunctionType::get(builder_.getVoidTy(), {ptr}, false), linkage,
-                                                   "bob." + info->name + ".inits", module_.get());
-    newFunctions_[info] = llvm::Function::Create(llvm::FunctionType::get(ptr, {}, false), linkage, "bob." + info->name + ".new", module_.get());
+                                                   "bob." + prefix + ".inits", module_.get());
+    newFunctions_[info] = llvm::Function::Create(llvm::FunctionType::get(ptr, {}, false), linkage, "bob." + prefix + ".new", module_.get());
 }
 
 llvm::Value* Generator::fieldAddress(llvm::Value* object, const sema::FieldInfo* field)
@@ -142,7 +152,7 @@ llvm::Value* Generator::selfValue()
 
 void Generator::emitClass(const sema::ClassInfo* info)
 {
-    if (info->isProtocol) {
+    if (info->isProtocol || info->origin.module != nullptr) {
         return;
     }
     llvm::Type* ptr = builder_.getPtrTy();
@@ -224,7 +234,7 @@ void Generator::emitClass(const sema::ClassInfo* info)
     }
     llvm::ArrayType* tableType = llvm::ArrayType::get(entryType, entries.size());
     auto table = new llvm::GlobalVariable(*module_, tableType, true, llvm::GlobalValue::PrivateLinkage,
-                                          llvm::ConstantArray::get(tableType, entries), "methods." + info->name);
+                                          llvm::ConstantArray::get(tableType, entries), "methods." + info->unitName + "." + info->name);
     std::vector<llvm::Constant*> vtable;
     for (const sema::MessageInfo* method : info->vtable) {
         auto function = method != nullptr ? functions_.find(method) : functions_.end();
@@ -232,7 +242,7 @@ void Generator::emitClass(const sema::ClassInfo* info)
                                                       : llvm::ConstantPointerNull::get(builder_.getPtrTy()));
     }
     llvm::StructType* type = classInfoType(info->vtable.size());
-    llvm::Constant* name = builder_.CreateGlobalString(info->name, "name." + info->name, 0, module_.get());
+    llvm::Constant* name = builder_.CreateGlobalString(info->name, "name." + info->unitName + "." + info->name, 0, module_.get());
     uint64_t size = module_->getDataLayout().getTypeAllocSize(objectType(info));
     llvm::Constant* superclass = info->superclass != nullptr ? static_cast<llvm::Constant*>(classGlobals_.at(info->superclass))
                                                              : llvm::ConstantPointerNull::get(builder_.getPtrTy());
@@ -567,7 +577,10 @@ llvm::StructType* Generator::structType(const sema::RecordInfo* record)
 
 void Generator::declareMessage(const sema::MessageInfo* message)
 {
-    llvm::Function* function = llvm::Function::Create(methodType(message), llvm::GlobalValue::InternalLinkage, message->symbolName, module_.get());
+    bool imported = message->imported || (message->owner != nullptr && message->owner->origin.module != nullptr);
+    bool exported = message->origin.exported || (message->owner != nullptr && message->owner->origin.exported);
+    auto linkage = imported || exported ? llvm::GlobalValue::ExternalLinkage : llvm::GlobalValue::InternalLinkage;
+    llvm::Function* function = llvm::Function::Create(methodType(message), linkage, message->symbolName, module_.get());
     unsigned offset = message->isInstance ? 2 : 0;
     if (message->isInstance) {
         function->getArg(0)->setName("self");
@@ -1073,6 +1086,9 @@ llvm::Value* Generator::emit(const Node* expression)
         return emitBlockLiteral(static_cast<const BlockLiteral*>(expression));
     case NodeKind::fieldAccess: {
         auto access = static_cast<const FieldAccess*>(expression);
+        if (auto constant = model_.constantRefs.find(access->id); constant != model_.constantRefs.end()) {
+            return materialize(constant->second->item->value, constant->second->type);
+        }
         const Type* type = model_.typeOf(access);
         if (llvm::Value* address = emitAddress(access)) {
             llvm::Value* value = builder_.CreateLoad(llvmType(type), address, access->field);

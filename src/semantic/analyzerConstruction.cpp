@@ -26,7 +26,7 @@ MessageInfo* Analyzer::declareInit(ClassInfo* info, const MessageDecl* decl, boo
         error(decl->selectorRange, "sema.redeclared", "'" + info->name + "' already declares 'init'");
         return nullptr;
     }
-    if (decl->body == nullptr) {
+    if (decl->body == nullptr && !importing()) {
         error(decl->selectorRange, "sema.missingBody", "'init' needs a body");
     }
     auto message = std::make_unique<MessageInfo>();
@@ -35,8 +35,9 @@ MessageInfo* Analyzer::declareInit(ClassInfo* info, const MessageDecl* decl, boo
     message->owner = info;
     message->isInstance = true;
     message->isInit = true;
-    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow"});
-    message->symbolName = "bob." + info->name + ".init";
+    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "keeps"});
+    message->symbolName = "bob." + info->unitName + "." + info->name + ".init";
+    message->origin = info->origin;
     auto self = std::make_unique<LocalInfo>();
     self->name = "self";
     self->type = info->type;
@@ -47,6 +48,9 @@ MessageInfo* Analyzer::declareInit(ClassInfo* info, const MessageDecl* decl, boo
     model_.locals.push_back(std::move(self));
     message->returnType = types_.voidType();
     info->initMessage = message.get();
+    if (importing()) {
+        applyInterfaceAttributes(message.get(), decl);
+    }
     MessageInfo* raw = message.get();
     model_.messages.push_back(std::move(message));
     return raw;
@@ -66,7 +70,9 @@ void Analyzer::addCopyMessage(ClassInfo* info)
     message->isCopy = true;
     message->returnType = info->type;
     message->overflow = unitOverflow_;
-    message->symbolName = "bob." + info->name + ".copy";
+    message->symbolName = "bob." + info->unitName + "." + info->name + ".copy";
+    message->origin = info->origin;
+    message->imported = info->origin.module != nullptr;
     auto self = std::make_unique<LocalInfo>();
     self->name = "self";
     self->type = info->type;

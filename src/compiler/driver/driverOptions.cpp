@@ -15,6 +15,8 @@ bool takeValue(std::string_view arg, std::string_view prefix, std::string& out)
     return true;
 }
 
+}
+
 std::string replaceExtension(const std::string& path, const char* extension)
 {
     size_t slash = path.find_last_of("/\\");
@@ -23,8 +25,6 @@ std::string replaceExtension(const std::string& path, const char* extension)
         return path.substr(0, dot) + extension;
     }
     return path + extension;
-}
-
 }
 
 std::optional<std::string> parseDriverArguments(std::span<const std::string> args, DriverOptions& options)
@@ -76,6 +76,9 @@ std::optional<std::string> parseDriverArguments(std::span<const std::string> arg
         }
         else if (takeValue(arg, "--sdk-lib-path=", options.sdkLibPath)) {
         }
+        else if (arg.starts_with("--module-path=")) {
+            options.modulePaths.push_back(std::string(arg.substr(14)));
+        }
         else if (arg.starts_with("-")) {
             return "unknown option '" + std::string(arg) + "'";
         }
@@ -109,12 +112,14 @@ const char* driverUsage()
     return "usage: bobc [options] <input>\n"
            "\n"
            "inputs:\n"
-           "  <file>.bob              bob source: a 'program' is compiled and linked into an executable\n"
+           "  <file>.bob              bob source: a 'program' is compiled and linked into an executable;\n"
+           "                          a 'module' or 'lib' into a static library (.lib) and its interface (.bobi)\n"
            "  <file>.ll               LLVM IR, compiled and linked against the bob runtime\n"
            "\n"
            "options:\n"
            "  -o <path>               output file (default: input name with .exe/.obj)\n"
            "  -c                      compile to an object file only, do not link\n"
+           "  --module-path=<dir>     also look for imported modules' interfaces (.bobi) here (repeatable)\n"
            "  -O0 .. -O3              optimization level (default -O0)\n"
            "  --syntax-only           parse a .bob file and report errors, nothing else\n"
            "  --dump-tokens           print the token stream of a .bob file\n"

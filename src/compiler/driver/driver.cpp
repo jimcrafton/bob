@@ -17,6 +17,7 @@
 #include <llvm/IR/Module.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/MemoryBuffer.h>
+#include <llvm/Support/Path.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <functional>
@@ -94,7 +95,12 @@ int Driver::runBobSource(const DriverOptions& options)
     }
 
     sema::SemanticModel model;
-    sema::analyze(parsed.unit, model, diagnostics);
+    sema::AnalyzeOptions analyzeOptions;
+    llvm::SmallString<260> sourceDirectory(options.inputPath);
+    llvm::sys::path::remove_filename(sourceDirectory);
+    analyzeOptions.modulePaths.push_back(sourceDirectory.empty() ? "." : std::string(sourceDirectory));
+    analyzeOptions.modulePaths.insert(analyzeOptions.modulePaths.end(), options.modulePaths.begin(), options.modulePaths.end());
+    sema::analyze(parsed.unit, model, diagnostics, analyzeOptions);
     if (reportDiagnostics(diagnostics, file) != 0) {
         return 1;
     }
@@ -108,8 +114,9 @@ int Driver::runBobSource(const DriverOptions& options)
     if (reportDiagnostics(compileTime, file) != 0 || !evaluated) {
         return 1;
     }
-    if (parsed.unit->unitKind != ast::UnitKind::program && !options.compileOnly && !options.dumpLlvm) {
-        return fail("only a 'program' can be linked into an executable; compile modules and libraries with -c");
+    bool isModule = parsed.unit->unitKind == ast::UnitKind::module || parsed.unit->unitKind == ast::UnitKind::library;
+    if (!isModule && parsed.unit->unitKind != ast::UnitKind::program && !options.compileOnly && !options.dumpLlvm) {
+        return fail("only a 'program', 'module' or 'lib' unit can be built; compile fragments with -c");
     }
 
     std::string layoutError;
@@ -126,10 +133,67 @@ int Driver::runBobSource(const DriverOptions& options)
         module->print(out_, nullptr);
         return 0;
     }
-    return produceOutput(options, [&](const std::string& objectPath) { return emitObjectFile(*module, objectPath, options.optLevel); });
+    auto emit = [&](const std::string& objectPath) { return emitObjectFile(*module, objectPath, options.optLevel); };
+    if (isModule) {
+        return buildModule(options, parsed.unit, model, emit);
+    }
+    // A program links the code of every module it imported (directly or not).
+    std::vector<std::string> libraries;
+    for (const auto& imported : model.modules) {
+        if (imported->libraryPath.empty()) {
+            return fail("module '" + imported->name + "' has an interface (" + imported->interfacePath +
+                        ") but no compiled code next to it; rebuild it with 'bobc'");
+        }
+        libraries.push_back(imported->libraryPath);
+    }
+    return produceOutput(options, emit, libraries);
 }
 
-int Driver::produceOutput(const DriverOptions& options, const std::function<std::optional<std::string>(const std::string&)>& emitObject)
+// A module or lib: its code as a static library (or, with -c, an object file),
+// and its interface file next to it (design §11.5).
+int Driver::buildModule(const DriverOptions& options, const ast::Unit* unit, const sema::SemanticModel& model,
+                        const std::function<std::optional<std::string>(const std::string&)>& emitObject)
+{
+    std::string outputPath = options.outputPath.empty() ? replaceExtension(options.inputPath, options.compileOnly ? ".obj" : ".lib") : options.outputPath;
+    std::string fingerprint;
+    std::string interfaceText = sema::writeInterface(unit, model, fingerprint);
+
+    if (options.compileOnly) {
+        if (std::optional<std::string> error = emitObject(outputPath)) {
+            return fail(*error);
+        }
+    }
+    else {
+        llvm::SmallString<260> objectPath;
+        if (std::error_code ec = llvm::sys::fs::createTemporaryFile("bobc", "obj", objectPath)) {
+            return fail("cannot create a temporary object file: " + ec.message());
+        }
+        std::string object = std::string(objectPath);
+        std::optional<std::string> error = emitObject(object);
+        if (!error) {
+            error = writeStaticLibrary(outputPath, object, unit->name + ".obj");
+        }
+        llvm::sys::fs::remove(object);
+        if (error) {
+            return fail(*error);
+        }
+    }
+
+    std::string interfacePath = replaceExtension(outputPath, ".bobi");
+    std::error_code ec;
+    llvm::raw_fd_ostream file(interfacePath, ec);
+    if (ec) {
+        return fail("cannot write '" + interfacePath + "': " + ec.message());
+    }
+    file << interfaceText;
+    if (options.verbose) {
+        err_ << "bobc: wrote " << outputPath << " and " << interfacePath << " (interface " << fingerprint << ")\n";
+    }
+    return 0;
+}
+
+int Driver::produceOutput(const DriverOptions& options, const std::function<std::optional<std::string>(const std::string&)>& emitObject,
+                          const std::vector<std::string>& libraries)
 {
     std::string outputPath = defaultOutputPath(options);
     if (options.compileOnly) {
@@ -161,6 +225,7 @@ int Driver::produceOutput(const DriverOptions& options, const std::function<std:
     else {
         LinkJob job;
         job.objects.push_back(object);
+        job.objects.insert(job.objects.end(), libraries.begin(), libraries.end());
         job.outputPath = outputPath;
         std::string commandLine;
         std::optional<std::string> linkError = runLink(job, paths, &commandLine);
