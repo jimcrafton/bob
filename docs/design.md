@@ -756,10 +756,18 @@ The semantic model (modules, types, classes, messages, send sites) is designed s
 - Plain accessors, no deep template APIs on the public surface.
 - One "query" API that both Python and `compiler` bind to.
 
-### 11.5 Repository layout **[Proposed]**
+### 11.5 Repository layout
+As built in phase 0 (build instructions: `docs/building.md`):
 ```
-CMakeLists.txt
-cmake/                    LLVM discovery, runtime flags helper
+CMakeLists.txt, CMakePresets.json
+src/shared/abi.h          compiler/runtime shared symbol names & ids
+src/compiler/driver/      driver options, IR → object (LLVM), toolchain lookup, lld-link job → bobCompiler
+src/runtime/              bobrt: crt/ (mem*, _fltused), platform/win64/ (bobStart, console, chkstk.asm, kernel32.def)
+src/tools/bobc/           bobc.exe (thin main over bobCompiler)
+tests/                    bobTests: driverOptionsTests, endToEndTests; tests/programs/*.ll
+```
+Planned additions:
+```
 src/shared/abi.h          compiler/runtime shared layouts & type ids
 src/compiler/             lexer, parser, ast, sema, ctfe, codegen, driver  → bobCompiler (static lib)
 src/runtime/              → bobrt (static lib, freestanding flags)
@@ -778,7 +786,7 @@ Runtime unit tests: gtest needs the CRT, so `bobTests` compiles the runtime sour
 
 | Phase | Deliverable | Exit criterion |
 |---|---|---|
-| 0 | CMake skeleton, LLVM found, gtest `bobTests`, `bobc` stub; `bobrt` freestanding with `bobStart`, console write, exit; link with lld-link | A hand-written LLVM IR "hello" links against bobrt with no CRT and runs |
+| 0 ✅ | CMake skeleton, LLVM found, gtest `bobTests`, `bobc` stub; `bobrt` freestanding with `bobStart`, console write, exit; link with lld-link | A hand-written LLVM IR "hello" links against bobrt with no CRT and runs. **Done 2026-11-27:** 16/16 tests pass in Debug and Release; exes import only kernel32 |
 | 1 | Lexer + parser for §3 (all constructs), AST, `--dump-ast` | Parses all of scratch-lang's tests (converted) and the §3.8 example |
 | 2 | Sema + codegen for primitives, locals, records, intrinsic sends, `main:`, `return` | `factorial`/`fib` programs compile, run and return correct exit codes |
 | 3 | Blocks: inlined `ifTrue:`/`whileTrue:`/`to:do:`; non-escaping closures | Loops/conditionals programs; dispatch report shows tier 0/1 |

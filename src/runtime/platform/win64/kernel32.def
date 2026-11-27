@@ -1,0 +1,8 @@
+LIBRARY kernel32.dll
+EXPORTS
+    ExitProcess
+    GetConsoleMode
+    GetStdHandle
+    MultiByteToWideChar
+    WriteConsoleW
+    WriteFile
