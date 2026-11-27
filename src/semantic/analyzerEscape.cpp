@@ -282,7 +282,10 @@ private:
         case NodeKind::error:
             return;
         case NodeKind::attributedExpr:
-            walkExpression(static_cast<const AttributedExpr*>(node)->expression, effect);
+            // Compile-time code runs in its own context; only its constant result is used here.
+            if (model_.compileTimeNodes.count(node->id) == 0) {
+                walkExpression(static_cast<const AttributedExpr*>(node)->expression, effect);
+            }
             return;
         case NodeKind::fieldAccess:
             walkExpression(static_cast<const FieldAccess*>(node)->receiver, noEffect());
@@ -413,6 +416,13 @@ private:
             }
         };
         switch (send->kind) {
+        case SendKind::constantValue:
+        case SendKind::metaInfo:
+        case SendKind::metaFields:
+        case SendKind::compilerDiagnostic:
+            // `x meta …` only looks at the static type; nothing is evaluated.
+            walkArguments(noEffect());
+            return;
         case SendKind::directMethodCall:
         case SendKind::vtableCall:
         case SendKind::dynamicSend:
@@ -643,6 +653,9 @@ private:
             return;
         }
         case NodeKind::statementGroup:
+            if (model_.compileTimeNodes.count(statement->id) != 0) {
+                return;
+            }
             for (const Node* inner : static_cast<const StatementGroup*>(statement)->statements) {
                 walkStatement(inner);
             }

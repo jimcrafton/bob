@@ -32,6 +32,8 @@ enum class TrapReason : int32_t {
     indexOutOfRange = 8,
     keyNotFound = 9,
     invalidUtf8 = 10,
+    outOfMemory = 11,
+    doesNotUnderstand = 12,
 };
 
 }

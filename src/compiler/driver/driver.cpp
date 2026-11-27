@@ -3,6 +3,7 @@
 #include "analyzer.h"
 #include "ast/astDump.h"
 #include "codegen/codeGenerator.h"
+#include "compiletime/evaluator.h"
 #include "explainDispatch.h"
 #include "driver/linker.h"
 #include "driver/objectEmitter.h"
@@ -99,6 +100,13 @@ int Driver::runBobSource(const DriverOptions& options)
     }
     if (options.explainDispatch) {
         out_ << sema::explainDispatch(model, *parsed.arena, file);
+    }
+    // Compile-time code (constants, @[compiletime] expressions and blocks) runs
+    // now, so the code generator can embed its results.
+    DiagnosticEngine compileTime;
+    bool evaluated = compiletime::evaluate(parsed.unit, model, compileTime);
+    if (reportDiagnostics(compileTime, file) != 0 || !evaluated) {
+        return 1;
     }
     if (parsed.unit->unitKind != ast::UnitKind::program && !options.compileOnly && !options.dumpLlvm) {
         return fail("only a 'program' can be linked into an executable; compile modules and libraries with -c");

@@ -1,6 +1,6 @@
 # bob semantics (as implemented)
 
-What the analyzer (`bobSemantic`, `src/semantic`) and code generator (`src/compiler/codegen`) accept and produce as of phase 5. `docs/design.md` is the intent; this file is the current behaviour. Anything not listed here is reported as `sema.unsupported`, with the phase it's planned for.
+What the analyzer (`bobSemantic`, `src/semantic`) and code generator (`src/compiler/codegen`) accept and produce as of phase 6. `docs/design.md` is the intent; this file is the current behaviour. Anything not listed here is reported as `sema.unsupported`, with the phase it's planned for.
 
 ## Programs and messages
 - An executable is a `program name, version { … }` unit with an `extends name { … }` block. Messages there are **class-side** and must be marked `@[static]`. Inside them `self` is the program, so `self fact: 5` and `factorial fact: 5` are the same direct call.
@@ -296,6 +296,47 @@ Element types are inferred. You write `array of: T` (or a similar type message) 
   - `case u of { int32: { :n | … } string: { :s | … } }`, which binds the narrowed value when an entry has one label, and must cover every member or have an `else`.
 - Using a union where a specific type is needed is an error naming the union.
 - A union member can't be a class reference or optional.
+
+## Compile time (phase 6)
+Compile-time code is ordinary bob, type checked like everything else. `bobc` compiles it with the same code generator and runs it inside the compiler (an LLVM ORC JIT) against a build of the runtime linked into the compiler (`bobrtHosted`). Its results are embedded in the program.
+
+**Constants**
+- `NAME := expr;` at unit level declares an immutable constant, computed during compilation. `@[compiletime]` there is allowed but redundant.
+- Constants are visible in every message, and may refer to each other in any order. They're evaluated in dependency order, and a cycle is an error (`sema.constantCycle` or `compiletime.cycle`).
+- Assigning to one is `sema.assignToConstant`. A constant's value must be **embeddable**: numbers, `bool`, `char`, enums, subranges, enum sets, strings, records, fixed arrays, optionals and unions of those, or arrays, sets, dictionaries and hashtables of those (`sema.notEmbeddable` otherwise; objects and blocks exist only while code runs).
+- **How constants are embedded:** strings and arrays become immortal read-only objects shared by every use (a 256-entry table exists once in the binary). Records and scalars become immediate constants. Dictionaries, hashtables, hash sets and unions are rebuilt where they're used.
+- Constants have value semantics like any container: `mine := TABLE; mine add: x;` copies first.
+- Any other statement at unit level must be in a `@[compiletime] { … }` block (`sema.unitLevelCode`).
+
+**`@[compiletime]`**
+- `@[compiletime] msg …` can be sent only from compile-time code (`sema.compileTimeOnly`). It isn't compiled into the program.
+- `@[compiletime] (expr)` inside a message is computed once, while compiling, and its value is embedded.
+- `@[compiletime] { … }` (at unit level or in a message) runs while compiling and leaves nothing behind. It's meant for checks such as layout asserts.
+- Compile-time code sees constants, types, and messages. It doesn't see the variables of the message it's written in (`sema.undeclared`), because those don't exist yet.
+- Ordinary messages can be called from compile-time code too.
+
+**`compiler`**: an object that exists only in compile-time code (`sema.compilerOutsideCompileTime` elsewhere).
+- `compiler error: "…"` fails the compilation with that message, reported at the line that sent it (`compiletime.error`).
+- `warning:` and `note:` report without failing.
+
+**Failures:** compile-time code that traps (`division by zero`, `index out of range` …), or runs for more than 20 seconds, makes the compilation fail with `compiletime.failed`, naming the constant or block. The compiler itself isn't affected.
+
+**`meta`** is a reserved unary message on any value or type. It's always answered from static types, and never evaluates its receiver.
+
+| Query | Result |
+|---|---|
+| `x meta size`, `x meta alignment` | `int64` bytes, as laid out on the target (a class gives its object size, header included) |
+| `x meta typeName` | `string`, e.g. `"Point"`, `"array of: int32"`, `"int32 \| string"` |
+| `x meta name` | the variable's, field's or type's name |
+| `x meta type` | the same information, for the type (so `self meta type fields` works) |
+| `T meta count` | members of an enum, elements of a fixed array, values of a subrange, fields of a record |
+| `Color meta members` | `array of: Color` (a union gives its member type names) |
+| `c meta elementType` | `meta` of a container's or optional's element type |
+| `T meta fields` | `array of: FieldMeta` (`name`, `typeName`, `offset`, `size`), only in compile-time code. Outside the class, only public fields |
+
+- The layout rules live in the semantic library (`layout.h`).
+- `Layout.MatchesTheCodeGenerator` checks them against LLVM's for every kind of type.
+- Not yet: unrolling compile-time loops over `meta fields` into code (splicing), `compiler target`, `compiler readFile:`, and synthesising messages or classes.
 
 ## Overflow and traps
 - `+ - *`, `negated`, `abs` and `shl` follow the overflow mode: `trap` (default), `wrap` or `saturate`. It's set with `@[overflow: …]` on the unit, a message, a statement group or a parenthesised expression, and the innermost wins.

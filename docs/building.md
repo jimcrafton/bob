@@ -35,6 +35,7 @@ Visual Studio opens the folder directly and picks up the presets.
 |---|---|
 | `bobc.exe` | compiler driver |
 | `bobrt.lib` | runtime, freestanding (no CRT) |
+| `bobrtHosted.lib` | the same runtime core built for the compiler's own process; linked into `bobc` so compile-time code (ORC JIT) runs against it. Not shipped with programs |
 | `kernel32.lib` | import library generated from `src/runtime/platform/win64/kernel32.def` by `llvm-dlltool` |
 | `bobTests.exe` | GoogleTest unit and end-to-end tests |
 

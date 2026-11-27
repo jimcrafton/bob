@@ -197,7 +197,14 @@ void Analyzer::collect(const Unit* unit)
             unsupported(item, "namespaces", "phase 7");
             break;
         case NodeKind::assignment:
-            declareConstant(static_cast<const Assignment*>(item));
+        case NodeKind::variableDecl:
+            if (hasAttribute(item, "constant")) {
+                declareConstant(item);
+                break;
+            }
+            error(item, "sema.unitLevelVariable",
+                  "a unit-level declaration must be a constant: '@[constant] NAME := value;' or '@[constant] name: T := value;' "
+                  "(mutable globals aren't supported yet)");
             break;
         case NodeKind::statementGroup:
             if (hasAttribute(item, "compiletime")) {
@@ -674,7 +681,7 @@ const Type* Analyzer::checkClassSideSend(const Node* send, const ClassInfo* info
     for (size_t i = 0; i < arguments.size(); ++i) {
         checkArgument(arguments[i], target->params[i]->type);
     }
-    addSend(send, SendKind::classStaticCall), selector, nullptr, target->returnType);
+    addSend(send, SendKind::classStaticCall, selector, nullptr, target->returnType);
     model_.sends[send->id].target = target;
     return target->returnType;
 }

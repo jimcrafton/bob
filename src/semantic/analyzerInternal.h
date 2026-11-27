@@ -164,7 +164,7 @@ private:
     const Type* literalExpectation(const Type* expected, bool isRealLiteral) const;
 
     // compile-time code, constants, `meta`, `compiler` (analyzerCompileTime.cpp)
-    void declareConstant(const Assignment* assignment);
+    void declareConstant(const Node* declaration);
     void declareUnitBlock(const StatementGroup* group);
     void checkConstant(ConstantInfo* constant);
     MessageInfo* compileTimeContext(const std::string& name);

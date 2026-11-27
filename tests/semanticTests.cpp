@@ -539,3 +539,40 @@ TEST(Semantic, LocalsHoldingOnlyStackObjectsAreKnown)
     EXPECT_FALSE(stackOnly("mixed")); // also holds a message result
     EXPECT_FALSE(stackOnly("n"));     // returned
 }
+
+TEST(Semantic, CompileTimeCodeRules)
+{
+    auto a = analyzeMain("x := self table;\ncompiler note: \"hi\";\nLIMIT := 3;\nn := 5;\nk := @[compiletime] (n + 1);\nreturn 0;",
+                         "@[static] @[compiletime] msg table [int32] { return 1; }",
+                         "@[constant] LIMIT := 10;\n@[constant] OBJECT := Box value: 1;\nclass Box { public { value: int32; } }\n"
+                         "@[constant] typed: uint8 := 300;\n@[constant] untyped: int32;\nGLOBAL := 1;");
+    EXPECT_TRUE(a->hasCode("sema.compileTimeOnly")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.compilerOutsideCompileTime")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.assignToConstant")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.undeclared")) << a->text(); // n isn't visible in compile-time code
+    EXPECT_TRUE(a->hasCode("sema.notEmbeddable")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.literalOutOfRange")) << a->text(); // 300 isn't a uint8
+    EXPECT_TRUE(a->hasCode("sema.invalidConstant")) << a->text();   // a constant needs a value
+    EXPECT_TRUE(a->hasCode("sema.unitLevelVariable")) << a->text(); // no @[constant]
+}
+
+TEST(Semantic, MetaIsCompileTimeInformation)
+{
+    auto a = analyzeMain("pt: Point;\ns := pt meta size;\nt := pt meta typeName;\nn := pt meta name;\nc := Color meta count;\nm := Color meta members;\n"
+                         "e := [1, 2] meta elementType typeName;\nreturn 0;",
+                         "", "record Point { x: int32; y: int8; }\nenum Color { red; green; }");
+    EXPECT_EQ(a->diagnostics.errorCount(), 0u) << a->text();
+    auto constantOf = [&](const std::string& name) -> const bob::sema::ConstValue* {
+        const bob::sema::LocalInfo* local = localNamed(*a, name);
+        auto assignment = local != nullptr ? dynamic_cast<const bob::ast::Assignment*>(local->decl) : nullptr;
+        const bob::sema::SendInfo* send = assignment != nullptr ? a->model.sendOf(assignment->value) : nullptr;
+        return send != nullptr ? send->value : nullptr;
+    };
+    ASSERT_NE(constantOf("s"), nullptr);
+    EXPECT_EQ(constantOf("s")->bits, 8u);
+    EXPECT_EQ(constantOf("t")->text, "Point");
+    EXPECT_EQ(constantOf("n")->text, "pt");
+    EXPECT_EQ(constantOf("c")->bits, 2u);
+    EXPECT_EQ(constantOf("m")->elements.size(), 2u);
+    EXPECT_EQ(constantOf("e")->text, "int32");
+}

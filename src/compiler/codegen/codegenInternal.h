@@ -36,6 +36,16 @@ public:
 
     std::unique_ptr<llvm::Module> run(const Unit* unit);
 
+    // Evaluation mode: build the module that runs one compile-time item (see
+    // generateEvaluationModule) instead of the program.
+    void evaluate(const sema::CompileTimeItem* item, std::string thunk, std::string triple)
+    {
+        evaluating_ = item;
+        thunkName_ = std::move(thunk);
+        triple_ = std::move(triple);
+    }
+    uint64_t measure(const Type* type);
+
 private:
     llvm::Type* llvmType(const Type* type);
     llvm::StructType* structType(const sema::RecordInfo* record);
@@ -155,6 +165,15 @@ private:
     llvm::Value* emitOptionalCompare(const BinarySend* send, const sema::SendInfo& info);
     llvm::Value* emitUnionSend(const Node* node, const sema::SendInfo& send);
 
+    // ---- compile time (codegenCompileTime.cpp) ----
+    void emitThunk();
+    // A compile-time value as code: an LLVM constant where possible (strings and
+    // arrays become immortal read-only objects), otherwise built at run time.
+    llvm::Value* materialize(const sema::ConstValue* value, const Type* type);
+    llvm::Constant* constantOf(const sema::ConstValue& value, const Type* type);
+    llvm::Value* emitCompileTimeSend(const Node* node, const sema::SendInfo& send);
+    bool isCompileTimeContext(const sema::MessageInfo* message) const;
+
     // ---- phase 5: strings and containers (codegenContainers.cpp) ----
     llvm::Constant* stringLiteral(const std::string& text);
     llvm::Value* printString(llvm::Value* value, const Type* type);
@@ -217,6 +236,11 @@ private:
     std::unordered_map<const sema::EnumInfo*, llvm::GlobalVariable*> enumNameTables_;
     std::unordered_map<const sema::EnumInfo*, llvm::Function*> enumFinders_;
     std::map<std::string, llvm::Constant*> stringLiterals_;
+    // Embedded arrays, one read-only object per compile-time value.
+    std::map<const sema::ConstValue*, llvm::Constant*> constantArrays_;
+    const sema::CompileTimeItem* evaluating_ = nullptr;
+    std::string thunkName_;
+    std::string triple_;
 
     struct LoopTargets {
         llvm::BasicBlock* breakTarget;

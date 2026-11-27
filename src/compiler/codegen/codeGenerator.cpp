@@ -12,6 +12,9 @@ std::unique_ptr<llvm::Module> Generator::run(const Unit* unit)
 {
     module_ = std::make_unique<llvm::Module>(unit->name.empty() ? "bob" : unit->name, context_);
     module_->setDataLayout(dataLayout_);
+    if (!triple_.empty()) {
+        module_->setTargetTriple(llvm::Triple(triple_));
+    }
     llvm::Type* ptr = builder_.getPtrTy();
     llvm::Type* voidType = builder_.getVoidTy();
     auto runtime = [&](const char* name, llvm::Type* result, std::vector<llvm::Type*> params) {
@@ -31,7 +34,10 @@ std::unique_ptr<llvm::Module> Generator::run(const Unit* unit)
     }
     for (const auto& message : model_.messages) {
         bool isInitializer = message->owner != nullptr && message.get() == message->owner->initializer;
-        if (!isInitializer && !message->isRequired) {
+        // @[compiletime] messages only run inside evaluation modules (and the
+        // synthesized contexts of compile-time items only as their thunk).
+        bool skip = isCompileTimeContext(message.get()) || (message->compileTimeOnly && evaluating_ == nullptr);
+        if (!isInitializer && !message->isRequired && !skip) {
             declareMessage(message.get());
         }
     }
@@ -43,7 +49,10 @@ std::unique_ptr<llvm::Module> Generator::run(const Unit* unit)
     for (const auto& info : model_.classes) {
         emitClass(info.get());
     }
-    if (model_.program.main != nullptr) {
+    if (evaluating_ != nullptr) {
+        emitThunk();
+    }
+    else if (model_.program.main != nullptr) {
         emitEntryPoint();
     }
     return std::move(module_);
@@ -361,6 +370,10 @@ bool Generator::producesOwned(const Node* node) const
 {
     if (!sema::needsCleanup(model_.typeOf(node))) {
         return false;
+    }
+    // Embedded compile-time values are immortal constants or built fresh (+1).
+    if (model_.compileTimeNodes.count(node->id) != 0 || model_.constantRefs.count(node->id) != 0) {
+        return true;
     }
     if (node->kind == NodeKind::identifier) {
         if (model_.selfFieldRefs.count(node->id) != 0) {
@@ -766,7 +779,10 @@ void Generator::emitStatement(const Node* statement)
         emitCase(static_cast<const CaseStmt*>(statement));
         break;
     case NodeKind::statementGroup:
-        emitGroup(statement);
+        // A @[compiletime] block already ran during compilation.
+        if (model_.compileTimeNodes.count(statement->id) == 0) {
+            emitGroup(statement);
+        }
         break;
     default:
         break;
@@ -1030,6 +1046,9 @@ llvm::Value* Generator::emit(const Node* expression)
     case NodeKind::identifier:
     case NodeKind::selfExpr: {
         const Type* type = model_.typeOf(expression);
+        if (auto constant = model_.constantRefs.find(expression->id); constant != model_.constantRefs.end()) {
+            return materialize(constant->second->item->value, constant->second->type);
+        }
         llvm::Value* value = nullptr;
         if (model_.selfFieldRefs.count(expression->id) != 0) {
             value = builder_.CreateLoad(llvmType(type), emitAddress(expression));
@@ -1065,6 +1084,9 @@ llvm::Value* Generator::emit(const Node* expression)
         return builder_.CreateExtractValue(emit(access->receiver), {model_.fieldOf(access)->index}, access->field);
     }
     case NodeKind::attributedExpr:
+        if (auto item = model_.compileTimeNodes.find(expression->id); item != model_.compileTimeNodes.end()) {
+            return materialize(item->second->value, item->second->type);
+        }
         return emit(static_cast<const AttributedExpr*>(expression)->expression);
     case NodeKind::unarySend:
     case NodeKind::binarySend:
@@ -1285,6 +1307,11 @@ llvm::Value* Generator::emitSend(const Node* node, const sema::SendInfo& send)
         llvm::Value* b = emitAs(binary->argument, nullptr);
         return send.op == "=" ? builder_.CreateICmpEQ(a, b) : builder_.CreateICmpNE(a, b);
     }
+    case SendKind::constantValue:
+    case SendKind::metaInfo:
+    case SendKind::metaFields:
+    case SendKind::compilerDiagnostic:
+        return emitCompileTimeSend(node, send);
     case SendKind::optionalCompare:
         return emitOptionalCompare(static_cast<const BinarySend*>(node), send);
     case SendKind::inlineIfNil:

@@ -114,6 +114,13 @@ std::string describe(const SendInfo& send, const SemanticModel& model)
         return "";
     case SendKind::constant:
         return "tier 0, compile-time constant";
+    case SendKind::constantValue:
+        return "tier 0, compile-time constant (embedded, no code runs)";
+    case SendKind::metaInfo:
+        return "";
+    case SendKind::metaFields:
+    case SendKind::compilerDiagnostic:
+        return "compile time only";
     case SendKind::inlineEnumDo:
     case SendKind::inlineDo:
         return "tier 0, inlined loop over " + type + " (no closure created)";

@@ -14,6 +14,7 @@ add_executable(bobTests
     astTests.cpp
     driverOptionsTests.cpp
     endToEndTests.cpp
+    layoutTests.cpp
     lexerTests.cpp
     parserTests.cpp
     runProgramTests.cpp

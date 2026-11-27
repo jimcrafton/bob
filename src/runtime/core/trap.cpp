@@ -37,6 +37,10 @@ const char* reasonText(int32_t reason)
         return "key not found";
     case bob::abi::TrapReason::invalidUtf8:
         return "invalid UTF-8";
+    case bob::abi::TrapReason::outOfMemory:
+        return "out of memory";
+    case bob::abi::TrapReason::doesNotUnderstand:
+        return "message not understood";
     }
     return "unknown trap";
 }

@@ -211,10 +211,15 @@ struct CompileTimeItem {
     bool evaluated = false;
 };
 
-// `NAME := expr;` at unit level: an immutable constant, evaluated at compile time.
+// `@[constant] NAME := expr;` or `@[constant] name: T := expr;` at unit level: an
+// immutable value computed at compile time.
 struct ConstantInfo {
     std::string name;
-    const ast::Assignment* decl = nullptr;
+    // The declaration (an Assignment or a VariableDecl), its name, its written type and value.
+    const ast::Node* decl = nullptr;
+    SourceRange nameRange;
+    const ast::Node* typeNode = nullptr;
+    const ast::Node* value = nullptr;
     CompileTimeItem* item = nullptr;
     const Type* type = nullptr;
     int state = 0; // 1 while checking (cycles), 2 when checked

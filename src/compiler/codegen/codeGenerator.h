@@ -18,4 +18,15 @@ namespace bob::codegen {
 std::unique_ptr<llvm::Module> generateModule(const ast::Unit* unit, const sema::SemanticModel& model, llvm::LLVMContext& context,
                                              const std::string& dataLayout);
 
+// The module that evaluates one compile-time item: the whole program (compile-time
+// messages included, no `bobMain`) plus `void thunk(ptr out)`, which runs the
+// item and stores its value (as laid out in memory) at `out`. Constants it
+// depends on must already be evaluated.
+std::unique_ptr<llvm::Module> generateEvaluationModule(const ast::Unit* unit, const sema::SemanticModel& model, llvm::LLVMContext& context,
+                                                       const std::string& dataLayout, const std::string& triple,
+                                                       const sema::CompileTimeItem* item, const std::string& thunk);
+
+// The allocation size LLVM gives a type, to check the semantic library's layout rules.
+uint64_t llvmSizeOf(const sema::Type* type, const sema::SemanticModel& model, const std::string& dataLayout);
+
 }

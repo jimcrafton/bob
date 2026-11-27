@@ -48,3 +48,22 @@ else()
     add_custom_target(bobImportLibs)
 endif()
 add_dependencies(bobrt bobImportLibs)
+
+# The runtime built for the compiler's own process: compile-time code is JIT
+# compiled and runs against it (design §8.2). Same core; the hosted layer
+# replaces the platform entry, console and trap, and the CRT supplies mem*.
+add_library(bobrtHosted STATIC
+    core/arrays.cpp
+    core/objects.cpp
+    core/strings.cpp
+    core/tables.cpp
+    core/unicode.cpp
+    hosted/hostedRuntime.cpp
+    platform/win64/msgSend.asm
+)
+target_include_directories(bobrtHosted
+    PUBLIC include hosted
+    PRIVATE "${PROJECT_SOURCE_DIR}/src/shared" platform/win64 core
+)
+target_compile_options(bobrtHosted PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/EHsc /W4 /permissive- /utf-8>)
+target_compile_definitions(bobrtHosted PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)

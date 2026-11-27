@@ -250,3 +250,60 @@ TEST_F(EndToEnd, StackObjectsHaveNoRefcountCalls)
     EXPECT_EQ(mainBody.find("@bobRetain"), std::string::npos) << mainBody;
     EXPECT_EQ(mainBody.find("@bobRelease"), std::string::npos) << mainBody;
 }
+
+namespace {
+
+// Compiles `body` (the statements of a `main:`) with `items` at unit level, and
+// returns the compiler's output; `exitCode` gets the driver's result.
+std::string compileSource(const std::string& directory, const std::string& items, const std::string& messages, int& exitCode)
+{
+    std::string source = "program probe, 1.0.0\n{\n" + items + "\nextends probe {\n" + messages +
+                         "\n@[static] msg main: args:array [int32] { return 0; }\n}\n}\n";
+    llvm::SmallString<260> path(directory);
+    llvm::sys::path::append(path, "probe.bob");
+    {
+        std::error_code error;
+        llvm::raw_fd_ostream file(path, error);
+        file << source;
+    }
+    llvm::SmallString<260> exe(directory);
+    llvm::sys::path::append(exe, "probe.exe");
+    bob::driver::DriverOptions options;
+    options.inputPath = std::string(path);
+    options.outputPath = std::string(exe);
+    options.runtimeDir = BOB_TEST_RUNTIME_DIR;
+    std::string output;
+    llvm::raw_string_ostream out(output);
+    llvm::raw_string_ostream err(output);
+    bob::driver::Driver driver(out, err);
+    exitCode = driver.run(options);
+    return output;
+}
+
+}
+
+TEST_F(EndToEnd, CompileTimeFailuresAreCompileErrors)
+{
+    int exitCode = 0;
+    std::string output = compileSource(workPath(""), "@[constant] BAD := self divide: 0;", "@[static] msg divide: n:int32 [int32] { return 10 / n; }", exitCode);
+    EXPECT_NE(exitCode, 0);
+    EXPECT_NE(output.find("couldn't run constant 'BAD': it trapped: division by zero"), std::string::npos) << output;
+
+    output = compileSource(workPath(""), "@[compiletime] { compiler warning: \"just so you know\"; compiler error: \"stop here\"; }", "", exitCode);
+    EXPECT_NE(exitCode, 0);
+    EXPECT_NE(output.find("warning: just so you know"), std::string::npos) << output;
+    EXPECT_NE(output.find("error: stop here [compiletime.error]"), std::string::npos) << output;
+
+    output = compileSource(workPath(""), "@[constant] A := self viaB;\n@[constant] B := A + 1;", "@[static] msg viaB [int32] { return B; }", exitCode);
+    EXPECT_NE(exitCode, 0);
+    EXPECT_NE(output.find("constant"), std::string::npos) << output;
+
+    output = compileSource(workPath(""), "@[constant] size: uint8 := 4;\n@[compiletime] { if size <> 4 { compiler error: \"no\"; } }", "", exitCode);
+    EXPECT_EQ(exitCode, 0) << output;
+
+    // Without @[constant], a unit-level declaration is an error (mutable globals come later).
+    output = compileSource(workPath(""), "plain := 3;", "", exitCode);
+    EXPECT_NE(exitCode, 0);
+    EXPECT_NE(output.find("must be a constant: '@[constant] NAME := value;'"), std::string::npos) << output;
+    EXPECT_EQ(output.find("error: no"), std::string::npos) << output;
+}

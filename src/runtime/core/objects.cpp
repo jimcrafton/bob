@@ -75,8 +75,7 @@ void* bobAllocObject(BobClass* cls)
 {
     auto* header = static_cast<BobObjectHeader*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, cls->instanceSize));
     if (header == nullptr) {
-        writeError("bob: out of memory\n");
-        ExitProcess(static_cast<UINT>(bob::abi::trapExitCode));
+        bobRuntimeTrap(static_cast<int32_t>(bob::abi::TrapReason::outOfMemory));
     }
     header->isa = cls;
     header->refCount = 1;
@@ -91,8 +90,7 @@ void* bobAllocBuffer(BobClass* cls, uint64_t size)
 {
     auto* header = static_cast<BobObjectHeader*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size));
     if (header == nullptr) {
-        writeError("bob: out of memory\n");
-        ExitProcess(static_cast<UINT>(bob::abi::trapExitCode));
+        bobRuntimeTrap(static_cast<int32_t>(bob::abi::TrapReason::outOfMemory));
     }
     header->isa = cls;
     header->refCount = 1;
@@ -106,8 +104,7 @@ void* bobGrowBuffer(void* buffer, uint64_t size)
     uint64_t old = HeapSize(GetProcessHeap(), 0, buffer);
     void* grown = HeapReAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, buffer, size);
     if (grown == nullptr) {
-        writeError("bob: out of memory\n");
-        ExitProcess(static_cast<UINT>(bob::abi::trapExitCode));
+        bobRuntimeTrap(static_cast<int32_t>(bob::abi::TrapReason::outOfMemory));
     }
     _InterlockedExchangeAdd64(&liveBytes, static_cast<long long>(size) - static_cast<long long>(old));
     return grown;
@@ -174,12 +171,12 @@ void* bobMsgSendLookup(BobClass* cls, const char* selector)
             }
         }
     }
-    writeError("bob: runtime trap: '");
+    writeError("bob: '");
     writeError(cls->name);
     writeError("' doesn't understand '");
     writeError(selector);
     writeError("'\n");
-    ExitProcess(static_cast<UINT>(bob::abi::trapExitCode));
+    bobRuntimeTrap(static_cast<int32_t>(bob::abi::TrapReason::doesNotUnderstand));
 }
 
 void bobRuntimeReportLeaks()
