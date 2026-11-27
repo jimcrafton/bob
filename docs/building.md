@@ -38,15 +38,22 @@ Visual Studio opens the folder directly and picks up the presets.
 
 `bobc` looks for `bobrt.lib` and `kernel32.lib` next to itself by default (`--runtime-dir=` overrides this). If the generated `kernel32.lib` is missing, it falls back to the newest Windows SDK `kernel32.lib`, or to `--sdk-lib-path=`.
 
-## Using bobc on bob source (phase 1)
-`.bob` files are lexed and parsed. Code generation comes in phase 2.
+## Using bobc on bob source
+A `program` unit compiles to an executable (phase 2: primitives, records, static messages, control statements, see `docs/semantics.md`):
 ```
-bobc --syntax-only prog.bob        # report syntax errors (exit 1 if any)
+bobc prog.bob                      # → prog.exe
+bobc -O2 prog.bob -o fast.exe      # optimize (-O0 default, -O1..-O3)
+bobc -c prog.bob                   # object file only
+bobc --dump-llvm prog.bob          # print the generated LLVM IR instead of compiling
+bobc --syntax-only prog.bob        # report syntax errors only (exit 1 if any)
 bobc --dump-tokens prog.bob        # token stream
 bobc --dump-ast prog.bob           # syntax tree, text
 bobc --dump-ast=json prog.bob      # syntax tree, JSON (see docs/tooling.md)
 ```
-The grammar is in `docs/grammar.md`.
+The grammar is in `docs/grammar.md`, the type rules in `docs/semantics.md`. Runtime traps (overflow, division by zero…) print to stderr and exit with code 101.
+
+## Test programs
+`tests/programs/run/*.bob` are compiled and run by `bobTests` at `-O0` and `-O2`. Each declares its outcome in header comments: `# expect-exit: <code>` and optionally `# expect-stderr: <text>`. To add a test, drop in a new file. No other registration is needed.
 
 ## Using bobc on LLVM IR (phase 0)
 `bobc` accepts hand-written LLVM IR that defines `i32 @bobMain()`:

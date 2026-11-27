@@ -69,7 +69,7 @@ A unit has a header, `import`s, then a `{ ... }` body with namespaces, classes, 
 ### 3.2 Lexical
 - Comments: `# to end of line`, `#{ ... }#` block.
 - Statement terminator: `;`. (Smalltalk uses `.`, but bob uses `.` for qualification `core.io.out` and field access `p.x`.)
-- Assignment: `:=`. Equality: `=`. Identity: `==`.
+- Assignment: `:=`. Equality: `=`. **[Decided]** There are no `<<`, `>>`, `==`, `~=` or `??` operators. Shifts are the keyword messages `shiftLeft:`/`shiftRight:`, and "not equal" is currently written `(a = b) not` (see §13).
 - Literals: `123`, `0x7F`, `0b1010`, `1_000_000`, `3.25`, `1e-9`, `"utf-8 string"`, `'é'` (unicode scalar / `char`), `true`, `false`, `nil`, array `[1, 2, 3]`.
 - Suffix-typed literals **[Proposed]**: `10u8`, `3.0r32`. Otherwise literals are polymorphic and take their type from context, defaulting to `int32`/`real64`.
 
@@ -108,12 +108,11 @@ x := (p distanceTo: q) sqrt;
 
   | Level | Operators |
   |---|---|
-  | 1 | `<<` `>>` |
-  | 2 | `*` `/` `%` `&` |
-  | 3 | `+` `-` `|` `^` |
-  | 4 | `=` `~=` `==` `<` `<=` `>` `>=` |
-  | 5 | `and` |
-  | 6 | `or` |
+  | 1 | `*` `/` `%` `&` |
+  | 2 | `+` `-` `|` `^` |
+  | 3 | `=` `<` `<=` `>` `>=` |
+  | 4 | `and` |
+  | 5 | `or` |
 
   All levels are left-associative. User-defined binary selectors (for example `+` on `Point`) take the precedence of their operator. Binary selectors that aren't in the table bind at level 3.
 - **[Decided]** No cascades for now (Smalltalk's `;` is our statement terminator). Repeat the receiver instead. A Dart-style `..` cascade could be added later without breaking existing code.
@@ -256,8 +255,8 @@ import core.io;
 - Same layout as C. They are not objects and have no header, but they accept messages: `3 + 4`, `x abs`, `x max: y`, `n printString`.
 - Messages on primitives are *intrinsics* (inline LLVM instructions) or direct calls into the runtime. They never go through dynamic dispatch.
 - **[Decided]** Integer overflow traps by default (Swift model). The compiler removes the check wherever it can prove no overflow is possible.
-  - Explicit messages, always available whatever the mode: `a wrapAdd: b` (two's complement), `a satAdd: b` (clamp), `a checkedAdd: b` (returns `T?`, `nil` on overflow). The same exists for sub/mul/shift.
-  - `@[overflow: trap | wrap | saturate]` changes how the plain operators (`+ - * <<` …) behave. It can attach to a module, a class or record, a message, a `{ }` statement block, or a single parenthesised expression. The innermost attribute wins.
+  - Explicit messages, always available whatever the mode: `a wrapAdd: b` (two's complement), `a satAdd: b` (clamp), `a checkedAdd: b` (returns `T?`, `nil` on overflow). The same exists for sub/mul.
+  - `@[overflow: trap | wrap | saturate]` changes how `+ - *`, `negated` and `shiftLeft:` behave. It can attach to a module, a class or record, a message, a `{ }` statement block, or a single parenthesised expression. The innermost attribute wins.
     ```
     @[overflow: wrap] module kernel.mm, 0.1.0 { ... }
     h := @[overflow: wrap] (h * 31 + c);
@@ -296,7 +295,7 @@ import core.io;
 ### 4.3 Classes (reference types)
 - Heap objects with a header (§6.2). Single inheritance (`inherits`), plus any number of `@[protocol]` classes (`implements`).
 - **[Decided]** A concrete class can only be subclassed inside its own module. That gives the compiler complete class-hierarchy knowledge, which is what makes most sends static (§5). Extension across modules goes through protocols (§4.4). See §5.4 for the full rationale.
-- Non-optional class references are never `nil`. Optional: `Foo?`. `nil` is only assignable to optionals. Unwrap with messages: `x ifNotNil: { :v | ... }`, `x ifNil: { ... }`, `x ?? default`.
+- Non-optional class references are never `nil`. Optional: `Foo?`. `nil` is only assignable to optionals. Unwrap with messages: `x ifNotNil: { :v | ... }`, `x ifNil: { ... }`, `x ifNil: default`.
 
 ### 4.4 Protocols: `@[protocol] class` **[Decided]**
 There's no separate `protocol` keyword. A protocol is a class marked `@[protocol]`:
@@ -696,7 +695,7 @@ There are no implicit conversions between `string` and byte arrays or raw pointe
 - It can send messages to a `compiler` object exposing the semantic model: query types, fields, selectors, sizes; emit diagnostics; synthesise messages, classes and conformances. This is the hook for generics, derive-style code generation (`printOn:`, equality, serialization) and static asserts.
 ```
 @[compiletime] {
-    if Point meta size ~= 8 {
+    if (Point meta size = 8) not {
         compiler error: "Point layout changed";
     }
 }
@@ -820,10 +819,12 @@ As built through phase 1 (build instructions: `docs/building.md`):
 CMakeLists.txt, CMakePresets.json
 src/shared/abi.h          compiler/runtime shared symbol names & ids
 src/syntax/               bobSyntax (no LLVM): source/, diagnostics/, lexer/, ast/, parser/
-src/compiler/driver/      driver options, .bob front end, IR → object (LLVM), toolchain lookup, lld-link → bobCompiler
+src/semantic/             bobSemantic (no LLVM): types, semantic model, analyzer
+src/compiler/codegen/     AST + semantic model → LLVM IR
+src/compiler/driver/      driver options, .bob pipeline, optimization + object emission, toolchain lookup, lld-link → bobCompiler
 src/runtime/              bobrt: crt/ (mem*, _fltused), platform/win64/ (bobStart, console, chkstk.asm, kernel32.def)
 src/tools/bobc/           bobc.exe (thin main over bobCompiler)
-tests/                    bobTests: lexer, parser, ast, syntax corpus, driver, end-to-end; tests/programs/
+tests/                    bobTests: lexer, parser, ast, syntax corpus, semantic, driver, end-to-end, run programs (tests/programs/run, at -O0 and -O2)
 ```
 Planned additions:
 ```
@@ -847,8 +848,8 @@ Runtime unit tests: gtest needs the CRT, so `bobTests` compiles the runtime sour
 |---|---|---|
 | 0 ✅ | CMake skeleton, LLVM found, gtest `bobTests`, `bobc` stub; `bobrt` freestanding with `bobStart`, console write, exit; link with lld-link | A hand-written LLVM IR "hello" links against bobrt with no CRT and runs. **Done 2026-11-27:** 16/16 tests pass in Debug and Release; exes import only kernel32 |
 | 1 ✅ | Lexer + parser for §3 (all constructs), AST, `--dump-ast` | Parses all of scratch-lang's tests (converted) and the §3.8 example. **Done 2026-11-27:** `bobSyntax` library (lossless, error-tolerant, tool-reusable); 17 converted scratch tests + §3.8 example + a file of every §3–4 construct parse cleanly; 67/67 tests in Debug and Release |
-| 2 | Sema + codegen for primitives, locals, records, intrinsic sends, `main:`, `return` | `factorial`/`fib` programs compile, run and return correct exit codes |
-| 3 | Control statements (`if`/`while`/`for in`/`loop`/`break`/`continue`/`case` with exhaustiveness); blocks: inlined `do:`/`to:do:`/`ifTrue:ifFalse:`, non-escaping closures | Loops/conditionals programs; dispatch report shows tier 0/1 |
+| 2 ✅ | Sema + codegen for primitives, locals, records, intrinsic sends, `main:`, `return` | `factorial`/`fib` programs compile, run and return correct exit codes. **Done 2026-11-27:** `bobSemantic` (no LLVM) + LLVM codegen; also pulled in from phase 3: `if`/`while`/`for … to:`/`loop`/`break`/`continue`/integer `case`. Overflow modes, checked conversions and runtime traps (exit 101). 11 run programs at -O0 and -O2; 119/119 tests in Debug and Release. Rules as built: `docs/semantics.md` |
+| 3 | Blocks: block values, non-escaping closures, inlined `do:`/`to:do:`/`ifTrue:ifFalse:`; `for` over collections once they exist; `--explain-dispatch`. (Control statements were done in phase 2.) | Block/closure programs; dispatch report shows tier 0/1 |
 | 4 | Classes: layout, `new`, ARC insertion, static dispatch + CHA, class objects, selectors, `bob_msgSend` + cache, protocols | Polymorphism tests; leak report shows 0 bytes at exit |
 | 5 | Built-ins: `string` (UTF-8, views, conversions), `array`, `dictionary`, `hashtable`, `set` with element-type inference and inferred unions, COW | String/collection test suite incl. grapheme cases |
 | 6 | Compile-time execution via ORC; `compiler` object; `meta`; static asserts; constant tables. Revisit type-returning compile-time messages under the §4.5 leash rules | Compile-time CRC table and layout asserts work; decision made on `RingBuffer of: T` |
@@ -865,4 +866,5 @@ Decided: `x := 4;` implicit declaration with inference (§3.3); no `@` on keywor
 Still open:
 1. Can records have messages (statically dispatched helpers via `extends`, as in §3.6), or are they pure field layouts with no messages at all (§4.2)? Undecided, deferred. Leaning towards "no messages on records" (records strictly for data). The draft still shows record messages in §3.6 and §4.2 until this is decided.
 2. Blocks as a unifying concept (§5.6): closures, pre/post conditions, error-trapping blocks, thread blocks. Ideas only so far.
+3. "Not equal": with `~=` removed, it's `(a = b) not` for now. Options: Pascal's `<>`, `!=`, or a message such as `notEqual:`. Shift messages are provisionally named `shiftLeft:`/`shiftRight:`.
 

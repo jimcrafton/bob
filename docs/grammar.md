@@ -13,7 +13,7 @@ This is the grammar the `bobSyntax` parser accepts (phase 1). `docs/design.md` �
 | version | three or more dot-separated integers: `1.4.11` | only meaningful in unit headers and imports |
 | string | `"…"` | escapes `\n \t \r \0 \\ \" \' \u{1F600}`. Must be valid UTF-8, no raw newlines |
 | char | `'…'` | exactly one Unicode scalar value after escapes |
-| binaryOperator | `<< >> <= >= == ~= ??` or one of `+ - * / % & \| ^ < > = ?` | maximal munch over that set |
+| binaryOperator | `<=` `>=`, or one of `+ - * / % & \| ^ < > = ?` | maximal munch over that set. There are no `<< >> == ~= ??` operators: `<<` lexes as two `<`, and `~` is an invalid character |
 | punctuation | `:=` `:` `;` `,` `.` `(` `)` `{` `}` `[` `]` `@[` | |
 | comments | `# …` to end of line, `#{ … }#` block (not nested) | trivia |
 
@@ -108,13 +108,13 @@ array       = '[' [expression {',' expression} [',']] ']'
 ```
 | Precedence (high → low) | Operators |
 |---|---|
-| 7 | `<<` `>>` |
-| 6 | `*` `/` `%` `&` |
-| 5 | `+` `-` `\|` `^`, and any other operator |
-| 4 | `=` `~=` `==` `<` `<=` `>` `>=` |
-| 3 | `and` |
-| 2 | `or` |
-| 1 | `??` |
+| 5 | `*` `/` `%` `&` |
+| 4 | `+` `-` `\|` `^`, and any other operator |
+| 3 | `=` `<` `<=` `>` `>=` |
+| 2 | `and` |
+| 1 | `or` |
+
+Shifts are keyword messages (`x shiftLeft: 2`), not operators.
 
 `?` is only valid as an optional-type suffix. `-` directly before a number in operand position is a negative literal (`a -1` is still subtraction).
 
