@@ -1,0 +1,93 @@
+# expect-exit: 0
+program weakRefs, 0.1.0
+{
+    # The child points back at its parent weakly, so the tree has no cycle and
+    # is freed when the last strong reference goes (the harness checks for leaks).
+    class TreeNode {
+        public {
+            name: string := "node";
+            @[weak] parent: TreeNode?;
+            children: array of: TreeNode;
+        }
+        msg add: child:TreeNode {
+            child parent: self;
+            children add: child;
+        }
+        msg parentName [string] {
+            return parent ifNil: { "none" } ifNotNil: { :p | p name };
+        }
+    }
+
+    class Item {
+        public { tag: int32; }
+    }
+
+    # A button keeps its handler; the handler reaches the button weakly, or the
+    # two would keep each other alive forever.
+    class Button {
+        public {
+            clicks: int32;
+            onPress: { [int32] }?;
+        }
+        msg wire {
+            @[weak] me := self;
+            onPress := {
+                me ifNil: { -1 } ifNotNil: { :b | b clicks: b clicks + 1; b clicks }
+            };
+        }
+        msg press [int32] {
+            return onPress ifNil: { 0 } ifNotNil: { :f | f value };
+        }
+    }
+
+    class Customer {
+        public {
+            name: string := "ann";
+            card: Card?;
+        }
+        msg issue {
+            card := Card owner: self;
+        }
+    }
+
+    # A card never outlives its customer, so it holds the customer unowned.
+    class Card {
+        public { @[unowned] owner: Customer; }
+        msg ownerName [string] { return owner name; }
+    }
+
+    extends weakRefs {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            root := TreeNode name: "root";
+            leaf := TreeNode name: "leaf";
+            root add: leaf;
+            root add: (TreeNode name: "other");
+            failures := failures + (self check: leaf parentName = "root" id: 1);
+            failures := failures + (self check: root parentName = "none" id: 2);
+
+            holder: Item? := Item tag: 7;
+            @[weak] w := holder;
+            failures := failures + (self check: w <> nil id: 3);
+            failures := failures + (self check: (w ifNil: { 0 } ifNotNil: { :i | i tag }) = 7 id: 4);
+            holder := nil;
+            failures := failures + (self check: w = nil id: 5);
+
+            button: Button;
+            button wire;
+            button press;
+            failures := failures + (self check: button press = 2 id: 6);
+
+            customer: Customer;
+            customer issue;
+            failures := failures + (self check: (customer card ifNil: { "" } ifNotNil: { :c | c ownerName }) = "ann" id: 7);
+
+            return failures;
+        }
+    }
+}

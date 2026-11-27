@@ -1,0 +1,123 @@
+# expect-exit: 0
+program closures, 0.1.0
+{
+    # A name for a block shape: any block that takes and returns an int32.
+    type Transform := { int32 [int32] };
+
+    # A callback stored in an object: the block outlives the frame that made it.
+    class Button {
+        public {
+            label: string := "ok";
+            onPress: { int32 [int32] };
+            onHover: { [int32] }?;
+        }
+        msg press: n:int32 [int32] { return onPress value: n; }
+        msg hover [int32] {
+            return onHover ifNil: { -1 } ifNotNil: { :f | f value };
+        }
+    }
+
+    class Handler {
+        public {
+            run: { [int32] };
+            next: Handler?;
+        }
+    }
+
+    class Account {
+        public { balance: int64; }
+        # The closure captures self, so the account lives as long as the closure.
+        msg depositor [{ int64 }] {
+            return { :amount: int64 | balance := balance + amount; };
+        }
+    }
+
+    extends closures {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        # `count` is captured and changed by the returned block: it lives in a box.
+        @[static] msg makeCounter [{ [int32] }] {
+            count := 0;
+            return { count := count + 1; count };
+        }
+
+        # Parameters are read-only, so the closure copies them.
+        @[static] msg adder: n:int32 [Transform] {
+            return { :x: int32 | x + n };
+        }
+
+        @[static] msg twice: f:Transform [Transform] {
+            return { :x: int32 | f value: (f value: x) };
+        }
+
+        @[static] msg curried: a:int32 [{ int32 [Transform] }] {
+            return { :b: int32 | ({ :c: int32 | a + b + c }) };
+        }
+
+        @[static] msg handlers [Handler?] {
+            list: Handler?;
+            for i in 1 to: 3 {
+                x := i * 10;
+                list := Handler run: { x } next: list;
+            }
+            return list;
+        }
+
+        @[static] msg sum: list:Handler? [int32] {
+            total := 0;
+            current := list;
+            while current <> nil {
+                current ifNotNil: { :h |
+                    total := total + (h run value);
+                    current := h next;
+                };
+            }
+            return total;
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            a := self makeCounter;
+            b := self makeCounter;
+            a value;
+            a value;
+            failures := failures + (self check: a value = 3 id: 1);
+            failures := failures + (self check: b value = 1 id: 2);
+
+            add5 := self adder: 5;
+            failures := failures + (self check: (add5 value: 10) = 15 id: 3);
+            failures := failures + (self check: ((self twice: add5) value: 1) = 11 id: 4);
+            failures := failures + (self check: (((self curried: 1) value: 2) value: 3) = 6 id: 5);
+
+            scale := 3;
+            button := Button onPress: { :n: int32 | n * scale };
+            failures := failures + (self check: (button press: 7) = 21 id: 6);
+            scale := 4;
+            failures := failures + (self check: (button press: 7) = 28 id: 7);
+            failures := failures + (self check: button hover = -1 id: 8);
+            button onHover: { scale + 100 };
+            failures := failures + (self check: button hover = 104 id: 9);
+
+            # each pass of the loop declares a new `x`
+            failures := failures + (self check: (self sum: self handlers) = 60 id: 10);
+
+            account: Account;
+            deposit := account depositor;
+            deposit value: 40i64;
+            deposit value: 2i64;
+            failures := failures + (self check: account balance = 42i64 id: 11);
+
+            # a stack block still works as before
+            hits := 0;
+            tick := { hits := hits + 1; };
+            tick value;
+            tick value;
+            failures := failures + (self check: hits = 2 id: 12);
+
+            return failures;
+        }
+    }
+}

@@ -1,0 +1,91 @@
+# expect-exit: 0
+program itables, 0.1.0
+{
+    record Size { w: int32; h: int32; }
+
+    @[protocol] class Shape {
+        msg area [int32];
+        # a protocol message that returns a record (used to be unsupported)
+        msg bounds [Size];
+        # defaults that call other protocol messages on self
+        msg describe [string] { return "area " + self area printString; }
+        msg summary [string] { return self describe + "!"; }
+    }
+
+    # refinement: Scalable's slots start with Shape's
+    @[protocol] class Scalable inherits Shape {
+        msg scale: k:int32;
+    }
+
+    @[protocol] class Named {
+        msg name [string];
+    }
+
+    class Rect implements Scalable, Named {
+        public { w: int32 := 2; h: int32 := 3; }
+        msg area [int32] { return w * h; }
+        msg bounds [Size] { return Size w: w h: h; }
+        msg scale: k:int32 { w := w * k; h := h * k; }
+        msg name [string] { return "rect"; }
+    }
+
+    # conforms through its superclass, overriding one implementation
+    class Square inherits Rect {
+        msg describe [string] { return "square of area " + self area printString; }
+        msg name [string] { return "square"; }
+    }
+
+    class Dot implements Shape {
+        msg area [int32] { return 0; }
+        msg bounds [Size] { return Size w: 1 h: 1; }
+    }
+
+    extends itables {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg widthOf: s:Shape [int32] {
+            b := s bounds;
+            return b.w;
+        }
+
+        @[static] msg grow: s:Scalable [int32] {
+            s scale: 2;
+            return s area;
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            r := Rect w: 4 h: 5;
+            failures := failures + (self check: (self widthOf: r) = 4 id: 1);
+            failures := failures + (self check: r summary = "area 20!" id: 2);
+
+            sq := Square w: 3 h: 3;
+            shape: Shape := sq;
+            failures := failures + (self check: shape summary = "square of area 9!" id: 3);
+            failures := failures + (self check: (self grow: sq) = 36 id: 4);
+
+            named: Named := sq;
+            failures := failures + (self check: named name = "square" id: 5);
+
+            # an upcast from the refined protocol to the protocol it refines
+            scalable: Scalable := r;
+            plain: Shape := scalable;
+            failures := failures + (self check: plain area = 20 id: 6);
+
+            d: Dot;
+            shapes: array of: Shape := [r, sq, d];
+            total := 0;
+            widths := 0;
+            for s in shapes {
+                total := total + s area;
+                b := s bounds;
+                widths := widths + b.w;
+            }
+            failures := failures + (self check: total = 56 and widths = 11 id: 7);
+            return failures;
+        }
+    }
+}
