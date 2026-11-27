@@ -1,0 +1,38 @@
+program app, 1.0.0
+import geometry, 1.4;
+import shapes, 2.0;
+{
+    # A program's own Point shadows geometry's.
+    record Point { a: int8; }
+
+    extends app {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            p := geometry.Point x: -2 y: 5;
+            failures := failures + (self check: (geometry quadrantOf: p) = Quadrant second id: 1);
+            failures := failures + (self check: (geometry manhattan: p to: ORIGIN) = 7 id: 2);
+            failures := failures + (self check: SQUARES count = 5 and SQUARES last = 25 and NAME = "geometry" id: 3);
+
+            mine: Point;
+            failures := failures + (self check: mine meta size = 1 and geometry.Point meta size = 8 id: 4);
+
+            # Classes from both modules, protocol sends across the boundary.
+            sq := Square side: 4;
+            rect := Rectangle width: 5 height: 2;
+            failures := failures + (self check: sq area = 16 and sq cached = 16 and rect area = 10 id: 5);
+            shape: Shape := rect;
+            failures := failures + (self check: shape area = 10 and shape describe = "a shape of area 10" id: 6);
+            failures := failures + (self check: (geometry totalArea: [sq, rect, shapes unitSquare]) = 27 id: 7);
+            failures := failures + (self check: (shapes corner: rect) = Quadrant first id: 8);
+
+            pct: Percent := 40;
+            failures := failures + (self check: pct + 1 = 41 id: 9);
+            return failures;
+        }
+    }
+}

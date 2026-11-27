@@ -1,0 +1,71 @@
+module geometry, 1.4.11
+{
+    interface {
+        record Point { x: int32; y: int32; }
+
+        enum Quadrant { first; second; third; fourth; }
+
+        type Percent := 0 to: 100;
+
+        @[protocol] class Shape {
+            msg area [int32];
+            msg describe [string] { return "a shape of area " + self area printString; }
+        }
+
+        class Square implements Shape {
+            public { side: int32 := 1; }
+            private { cachedArea: int32; }
+            msg area [int32] { return side * side; }
+            msg init { cachedArea := side * side; }
+            msg cached [int32] { return cachedArea; }
+        }
+
+        @[constant] ORIGIN := Point x: 0 y: 0;
+        @[constant] SQUARES := self squaresUpTo: 5;
+        @[constant] NAME := "geometry";
+
+        extends geometry {
+            @[static] msg quadrantOf: p:Point [Quadrant] {
+                if p.x >= 0 and p.y >= 0 {
+                    return Quadrant first;
+                }
+                if p.x < 0 and p.y >= 0 {
+                    return Quadrant second;
+                }
+                if p.x < 0 {
+                    return Quadrant third;
+                }
+                return Quadrant fourth;
+            }
+
+            @[static] msg manhattan: a:Point to: b:Point [int32] {
+                return Helper distance: a to: b;
+            }
+
+            @[static] msg squaresUpTo: n:int32 [array of: int32] {
+                result: array of: int32;
+                for i in 1 to: n {
+                    result add: i * i;
+                }
+                return result;
+            }
+
+            @[static] msg totalArea: shapes:[array of: Shape] [int32] {
+                total := 0;
+                for s in shapes {
+                    total := total + s area;
+                }
+                return total;
+            }
+        }
+    }
+
+    implementation {
+        # Not visible to importers.
+        class Helper {
+            @[static] msg distance: a:Point to: b:Point [int32] {
+                return (a.x - b.x) abs + (a.y - b.y) abs;
+            }
+        }
+    }
+}

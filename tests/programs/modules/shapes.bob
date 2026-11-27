@@ -1,0 +1,25 @@
+lib shapes, 2.0.0
+import geometry, 1.4;
+{
+    interface {
+        # Implements a protocol from another module.
+        class Rectangle implements Shape {
+            public {
+                corner: Point;
+                width: int32 := 2;
+                height: int32 := 3;
+            }
+            msg area [int32] { return width * height; }
+        }
+
+        extends shapes {
+            @[static] msg unitSquare [Square] {
+                s := Square side: 1;
+                return s;
+            }
+            @[static] msg corner: r:Rectangle [Quadrant] {
+                return geometry quadrantOf: r corner;
+            }
+        }
+    }
+}
