@@ -1,0 +1,93 @@
+
+Lets build a new language called "bob" with a syntax very similar to Smalltalk-80.  
+A language that uses the idea of messages, but makes compile time decisions that 
+can resolve most of them statically. Something that is practical enough that you 
+could write an operating system with. But that also offers support for things 
+like dynamic reflection, memory safety, and proper string handling.
+
+Based on the ideas in 
+https://github.com/jimcrafton/scratch-lang
+local repo at 
+D:\code\scratch-lang
+
+
+The syntax treats everything like a message, but the compiler is smart enough to
+look and resolve evertyhing it can before giving up and allowing it to resolve 
+to a runtime lookup
+
+There should be a notion or compiletime and runtime and that means code can
+send and execute messages at compiletime.
+
+String handling
+a String type that's UTF-8 internally, distinguishes byte-oriented views from 
+grapheme/codepoint-oriented views
+and has no implicit conversions to/from raw byte buffers except through an explicit, checked API
+
+The language it typed, no untyped dynamic variables like python or javascript. Reflection would 
+definitely have security levels. Memory managment similar to Swift, stack based reference counting, 
+not a crazy garbage collector like java. Memory was tracked in the sense that the languages allocator 
+kept track of the type and size of every block handed out, so things like strings, arrays, dictionary, 
+were built in first class types.
+
+Message send is not immediately deferred till runtime. It's looked at during compile time and if
+it can effectively be resolved at compile it is. Runtime lookup uses an approach like objc_msgSend,
+see "https://blog.zhengdong.me/2013/07/18/a-look-under-the-hood-of-objc-msgsend/"
+
+Simple things like primitive types, int, float, bool, can be sent a message despite not actually being
+an object. They occupy a fixed memory size, just they would in C/C++, but the compiler treats them as
+an object by allowing message sends.
+
+More complex types can be represented by actual classes.
+
+We will use LLVM for backend
+
+We will not use the MSVC C runtime, see the D:\code\scratch-lang
+project to see how this was done.
+
+We will need to build our own runtime which was started 
+in scratch-lang
+
+The project will be based on CMake
+
+See the basic types there
+D:\code\scratch-lang
+
+
+
+
+some grammar ideas in a quasi EBNF format
+D:\code\scratch-lang\grammar_ideas.txt
+ 
+Another example:
+
+Another example
+
+module test1 , 1.4.11
+{
+class foobar {
+} 
+class Man {
+}
+class bob inherits Man {
+    public {
+        x: int32 ;
+        y: int32 ;
+    }
+    private {
+        name: string;
+    }
+    msg toString : t:int32 isFat:bool [bool] {
+        return "my name is " + name ;
+    }
+}
+record Point {
+x : uint32; 
+y : uint32;
+}
+d:real32;
+d := 0.00112;
+p:Point;
+#p.x := 100;
+f: foobar;
+f add: 3 @num2:5;
+}
