@@ -1,0 +1,89 @@
+# expect-exit: 0
+program construction, 0.1.0
+{
+    class Log {
+        public { steps: int64; }
+        # Appends a digit: the order of construction steps reads left to right.
+        msg step: n:int64 { steps := steps * 10 + n; }
+    }
+
+    class Base {
+        public {
+            log: Log;               # defaulted when not passed; here passed in, shared with the caller
+            size: int32 := 5;
+        }
+        private { doubled: int32; }
+        msg init {
+            doubled := size * 2;
+            log step: 1;
+        }
+        msg doubled [int32] { return doubled; }
+    }
+
+    class Derived inherits Base {
+        public { extra: int32; }
+        msg init { log step: 2; }
+    }
+
+    class Person {
+        public { name: string := "nobody"; }
+    }
+
+    class Account {
+        public {
+            owner: Person;          # a Person can be built with defaults, so it may be left out
+            balance: int64 := 100;
+        }
+    }
+
+    class Wallet {
+        public { account: Account; }
+        private { history: array of: int64 := [1, 2]; }
+        msg historyCount [int64] { return history count; }
+    }
+
+    extends construction {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            log: Log;
+            b := Base log: log;
+            failures := failures + (self check: b size = 5 and b doubled = 10 and log steps = 1 id: 1);
+            big := Base log: log size: 21;
+            failures := failures + (self check: big doubled = 42 id: 2);
+
+            # superclass init runs first, then the subclass's
+            trace: Log;
+            d := Derived log: trace size: 1 extra: 9;
+            failures := failures + (self check: trace steps = 12 and d doubled = 2 and d extra = 9 id: 3);
+
+            # default-constructed fields and locals
+            a: Account;
+            failures := failures + (self check: a owner name = "nobody" and a balance = 100 id: 4);
+            ann := Person name: "ann";
+            rich := Account owner: ann balance: 5000;
+            failures := failures + (self check: rich owner = ann and rich owner name = "ann" id: 5);
+            w: Wallet;
+            failures := failures + (self check: w account balance = 100 and w historyCount = 2 id: 6);
+
+            # copy: same class (even through a superclass type), fields shared, init runs again
+            base: Base := d;
+            copied := base copy;
+            failures := failures + (self check: trace steps = 1212 and copied size = 1 and copied doubled = 2 id: 7);
+            failures := failures + (self check: copied <> base and copied log = trace id: 8);
+            other := ann copy;
+            other name: "bob";
+            failures := failures + (self check: ann name = "ann" and other name = "bob" id: 9);
+
+            for i in 1 to: 100 {
+                temp := Account owner: (Person name: i printString);
+                failures := failures + (self check: temp owner name = i printString id: 10);
+            }
+            return failures;
+        }
+    }
+}

@@ -1,0 +1,94 @@
+# expect-exit: 0
+program stackObjects, 0.1.0
+{
+    class Label {
+        public {
+            text: string := "none";
+            parts: array of: string;
+            child: Tag;
+        }
+        msg describe [string] { return text + "/" + child name; }
+    }
+
+    class Tag {
+        public { name: string := "tag"; }
+    }
+
+    class Counter {
+        private { count: int64; }
+        msg bump { count := count + 1; }
+        msg count [int64] { return count; }
+    }
+
+    extends stackObjects {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        # The stack object's fields hold heap strings and arrays: every exit path
+        # must release them (the harness fails on any leak).
+        @[static] msg firstLong: limit:int32 [int32] {
+            for i in 1 to: 50 {
+                @[stack] l := Label text: "item " + i printString parts: ["a", "b"];
+                if i = limit {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        @[static] msg sum: n:int32 [int64] {
+            @[stack] c: Counter;
+            run := { :k: int32 |
+                @[stack] inner: Counter;
+                inner bump;
+                c bump;
+                inner count
+            };
+            total := 0i64;
+            for i in 1 to: n {
+                total := total + (run value: i);
+            }
+            return total + c count;
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            @[stack] label := Label text: "a";
+            label child name: "x";
+            failures := failures + (self check: label describe = "a/x" id: 1);
+
+            # the slot is reused on every pass: the previous object's fields are released first
+            names := "";
+            for i in 1 to: 1000 {
+                @[stack] l := Label text: i printString parts: [i printString];
+                l child name: "c" + i printString;
+                if i % 250 = 0 {
+                    names := names + l describe + ";";
+                }
+            }
+            failures := failures + (self check: names = "250/c250;500/c500;750/c750;1000/c1000;" id: 2);
+
+            failures := failures + (self check: (self firstLong: 7) = 7 and (self firstLong: 99) = -1 id: 3);
+            failures := failures + (self check: (self sum: 10) = 20 id: 4);
+
+            count := 0;
+            loop {
+                @[stack] t: Tag;
+                count := count + 1;
+                if count = 3 {
+                    break;
+                }
+            }
+            failures := failures + (self check: count = 3 id: 5);
+
+            # a heap copy of a stack object outlives it
+            keep: Label?;
+            @[stack] original := Label text: "orig";
+            keep := original copy;
+            keep ifNotNil: { :k | failures := failures + (self check: k text = "orig" id: 6); };
+            return failures;
+        }
+    }
+}
