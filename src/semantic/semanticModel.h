@@ -99,6 +99,14 @@ struct MessageInfo {
     bool isInit = false;
     // The generated `copy` (no declaration): a shallow copy, then `init`.
     bool isCopy = false;
+    // `@[compiletime] msg`: callable only from compile-time code; not in the program.
+    bool compileTimeOnly = false;
+    // What the body uses directly, for ordering compile-time evaluation
+    // (filled during checking; vtable and protocol sends list their target).
+    std::vector<const MessageInfo*> calls;
+    std::vector<const ClassInfo*> constructs;
+    std::vector<struct ConstantInfo*> constantsUsed;
+    std::vector<struct CompileTimeItem*> itemsUsed;
     // Escape summary (analyzerEscape.cpp): whether the message may keep `self` or a
     // parameter beyond the call (store it in a field or container, return it ...).
     bool selfEscapes = false;
@@ -174,6 +182,42 @@ struct ProgramInfo {
     std::unordered_map<std::string, MessageInfo*> bySelector;
     MessageInfo* main = nullptr;
     Type* type = nullptr;
+};
+
+// A value computed at compile time and embedded in the program (design §8).
+struct ConstValue {
+    const Type* type = nullptr;
+    // Integers, bool, enums, characters, enum sets: two's-complement bits.
+    uint64_t bits = 0;
+    double real = 0.0;
+    std::string text;                // string
+    std::vector<ConstValue> elements; // array, fixed array, set, record fields, the value of an optional or union member
+    std::vector<std::pair<ConstValue, ConstValue>> entries; // dictionary, hashtable
+    bool present = true;             // optional
+    uint32_t tag = 0;                // union: member index
+};
+
+// Something evaluated during compilation: a unit-level constant, a
+// `@[compiletime] (expr)` or a `@[compiletime] { statements }` block.
+struct CompileTimeItem {
+    enum class Kind : uint8_t { constant, expression, block } kind = Kind::expression;
+    const ast::Node* node = nullptr;
+    // The code to run: an expression, or a statement group for blocks.
+    const ast::Node* code = nullptr;
+    // The synthesized message it's checked and compiled as (its locals, its calls).
+    MessageInfo* context = nullptr;
+    const Type* type = nullptr;
+    const ConstValue* value = nullptr;
+    bool evaluated = false;
+};
+
+// `NAME := expr;` at unit level: an immutable constant, evaluated at compile time.
+struct ConstantInfo {
+    std::string name;
+    const ast::Assignment* decl = nullptr;
+    CompileTimeItem* item = nullptr;
+    const Type* type = nullptr;
+    int state = 0; // 1 while checking (cycles), 2 when checked
 };
 
 // An object created by `x: C;` or `x := C f: …` that lives in its creator's
@@ -284,6 +328,12 @@ enum class SendKind : uint8_t {
     inlineDo,          // do:, keysDo:, keysAndValuesDo: with a literal block (op = selector)
     collectionRange,   // the iterable of `for x in collection`
 
+    // compile time (phase 8 of the design, phase 6 of the plan)
+    constantValue,     // `value` holds it: meta results, compile-time expressions, constants
+    metaInfo,          // `x meta` itself (`op` is the variable's name, if any)
+    metaFields,        // `T meta fields`: an array of FieldMeta, built where it's used
+    compilerDiagnostic,// `compiler error:` / `warning:` / `note:`
+
     // unions
     unionIfKindOf,     // u ifKindOf: T do: { :x | ... }; `operandType` is T
     unionIsKindOf,     // u isKindOf: T
@@ -307,6 +357,7 @@ struct SendInfo {
     uint64_t constant = 0;
     const EnumInfo* enumInfo = nullptr;
     std::vector<const FieldInfo*> fields;
+    const ConstValue* value = nullptr;
 };
 
 // One case label as an inclusive range of the subject's values, stored as
@@ -344,6 +395,17 @@ public:
     std::unordered_map<ast::NodeId, const ClassInfo*> defaultObjects;
     // Allocation statements whose object goes on the stack, keyed by the statement.
     std::unordered_map<ast::NodeId, StackObject> stackObjects;
+    std::vector<std::unique_ptr<ConstantInfo>> constants;
+    std::vector<std::unique_ptr<CompileTimeItem>> compileTimeItems;
+    std::vector<std::unique_ptr<ConstValue>> constValues;
+    // Identifiers that name a unit-level constant.
+    std::unordered_map<ast::NodeId, ConstantInfo*> constantRefs;
+    // `@[compiletime] (expr)` and `@[compiletime] { }` nodes.
+    std::unordered_map<ast::NodeId, CompileTimeItem*> compileTimeNodes;
+    // The class `meta fields` returns instances of, created on first use.
+    ClassInfo* fieldMetaClass = nullptr;
+    // Locals that only ever hold stack objects (or nil): no retain/release on them.
+    std::unordered_set<const LocalInfo*> stackOnlyLocals;
 
     const Type* typeOf(const ast::Node* node) const;
     const LocalInfo* localOf(const ast::Node* node) const;
@@ -352,6 +414,7 @@ public:
     const BlockInfo* blockOf(const ast::Node* node) const;
     const RecordInfo* recordNamed(std::string_view name) const;
     ClassInfo* classNamed(std::string_view name) const;
+    ConstantInfo* constantNamed(std::string_view name) const;
     EnumInfo* enumNamed(std::string_view name) const;
     const NamedTypeInfo* namedType(std::string_view name) const;
 };

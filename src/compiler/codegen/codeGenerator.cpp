@@ -367,7 +367,7 @@ bool Generator::producesOwned(const Node* node) const
             return true;
         }
         const sema::LocalInfo* local = model_.localOf(node);
-        return local != nullptr && local->captured;
+        return local != nullptr && local->captured && !isStackOnly(local);
     }
     if (node->kind == NodeKind::selfExpr) {
         const sema::LocalInfo* self = model_.localOf(node);
@@ -385,7 +385,7 @@ bool Generator::producesOwned(const Node* node) const
 llvm::Value* Generator::emitOwnedAs(const Node* expression, const Type* target)
 {
     llvm::Value* value = emit(expression);
-    if (sema::needsCleanup(model_.typeOf(expression)) && !producesOwned(expression)) {
+    if (sema::needsCleanup(model_.typeOf(expression)) && !producesOwned(expression) && !isStackOnlyValue(expression)) {
         retainValue(value, model_.typeOf(expression));
     }
     return widen(value, model_.typeOf(expression), target);
@@ -400,6 +400,31 @@ void Generator::storeReference(llvm::Value* address, llvm::Value* owned, const T
     llvm::Value* old = builder_.CreateLoad(llvmType(type), address, "old");
     builder_.CreateStore(owned, address);
     releaseValue(old, type);
+}
+
+bool Generator::isStackOnly(const sema::LocalInfo* local) const
+{
+    return local != nullptr && model_.stackOnlyLocals.count(local) != 0;
+}
+
+bool Generator::isStackOnlyValue(const Node* expression) const
+{
+    while (auto attributed = nodeCast<AttributedExpr>(expression)) {
+        expression = attributed->expression;
+    }
+    if (expression == nullptr || expression->kind != NodeKind::identifier || model_.selfFieldRefs.count(expression->id) != 0) {
+        return false;
+    }
+    return isStackOnly(model_.localOf(expression));
+}
+
+void Generator::storeLocal(const sema::LocalInfo* local, llvm::Value* owned)
+{
+    if (isStackOnly(local)) {
+        builder_.CreateStore(owned, addressOf(local));
+        return;
+    }
+    storeReference(addressOf(local), owned, local->type);
 }
 
 void Generator::flushTemporaries(size_t mark)
@@ -417,7 +442,7 @@ void Generator::flushTemporaries(size_t mark)
 void Generator::releaseLocals()
 {
     for (const auto& [local, slot] : slots_) {
-        if (sema::needsCleanup(local->type) && !local->isParameter) {
+        if (sema::needsCleanup(local->type) && !local->isParameter && !isStackOnly(local)) {
             releaseValue(builder_.CreateLoad(llvmType(local->type), slot), local->type);
         }
     }
@@ -661,7 +686,7 @@ void Generator::emitStatement(const Node* statement)
         else {
             value = defaultValue(local->type);
         }
-        storeReference(addressOf(local), value, local->type);
+        storeLocal(local, value);
         break;
     }
     case NodeKind::assignment: {
@@ -671,7 +696,7 @@ void Generator::emitStatement(const Node* statement)
             auto stack = model_.stackObjects.find(assignment->id);
             llvm::Value* value = stack != model_.stackObjects.end() ? emitStackObject(assignment, stack->second)
                                                                     : emitOwnedAs(assignment->value, local->type);
-            storeReference(addressOf(local), value, local->type);
+            storeLocal(local, value);
         }
         else {
             const Type* type = model_.typeOf(assignment->target);

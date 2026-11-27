@@ -662,7 +662,7 @@ Captured ideas, not yet decisions. The guiding idea: **a block is anything in `{
   - field loads retained while in use.
 
   Retain/release are runtime calls (`bobRetain`/`bobRelease`), not yet inlined. Details are in `docs/semantics.md`. Optimising the retain/release traffic (+0 field reads proven safe, inlined atomics) is later work, ideally on a mid-level IR (§11.1).
-- **[Built after phase 5]** Escape analysis and stack placement of objects (§4.3a). A stack object carries the immortal flag, so the retain/release calls on it return at once; removing those calls is part of the optimisation work above.
+- **[Built after phase 5]** Escape analysis and stack placement of objects (§4.3a). Locals that only ever hold stack objects get no retain/release calls at all. Elsewhere (`self` inside the object's own messages, parameters) a stack object still sees the calls, but its immortal flag makes them return at once.
 
 ### 6.2 Tracked allocator
 Every block the allocator hands out carries a header:
@@ -892,7 +892,7 @@ Runtime unit tests: gtest needs the CRT, so `bobTests` compiles the runtime sour
 | 5 ✅ | Built-ins: `string` (UTF-8, views, conversions), `array`, `dictionary`, `hashtable`, `set` with element-type inference and inferred unions, COW | String/collection test suite incl. grapheme cases. **Done 2026-11-27:** enums (ordinal messages, `fromValue:`, enum sets as bitmasks, exhaustive `case`), subranges (checked in, free out), distinct and `@[alias]` named types, optionals of every value type; immutable ARC strings with byte/codepoint/grapheme views (UAX #29 tables from Unicode 16.0 via `tools/unicodegen`, all of `GraphemeBreakTest.txt` passes), conversions and `printString`; COW `array`, `dictionary`, `hashtable`, `set`, fixed arrays indexed by enums or subranges; element types inferred from literals and first stores; mixed literals give a shared class/protocol or a closed union (`case`, `ifKindOf:do:`, `printString`); `main:` gets real `args`. 166/166 tests (Release; no Debug LLVM on the build machine); run programs leak-free at -O0 and -O2. Rules as built: `docs/semantics.md`. Not done yet: per-call-site specialisation of `nums:array` parameters (an annotation is required), opaque string indices and slicing, normalisation/case mapping, `select:`/`collect:`, shortest round-trip real printing |
 | 6 | Compile-time execution via ORC; `compiler` object; `meta`; static asserts; constant tables. Revisit type-returning compile-time messages under the §4.5 leash rules | Compile-time CRC table and layout asserts work; decision made on `RingBuffer of: T` |
 | 7 | Modules/libraries: interface files, imports, separate compilation, versioning | Multi-module program with a static lib |
-| 8 | Reflection levels + Reflector capability; escaping closures; `weak`/`unowned` | Reflection tests per level, including denied access |
+| 8 | Reflection levels + Reflector capability; escaping closures; `weak`/`unowned`; a runtime query for whether an object is on the stack or the heap (a separate header flag bit, since string literals are immortal too) | Reflection tests per level, including denied access |
 | 9 | Systems profile: `unsafe`, pointers, volatile, packed/align, inline asm, freestanding target | Boots a UEFI "hello" or a minimal kernel under QEMU |
 | 10 | Python bindings over the semantic model | Script enumerates classes/sends in a module |
 

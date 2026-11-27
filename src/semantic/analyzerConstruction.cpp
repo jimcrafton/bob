@@ -188,6 +188,7 @@ const Type* Analyzer::checkConstructor(const Node* send, ClassInfo* info, const 
               "constructing a '" + info->name + "' needs " + missing + " (no default can be built for it)");
         return types_.error();
     }
+    noteConstruct(info);
     addSend(send, SendKind::constructObject, selector, nullptr, info->type);
     model_.sends[send->id].classInfo = info;
     model_.sends[send->id].fields = fields;
@@ -215,6 +216,7 @@ void Analyzer::checkDefaultObject(const VariableDecl* decl, const Type* type)
         return;
     }
     model_.defaultObjects[decl->id] = info;
+    noteConstruct(info);
 }
 
 }

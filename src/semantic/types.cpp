@@ -42,6 +42,8 @@ TypeTable::TypeTable()
     }
     builtins_["block"] = own({TypeKind::blockToInfer, "block"});
 
+    compiler_ = own({TypeKind::compilerObject, "compiler"});
+
     const char* viewNames[] = {"string bytes", "string codepoints", "string graphemes"};
     const Type* viewElements[] = {integer(8, false), character_, string_};
     for (int i = 0; i < 3; ++i) {
@@ -208,6 +210,18 @@ const Type* TypeTable::unionOf(std::vector<const Type*> members)
     Type* type = own({TypeKind::unionType, name});
     type->members = members;
     unions_[members] = type;
+    return type;
+}
+
+const Type* TypeTable::metaInfoOf(const Type* subject)
+{
+    auto it = metaInfos_.find(subject);
+    if (it != metaInfos_.end()) {
+        return it->second;
+    }
+    Type* type = own({TypeKind::metaInfo, typeName(subject) + " meta"});
+    type->inner = subject;
+    metaInfos_[subject] = type;
     return type;
 }
 

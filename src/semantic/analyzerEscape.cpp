@@ -47,6 +47,14 @@ struct Site {
     bool heap = false;
 };
 
+// What a variable is set to, for working out which variables only ever hold
+// stack objects: an allocation statement, nil, another variable, or anything else.
+struct Definition {
+    enum Kind { allocation, nil, copyOf, other } kind = other;
+    NodeId statement = 0;
+    const LocalInfo* from = nullptr;
+};
+
 struct Effect {
     enum Kind { none, escape, alias } kind = none;
     const LocalInfo* target = nullptr;
@@ -121,6 +129,7 @@ public:
             if (hasBody(message.get())) {
                 analyze(message.get());
                 placeObjects(message.get());
+                findStackOnlyLocals();
             }
         }
     }
@@ -141,6 +150,7 @@ private:
         declared_.clear();
         tracked_.clear();
         sites_.clear();
+        definitions_.clear();
         scope_ = Scope{};
         nextLoop_ = 0;
         if (message->self != nullptr) {
@@ -458,6 +468,9 @@ private:
             if (bound != nullptr) {
                 declare(bound);
             }
+            if (bound != nullptr) {
+                define(bound, node, receiver, false);
+            }
             walkExpression(receiver, bound != nullptr ? aliasEffect(bound) : noEffect());
             Effect valueEffect = isReference(canonical(send->resultType)) ? effect : noEffect();
             for (const Node* argument : arguments) {
@@ -549,6 +562,7 @@ private:
             else if (const Node* send = constructorSend(decl->initializer)) {
                 addSite(decl, local, send, model_.sendOf(send)->classInfo);
             }
+            define(local, decl, decl->initializer, object != model_.defaultObjects.end() || constructorSend(decl->initializer) != nullptr);
             return;
         }
         case NodeKind::assignment: {
@@ -562,6 +576,7 @@ private:
                 if (const Node* send = constructorSend(assignment->value)) {
                     addSite(assignment, local, send, model_.sendOf(send)->classInfo);
                 }
+                define(local, assignment, assignment->value, constructorSend(assignment->value) != nullptr);
                 return;
             }
             if (auto access = nodeCast<FieldAccess>(assignment->target)) {
@@ -637,6 +652,72 @@ private:
         }
     }
 
+    // ---- definitions
+
+    void define(const LocalInfo* local, const Node* statement, const Node* value, bool allocates)
+    {
+        if (!isTracked(local)) {
+            return;
+        }
+        Definition definition;
+        while (auto attributed = nodeCast<AttributedExpr>(value)) {
+            value = attributed->expression;
+        }
+        if (allocates) {
+            definition.kind = Definition::allocation;
+            definition.statement = statement->id;
+        }
+        else if (value == nullptr || value->kind == NodeKind::nilLiteral) {
+            definition.kind = Definition::nil;
+        }
+        else if (const LocalInfo* from = trackedLocal(value)) {
+            definition.kind = Definition::copyOf;
+            definition.from = from;
+        }
+        definitions_[local].push_back(definition);
+    }
+
+    // A variable is stack-only when every definition is an allocation placed on
+    // the stack, nil, or a copy of another stack-only variable. Parameters, loop
+    // variables and the like have no recorded definitions, so they never are.
+    void findStackOnlyLocals()
+    {
+        std::set<const LocalInfo*> candidates;
+        for (const auto& [local, list] : definitions_) {
+            candidates.insert(local);
+        }
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (auto it = candidates.begin(); it != candidates.end();) {
+                bool ok = true;
+                for (const Definition& definition : definitions_[*it]) {
+                    switch (definition.kind) {
+                    case Definition::allocation:
+                        ok = ok && model_.stackObjects.count(definition.statement) != 0;
+                        break;
+                    case Definition::nil:
+                        break;
+                    case Definition::copyOf:
+                        ok = ok && candidates.count(definition.from) != 0;
+                        break;
+                    case Definition::other:
+                        ok = false;
+                        break;
+                    }
+                }
+                if (ok) {
+                    ++it;
+                }
+                else {
+                    it = candidates.erase(it);
+                    changed = true;
+                }
+            }
+        }
+        model_.stackOnlyLocals.insert(candidates.begin(), candidates.end());
+    }
+
     // ---- placement
 
     static bool isPrefix(const std::vector<int>& prefix, const std::vector<int>& path)
@@ -708,6 +789,7 @@ private:
     std::map<const LocalInfo*, Scope> declared_;
     std::set<const LocalInfo*> tracked_;
     std::vector<Site> sites_;
+    std::map<const LocalInfo*, std::vector<Definition>> definitions_;
     Scope scope_;
     int nextLoop_ = 0;
 };

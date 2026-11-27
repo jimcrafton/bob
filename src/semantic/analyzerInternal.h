@@ -34,6 +34,8 @@ struct FunctionContext {
     std::vector<LocalInfo*>* locals = nullptr;
     bool allowReturn = true;
     int loopDepth = 0;
+    // Compile-time code: @[compiletime] messages, expressions and blocks, constants.
+    bool compileTime = false;
 };
 
 // Escape analysis and stack placement (analyzerEscape.cpp); runs on a complete model.
@@ -160,6 +162,26 @@ private:
     bool isAssignableTarget(const Node* node) const;
     // The type an untyped literal adopts from what is expected (unwrapping T? and unions).
     const Type* literalExpectation(const Type* expected, bool isRealLiteral) const;
+
+    // compile-time code, constants, `meta`, `compiler` (analyzerCompileTime.cpp)
+    void declareConstant(const Assignment* assignment);
+    void declareUnitBlock(const StatementGroup* group);
+    void checkConstant(ConstantInfo* constant);
+    MessageInfo* compileTimeContext(const std::string& name);
+    // Checks an item's code in its own context, where runtime variables aren't visible.
+    const Type* checkCompileTimeItem(CompileTimeItem* item, const Type* expected);
+    const Type* checkCompileTimeExpression(const AttributedExpr* expression, const Type* expected);
+    void checkCompileTimeBlock(const StatementGroup* group);
+    // A value that can be computed at compile time and embedded in the program.
+    bool requireEmbeddable(const Node* node, const Type* type, const char* what);
+    const Type* checkMeta(const UnarySend* send, const Type* receiver);
+    const Type* checkMetaQuery(const UnarySend* send, const Type* metaType);
+    const Type* checkCompilerSend(const KeywordSend* send);
+    const ConstValue* makeConst(ConstValue value);
+    ClassInfo* fieldMetaClass();
+    // Records what the current function calls, for ordering compile-time evaluation.
+    void noteCall(const Node* site, const MessageInfo* target);
+    void noteConstruct(const ClassInfo* info);
 
     // strings, containers and unions (analyzerContainers.cpp)
     // Recorded on the `for` statement: the iterable may itself be a send (`s bytes`).

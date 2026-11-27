@@ -518,3 +518,24 @@ TEST(Semantic, StackPlacementCanBeRequiredOrRefused)
     EXPECT_TRUE(onStack(*b, "ok"));
     EXPECT_FALSE(onStack(*b, "big"));
 }
+
+TEST(Semantic, LocalsHoldingOnlyStackObjectsAreKnown)
+{
+    auto a = analyzeMain("pt := Node value: 1;\nq := pt;\nmaybe: Node? := nil;\nmaybe := q;\n"
+                         "maybe ifNotNil: { :m | m value; };\nheld: Node;\nother: Node? := held;\nholder: Node;\nholder next: held;\n"
+                         "mixed := Node value: 2;\nmixed := self make;\nreturn 0;",
+                         "@[static] msg make [Node] { n := Node value: 3; return n; }", escapeClasses);
+    EXPECT_EQ(a->diagnostics.errorCount(), 0u) << a->text();
+    auto stackOnly = [&](const std::string& name) {
+        const bob::sema::LocalInfo* local = localNamed(*a, name);
+        return local != nullptr && a->model.stackOnlyLocals.count(local) != 0;
+    };
+    EXPECT_TRUE(stackOnly("pt"));
+    EXPECT_TRUE(stackOnly("q"));
+    EXPECT_TRUE(stackOnly("maybe"));
+    EXPECT_TRUE(stackOnly("m"));
+    EXPECT_FALSE(stackOnly("held"));  // escapes into holder's field, so it's on the heap
+    EXPECT_FALSE(stackOnly("other"));
+    EXPECT_FALSE(stackOnly("mixed")); // also holds a message result
+    EXPECT_FALSE(stackOnly("n"));     // returned
+}

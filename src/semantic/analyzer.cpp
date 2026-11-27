@@ -119,6 +119,14 @@ void Analyzer::run(const Unit* unit)
     for (const auto& info : model_.classes) {
         checkFieldInitializers(info.get());
     }
+    for (const auto& constant : model_.constants) {
+        checkConstant(constant.get());
+    }
+    for (const auto& item : model_.compileTimeItems) {
+        if (item->kind == CompileTimeItem::Kind::block && item->context == nullptr) {
+            checkCompileTimeItem(item.get(), nullptr);
+        }
+    }
     for (MessageInfo* message : model_.program.messages) {
         ensureChecked(message);
     }
@@ -188,8 +196,18 @@ void Analyzer::collect(const Unit* unit)
         case NodeKind::namespaceDecl:
             unsupported(item, "namespaces", "phase 7");
             break;
+        case NodeKind::assignment:
+            declareConstant(static_cast<const Assignment*>(item));
+            break;
+        case NodeKind::statementGroup:
+            if (hasAttribute(item, "compiletime")) {
+                declareUnitBlock(static_cast<const StatementGroup*>(item));
+                break;
+            }
+            error(item, "sema.unitLevelCode", "statements at unit level run at compile time: mark the group '@[compiletime] { … }'");
+            break;
         default:
-            unsupported(item, "code and variables at unit level", "a later phase; put the code in a message");
+            unsupported(item, "code and variables at unit level", "a later phase; put the code in a message, or declare a constant 'NAME := value;'");
             break;
         }
     }
@@ -473,7 +491,8 @@ MessageInfo* Analyzer::declareMethod(ClassInfo* info, const MessageDecl* decl)
     message->isInstance = !isStatic;
     message->isProtocolDefault = info->isProtocol && decl->body != nullptr;
     message->isRequired = info->isProtocol && decl->body == nullptr;
-    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "static"});
+    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "static", "compiletime"});
+    message->compileTimeOnly = hasAttribute(decl, "compiletime");
     message->symbolName = "bob." + info->name + (isStatic ? ".class." : ".") + decl->selector;
 
     if (message->isInstance) {
@@ -651,10 +670,11 @@ const Type* Analyzer::checkClassSideSend(const Node* send, const ClassInfo* info
     }
     MessageInfo* target = it->second;
     ensureChecked(target);
+    noteCall(send, target);
     for (size_t i = 0; i < arguments.size(); ++i) {
         checkArgument(arguments[i], target->params[i]->type);
     }
-    addSend(send, SendKind::classStaticCall, selector, nullptr, target->returnType);
+    addSend(send, SendKind::classStaticCall), selector, nullptr, target->returnType);
     model_.sends[send->id].target = target;
     return target->returnType;
 }
@@ -724,6 +744,7 @@ const Type* Analyzer::checkInstanceSend(const Node* send, const Node* receiverNo
         return types_.error();
     }
     ensureChecked(target);
+    noteCall(send, target);
     for (size_t i = 0; i < arguments.size(); ++i) {
         checkArgument(arguments[i], target->params[i]->type);
     }
@@ -909,7 +930,8 @@ void Analyzer::declareMessage(const MessageDecl* decl)
     message->selector = decl->selector;
     message->decl = decl;
     message->symbolName = "bob." + model_.program.name + "." + decl->selector;
-    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "static"});
+    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "static", "compiletime"});
+    message->compileTimeOnly = hasAttribute(decl, "compiletime");
     message->isMain = decl->selector == "main" || decl->selector == "main:";
 
     for (const Node* node : decl->params) {
@@ -1142,6 +1164,7 @@ void Analyzer::ensureChecked(MessageInfo* message)
 void Analyzer::checkMessage(MessageInfo* message)
 {
     context_ = FunctionContext{message, nullptr, &message->locals, true, 0};
+    context_.compileTime = message->compileTimeOnly;
     overflow_ = {message->overflow};
     pushScope();
     if (message->self != nullptr) {
@@ -1307,6 +1330,10 @@ void Analyzer::checkStatement(const Node* statement)
         checkCase(static_cast<const CaseStmt*>(statement));
         break;
     case NodeKind::statementGroup:
+        if (hasAttribute(statement, "compiletime")) {
+            checkCompileTimeBlock(static_cast<const StatementGroup*>(statement));
+            break;
+        }
         checkGroup(statement);
         break;
     case NodeKind::error:
@@ -1337,6 +1364,11 @@ void Analyzer::checkAssignment(const Assignment* assignment)
             remember(identifier, field->type);
             const Type* valueType = check(assignment->value, field->type);
             requireAssignable(assignment->value, valueType, field->type, "assign");
+            return;
+        }
+        if (model_.constantNamed(identifier->name) != nullptr) {
+            error(identifier, "sema.assignToConstant", "'" + identifier->name + "' is a constant and can't be assigned");
+            check(assignment->value, nullptr);
             return;
         }
         if (isTypeName(identifier->name) || (!model_.program.name.empty() && identifier->name == model_.program.name)) {
@@ -1711,6 +1743,10 @@ const Type* Analyzer::check(const Node* node, const Type* expected)
         break;
     case NodeKind::attributedExpr: {
         auto attributed = static_cast<const AttributedExpr*>(node);
+        if (hasAttribute(attributed, "compiletime")) {
+            type = checkCompileTimeExpression(attributed, expected);
+            break;
+        }
         overflow_.push_back(overflowFrom(attributed, overflow(), {"overflow"}));
         type = check(attributed->expression, expected);
         overflow_.pop_back();
@@ -1792,6 +1828,21 @@ const Type* Analyzer::checkIdentifier(const Identifier* identifier)
     if (!model_.program.name.empty() && identifier->name == model_.program.name) {
         return model_.program.type;
     }
+    if (ConstantInfo* constant = model_.constantNamed(identifier->name)) {
+        checkConstant(constant);
+        model_.constantRefs[identifier->id] = constant;
+        if (context_.message != nullptr) {
+            context_.message->constantsUsed.push_back(constant);
+        }
+        return constant->type;
+    }
+    if (identifier->name == "compiler") {
+        if (!context_.compileTime) {
+            error(identifier, "sema.compilerOutsideCompileTime", "the 'compiler' object exists only in compile-time code ('@[compiletime]' blocks, expressions and messages)");
+            return types_.error();
+        }
+        return types_.compilerObject();
+    }
     if (const RecordInfo* record = model_.recordNamed(identifier->name)) {
         return types_.metaOf(record->type);
     }
@@ -1857,6 +1908,12 @@ const Type* Analyzer::checkUnary(const UnarySend* send, const Type* expected)
         return types_.error();
     }
     const std::string& selector = send->selector;
+    if (selector == "meta") {
+        return checkMeta(send, receiver);
+    }
+    if (receiver->kind == TypeKind::metaInfo) {
+        return checkMetaQuery(send, receiver);
+    }
     if (isClass(receiver) || isOptional(receiver)) {
         return checkInstanceSend(send, send->receiver, receiver, selector, {}, send->selectorRange);
     }
@@ -1872,6 +1929,8 @@ const Type* Analyzer::checkUnary(const UnarySend* send, const Type* expected)
             error(send->selectorRange, "sema.unknownMessage", "'" + receiver->name + "' has no message '" + selector + "'");
             return types_.error();
         }
+        ensureChecked(it->second);
+        noteCall(send, it->second);
         addSend(send, SendKind::staticCall, selector, nullptr, it->second->returnType);
         model_.sends[send->id].target = it->second;
         return it->second->returnType;
@@ -2101,6 +2160,9 @@ const Type* Analyzer::checkKeyword(const KeywordSend* send, const Type* expected
         }
         return types_.error();
     }
+    if (receiver->kind == TypeKind::compilerObject) {
+        return checkCompilerSend(send);
+    }
     if (isOptional(receiver) && (selector == "ifNil:" || selector == "ifNotNil:" || selector == "ifNil:ifNotNil:" ||
                                  selector == "ifNotNil:ifNil:")) {
         return checkInlinedIfNil(send, receiver, expected);
@@ -2165,6 +2227,7 @@ const Type* Analyzer::checkKeyword(const KeywordSend* send, const Type* expected
         }
         MessageInfo* target = it->second;
         ensureChecked(target);
+        noteCall(send, target);
         for (size_t i = 0; i < send->arguments.size(); ++i) {
             const Type* parameterType = target->params[i]->type;
             if (isBlock(parameterType) && parameterType->pending) {

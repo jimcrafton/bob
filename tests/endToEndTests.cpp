@@ -232,3 +232,21 @@ TEST_F(EndToEnd, DumpLlvmPrintsTheModule)
     EXPECT_NE(output.find("define i32 @bobMain(ptr"), std::string::npos) << output;
     EXPECT_NE(output.find("llvm.smul.with.overflow.i32"), std::string::npos) << output;
 }
+
+TEST_F(EndToEnd, StackObjectsHaveNoRefcountCalls)
+{
+    bob::driver::DriverOptions options;
+    options.inputPath = std::string(BOB_TEST_PROGRAMS_DIR) + "/run/stackRefcount.bob";
+    options.dumpLlvm = true;
+    std::string output;
+    std::string diagnostics;
+    llvm::raw_string_ostream out(output);
+    llvm::raw_string_ostream err(diagnostics);
+    bob::driver::Driver driver(out, err);
+    ASSERT_EQ(driver.run(options), 0) << diagnostics;
+    size_t begin = output.find("define internal i32 @\"bob.stackRefcount.main:\"");
+    ASSERT_NE(begin, std::string::npos) << output;
+    std::string mainBody = output.substr(begin, output.find("\n}\n", begin) - begin);
+    EXPECT_EQ(mainBody.find("@bobRetain"), std::string::npos) << mainBody;
+    EXPECT_EQ(mainBody.find("@bobRelease"), std::string::npos) << mainBody;
+}

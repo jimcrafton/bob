@@ -121,7 +121,7 @@ There's no `new` (design §4.3a).
   - Every variable it's assigned to is declared in the same function and the same loop body. That lets the next pass of a loop, or the frame's exit, reuse the memory safely.
   - The object is at most 4 KB (larger ones need `@[stack]`).
 - Everything else goes on the heap, including `copy` and other message results, which are built inside the message.
-- A stack object has the immortal flag, so retain/release on it do nothing and it never appears in the leak report. Its fields are released when the function returns, or when a loop runs its declaration again.
+- **No reference counting on stack objects.** A local whose every assignment is a stack object, nil, or another such local (`SemanticModel::stackOnlyLocals`) gets no retain or release calls at all: not on stores, loads, `ifNotNil:` bindings or function exit. A stack object reached some other way (as `self` inside its own messages, or through a parameter) still sees the ordinary calls, but it carries the immortal flag, so they return at once. It never appears in the leak report. Its fields are released when the function returns, or when a loop runs its declaration again.
 - `@[stack] x := C f: …;` *requires* stack placement: if the object escapes, it's `sema.stackEscape` at the point where it escapes, with the reason. `@[heap]` keeps it on the heap.
 - Both attributes apply only to declarations that create an object (`sema.invalidAttribute` otherwise). Records and other values already live in the variable.
 

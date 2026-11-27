@@ -83,6 +83,16 @@ ClassInfo* SemanticModel::classNamed(std::string_view name) const
     return nullptr;
 }
 
+ConstantInfo* SemanticModel::constantNamed(std::string_view name) const
+{
+    for (const auto& info : constants) {
+        if (info->name == name) {
+            return info.get();
+        }
+    }
+    return nullptr;
+}
+
 EnumInfo* SemanticModel::enumNamed(std::string_view name) const
 {
     for (const auto& info : enums) {

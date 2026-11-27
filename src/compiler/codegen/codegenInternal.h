@@ -70,6 +70,10 @@ private:
     bool producesOwned(const Node* node) const;
     llvm::Value* emitOwnedAs(const Node* expression, const Type* target);
     void storeReference(llvm::Value* address, llvm::Value* owned, const Type* type);
+    // Locals that only ever hold stack objects get no retain/release at all.
+    bool isStackOnly(const sema::LocalInfo* local) const;
+    bool isStackOnlyValue(const Node* expression) const;
+    void storeLocal(const sema::LocalInfo* local, llvm::Value* owned);
     void addTemporary(llvm::Value* value, const Type* type);
     void flushTemporaries(size_t mark);
     void releaseLocals();

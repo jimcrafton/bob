@@ -244,8 +244,10 @@ llvm::Value* Generator::emitInlinedIfNil(const KeywordSend* send, const sema::Se
             if (!forNil) {
                 const sema::LocalInfo* bound = model_.blockOf(literal)->params[0];
                 llvm::Value* inner = optionalValue(value, optional);
-                retainValue(inner, bound->type);
-                storeReference(addressOf(bound), inner, bound->type);
+                if (!isStackOnly(bound)) {
+                    retainValue(inner, bound->type);
+                }
+                storeLocal(bound, inner);
             }
             size_t mark = temporaries_.size();
             result = wantsValue ? emitInlinedBody(literal, resultType) : nullptr;
