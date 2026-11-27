@@ -103,7 +103,7 @@ program enums, 0.1.0
             }
             failures := failures + (self check: bits = 3 id: 18);
 
-            light := Light new;
+            light: Light;
             light see: Color red;
             light see: Color red;
             light see: Color blue;

@@ -50,6 +50,16 @@ private:
     llvm::GlobalVariable* selectorGlobal(const std::string& selector);
     void declareClass(const sema::ClassInfo* info);
     void emitClass(const sema::ClassInfo* info);
+    void emitCopy(const sema::MessageInfo* message);
+    // Builds an object: on the heap, or in `place` (a stack slot) when given.
+    llvm::Value* emitConstruct(const KeywordSend* send, const sema::SendInfo& info, llvm::Value* place = nullptr);
+    // Stack objects (design §4.3a): slots are made when a function starts, the
+    // object is built at its declaration, and its fields are released when the
+    // frame exits or the declaration runs again.
+    void allocateStackObjects(const sema::MessageInfo* message, const sema::BlockInfo* block);
+    llvm::Value* emitStackObject(const Node* statement, const sema::StackObject& object);
+    void initializeObjectHeader(llvm::Value* object, const sema::ClassInfo* info);
+    void destroyStackObjects();
     llvm::Value* fieldAddress(llvm::Value* object, const sema::FieldInfo* field);
     llvm::Value* selfValue();
     llvm::FunctionType* methodType(const sema::MessageInfo* message);
@@ -178,6 +188,7 @@ private:
     std::unordered_map<const sema::ClassInfo*, llvm::GlobalVariable*> classGlobals_;
     std::unordered_map<const sema::ClassInfo*, llvm::Function*> initFunctions_;
     std::unordered_map<const sema::ClassInfo*, llvm::Function*> newFunctions_;
+    std::unordered_map<const sema::ClassInfo*, llvm::Function*> initsFunctions_;
     std::unordered_map<const sema::ClassInfo*, llvm::Function*> destroyFunctions_;
     std::unordered_map<std::string, llvm::GlobalVariable*> selectors_;
     llvm::Function* function_ = nullptr;
@@ -187,6 +198,12 @@ private:
     std::unordered_map<const sema::MessageInfo*, llvm::Function*> functions_;
     std::unordered_map<const sema::RecordInfo*, llvm::StructType*> structs_;
     std::unordered_map<const sema::LocalInfo*, llvm::AllocaInst*> slots_;
+    struct StackSlot {
+        llvm::AllocaInst* object;
+        llvm::AllocaInst* built;
+        const sema::ClassInfo* classInfo;
+    };
+    std::unordered_map<ast::NodeId, StackSlot> stackSlots_;
 
     std::unordered_map<const Type*, llvm::StructType*> unionTypes_;
     std::unordered_map<const Type*, llvm::Function*> retainCallbacks_;

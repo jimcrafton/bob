@@ -64,9 +64,8 @@ program collections, 0.1.0
             failures := failures + (self check: letters = 3 and (self names) count = 2 id: 5);
             failures := failures + (self check: args count = 0 id: 6);
 
-            inventory := Inventory new;
-            p := Part new;
-            p weight: 7;
+            inventory: Inventory;
+            p := Part weight: 7;
             inventory add: p;
             inventory add: p;
             failures := failures + (self check: inventory totalWeight = 14 id: 7);

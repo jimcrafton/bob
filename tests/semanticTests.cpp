@@ -290,7 +290,7 @@ bob::sema::SendKind kindOfSend(const Analyzed& a, const std::string& selector, c
 
 TEST(Semantic, DispatchTierFollowsTheClosedHierarchy)
 {
-    auto a = analyzeMain("x := A new;\ny := B new;\nz: P := C new;\nx f;\nx g;\ny f;\nz h;\nreturn 0;", "",
+    auto a = analyzeMain("x: A;\ny: B;\nc: C;\nz: P := c;\nx f;\nx g;\ny f;\nz h;\nreturn 0;", "",
                          "@[protocol] class P { msg h [int32]; }\n"
                          "class A { msg f [int32] { return 1; } msg g [int32] { return 2; } }\n"
                          "class B inherits A { msg f [int32] { return 3; } }\n"
@@ -322,7 +322,7 @@ TEST(Semantic, OverridesMustKeepTheSignature)
 
 TEST(Semantic, FieldsArePrivateToTheClass)
 {
-    auto a = analyzeMain("c := C new;\nv := c.secret;\nw := c secret;\nu := c open;\nc open: 3;\nreturn 0;", "",
+    auto a = analyzeMain("c: C;\nv := c.secret;\nw := c secret;\nu := c open;\nc open: 3;\nreturn 0;", "",
                          "class C { private { secret: int32; } public { open: int32; } }");
     EXPECT_TRUE(a->hasCode("sema.privateField")) << a->text();
     EXPECT_EQ(a->diagnostics.errorCount(), 2u) << a->text();
@@ -330,7 +330,7 @@ TEST(Semantic, FieldsArePrivateToTheClass)
 
 TEST(Semantic, ReferencesAreNeverNilUnlessOptional)
 {
-    auto a = analyzeMain("x: C;\ny: C := nil;\nz: C? := nil;\nz f;\nreturn 0;", "", "class C { msg f { } }\nclass D { private { c: C; } }");
+    auto a = analyzeMain("x: C;\ny: C := nil;\nz: C? := nil;\nz f;\nreturn 0;", "", "class C { msg f { } }\n@[protocol] class Q { }\nclass D { private { q: Q; } }");
     EXPECT_TRUE(a->hasCode("sema.uninitializedReference")) << a->text();
     EXPECT_TRUE(a->hasCode("sema.typeMismatch")) << a->text();
     EXPECT_TRUE(a->hasCode("sema.optionalReceiver")) << a->text();
@@ -338,7 +338,7 @@ TEST(Semantic, ReferencesAreNeverNilUnlessOptional)
 
 TEST(Semantic, ClassRulesMisc)
 {
-    auto a = analyzeMain("p := P new;\nreturn 0;", "",
+    auto a = analyzeMain("p: P;\nreturn 0;", "",
                          "@[protocol] class P { }\nclass C inherits P { }\nrecord R { c: P; }");
     EXPECT_TRUE(a->hasCode("sema.newProtocol")) << a->text();
     EXPECT_TRUE(a->hasCode("sema.invalidBase")) << a->text();
@@ -407,4 +407,114 @@ TEST(Semantic, MutatingSendsNeedAVariable)
 {
     auto a = analyzeMain("[1, 2] add: 3;\nreturn 0;", "@[static] msg make [array of: int32] { return [1]; }");
     EXPECT_TRUE(a->hasCode("sema.notAssignable")) << a->text();
+}
+
+TEST(Semantic, ObjectsAreBuiltFromPublicFields)
+{
+    auto a = analyzeMain("a := Account owner: alice;\n"
+                         "x := Account new;\n"
+                         "y := Account balance: 1 owner: alice;\n"
+                         "z := Account secret: 3;\n"
+                         "h := Holder;\n"
+                         "missing: Holder;\n"
+                         "k := Holder shape: s;\n"
+                         "c := a copy;\n"
+                         "a init;\n"
+                         "return 0;",
+                         "",
+                         "@[protocol] class Shape { msg area [int32]; }\n"
+                         "class Square implements Shape { msg area [int32] { return 1; } }\n"
+                         "class Person { }\n"
+                         "class Account { public { owner: Person; balance: int64; } private { secret: int32; } msg init { } }\n"
+                         "class Holder { public { shape: Shape; } }\n"
+                         "class Bad { msg init: x:int32 { } }");
+    EXPECT_TRUE(a->hasCode("sema.undeclared")) << a->text();   // alice, s
+    EXPECT_TRUE(a->hasCode("sema.unknownMessage")) << a->text(); // new, secret:, init
+    EXPECT_TRUE(a->hasCode("sema.constructorOrder")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.uninitializedReference")) << a->text(); // missing: Holder
+    EXPECT_TRUE(a->hasCode("sema.invalidInit")) << a->text();
+    std::string text = a->text();
+    EXPECT_NE(text.find("there's no 'new'"), std::string::npos) << text;
+    EXPECT_NE(text.find("Holder shape: …"), std::string::npos) << text;
+    const bob::sema::LocalInfo* copy = localNamed(*a, "c");
+    ASSERT_NE(copy, nullptr);
+    EXPECT_EQ(copy->type->name, "Account");
+}
+
+TEST(Semantic, RequiredFieldsMustBePassed)
+{
+    auto a = analyzeMain("sq: Square;\nok := Holder shape: sq;\nbad := Holder count: 1;\nreturn 0;", "",
+                         "@[protocol] class Shape { msg area [int32]; }\n"
+                         "class Square implements Shape { msg area [int32] { return 1; } }\n"
+                         "class Holder { public { shape: Shape; count: int32; } }\n"
+                         "class Hidden { private { shape: Shape; } }");
+    EXPECT_TRUE(a->hasCode("sema.missingConstructorArgument")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.uninitializedReference")) << a->text(); // Hidden's private required field
+    EXPECT_EQ(a->diagnostics.errorCount(), 2u) << a->text();
+}
+
+namespace {
+
+bool onStack(const Analyzed& analyzed, const std::string& local)
+{
+    for (const auto& [id, object] : analyzed.model.stackObjects) {
+        if (object.local->name == local) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const char* escapeClasses =
+    "@[protocol] class Sink { msg take: n:Node; }\n"
+    "class Node { public { value: int32; next: Node?; } msg value2 [int32] { return value * 2; } }\n"
+    "class Keeper implements Sink { private { kept: Node?; } msg take: n:Node { kept := n; } }\n"
+    "class Looker implements Sink { msg take: n:Node { n value; } }\n"
+    "class Registry { private { all: array of: Node; } msg add: n:Node { all add: n; } }\n"
+    "class SelfKeeper { private { me: SelfKeeper?; } msg init { me := self; } }\n";
+
+}
+
+TEST(Semantic, ObjectsThatDontEscapeGoOnTheStack)
+{
+    auto a = analyzeMain("local: Node;\nlocal value: 3;\nn := local value2;\n"
+                         "copied: Node;\nalias := copied;\nalias value;\n"
+                         "kept := Node value: 1;\nholder: Node;\nholder next: kept;\n"
+                         "stored: Node;\nregistry: Registry;\nregistry add: stored;\n"
+                         "back: Node;\n"
+                         "viaProtocol: Node;\nsink: Keeper;\ns: Sink := sink;\ns take: viaProtocol;\n"
+                         "selfish: SelfKeeper;\n"
+                         "outer: Node?;\nfor i in 1 to: 3 {\n  inner: Node;\n  outer := inner;\n}\n"
+                         "loopLocal := 0;\nfor j in 1 to: 3 {\n  tmp := Node value: j;\n  loopLocal := loopLocal + tmp value;\n}\n"
+                         "return self give: back;",
+                         "@[static] msg give: n:Node [int32] { return n value; }", escapeClasses);
+    EXPECT_EQ(a->diagnostics.errorCount(), 0u) << a->text();
+    EXPECT_TRUE(onStack(*a, "local"));
+    EXPECT_TRUE(onStack(*a, "copied"));    // its alias doesn't escape either
+    EXPECT_FALSE(onStack(*a, "kept"));     // stored into holder's field
+    EXPECT_TRUE(onStack(*a, "holder"));
+    EXPECT_FALSE(onStack(*a, "stored"));   // Registry add: keeps it in a container
+    EXPECT_TRUE(onStack(*a, "back"));      // `give:` only reads it
+    EXPECT_FALSE(onStack(*a, "viaProtocol")); // some implementation of `take:` keeps it
+    EXPECT_FALSE(onStack(*a, "selfish"));  // its init keeps self
+    EXPECT_FALSE(onStack(*a, "inner"));    // assigned to a variable that outlives the loop
+    EXPECT_TRUE(onStack(*a, "tmp"));
+}
+
+TEST(Semantic, StackPlacementCanBeRequiredOrRefused)
+{
+    auto a = analyzeMain("@[stack] ok: Node;\n@[stack] bad: Node;\nholder: Node;\nholder next: bad;\n"
+                         "@[heap] big: Node;\n@[stack] n := 5;\n@[stack] @[heap] both: Node;\nreturn 0;",
+                         "", escapeClasses);
+    EXPECT_TRUE(a->hasCode("sema.invalidAttribute")) << a->text();
+    std::string text = a->text();
+    EXPECT_NE(text.find("applies to a declaration that creates an object"), std::string::npos) << text;
+    EXPECT_NE(text.find("either @[stack] or @[heap]"), std::string::npos) << text;
+
+    auto b = analyzeMain("@[stack] ok: Node;\n@[stack] bad: Node;\nholder: Node;\nholder next: bad;\n@[heap] big: Node;\nreturn 0;", "",
+                         escapeClasses);
+    EXPECT_TRUE(b->hasCode("sema.stackEscape")) << b->text();
+    EXPECT_NE(b->text().find("'bad' is @[stack], but the object escapes: stored into a field"), std::string::npos) << b->text();
+    EXPECT_TRUE(onStack(*b, "ok"));
+    EXPECT_FALSE(onStack(*b, "big"));
 }

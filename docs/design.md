@@ -189,7 +189,7 @@ class Bob inherits Man implements Printable {
     }
 
     @[static] msg named: n:string [Bob] {            # class-side message
-        b: Bob := Bob new;
+        b: Bob;
         b.name := n;      # field access; allowed only inside the class
         return b;
     }
@@ -233,7 +233,7 @@ import core.io;
 
     extends hello {
         @[static] msg main: args:array [int32] {
-            c: Counter := Counter new;
+            c: Counter;
             for i in 1 to: 10 {
                 c increment;
             }
@@ -293,9 +293,30 @@ import core.io;
 - Messages on records (via `extends`) are always statically dispatched.
 
 ### 4.3 Classes (reference types)
-- Heap objects with a header (§6.2). Single inheritance (`inherits`), plus any number of `@[protocol]` classes (`implements`).
+- Objects with a header (§6.2): on the heap by default, on the stack when they provably don't escape (§4.3a). Single inheritance (`inherits`), plus any number of `@[protocol]` classes (`implements`).
 - **[Decided]** A concrete class can only be subclassed inside its own module. That gives the compiler complete class-hierarchy knowledge, which is what makes most sends static (§5). Extension across modules goes through protocols (§4.4). See §5.4 for the full rationale.
 - Non-optional class references are never `nil`. Optional: `Foo?`. `nil` is only assignable to optionals. Unwrap with messages: `x ifNotNil: { :v | ... }`, `x ifNil: { ... }`, `x ifNil: default`.
+
+### 4.3a Creating objects **[Decided and built 2026-11-27, replaces `Name new`]**
+There is no `new` message. Objects are created by declaring them or by naming fields:
+```
+p: Point;                        # every field from its initializer (or default)
+q := Point x: 4 y: 7;            # constructor message built from field names
+a := Account owner: alice;       # `balance` keeps its initializer
+r := q copy;                     # a shallow copy (then `init`); always on the heap
+```
+- **Construction order:** allocate, then set the fields passed as arguments, then run the field initializers of the rest (superclass fields first), then send `init`. When `init` returns, the object is complete.
+- **Constructor messages** are generated from the class's **public** fields. You can pass any of them, in declaration order, and the ones left out keep their initializer or default. A non-optional class field with no initializer is default-constructed when its class can be (as for `p: Point;`). It's *required*, and must be passed, when its class can't be: a protocol, a class with required fields of its own, or a class that would contain itself. Leaving a required field out is a compile error, and a *private* required field is an error at its declaration. Private fields are set only by their initializers or by `init`, so they can hold invariants.
+- **`init`** takes no arguments and may be declared once per class. Every class's `init` runs automatically, superclass first, the way field initializers chain. It isn't an override, and there's no `super init` to forget. It establishes invariants and derived state, or traps.
+- **Construction that can fail**, returns an existing or cached object, picks a subclass, or yields a protocol type stays an ordinary `@[static]` message (`Point parse: s` → `Point?`).
+- **`copy`** is generated for every class: a new object with the same field values (references are shared, not deep-copied), then `init`. For records, assignment already copies.
+- **The bare class name** in an expression is still the class itself (`Point x: 1`, `Color red`, later `p class`). `p := Point` does not create an instance; `p: Point;` does.
+- **Protocols** can't be constructed. Records keep their generated `Point x: 1 y: 2` constructor (all fields, in order).
+
+**Where objects live.** This is separate from value vs reference semantics, which doesn't change:
+- Primitives and records are values (stack, or inline in whatever contains them). Records keep C layout and copy on assignment.
+- Class instances are references, on the heap by default. When the compiler proves an object doesn't outlive the message that creates it (escape analysis), it puts the object on the stack with no reference counting and frees it at the end of its scope. Parameters are borrowed and the hierarchy is closed, so each message has a summary of which parameters it stores, returns or captures.
+- `@[stack]` on a declaration *requires* stack placement. If the object escapes, that's a compile error naming where. `@[heap]` keeps an object off the stack (for example, to keep a large object out of a kernel stack). It applies to declarations that create an object (`x: C;`, `x := C f: …`); `copy` and other message results are built inside the message, so they live on the heap.
 
 ### 4.4 Protocols: `@[protocol] class` **[Decided]**
 There's no separate `protocol` keyword. A protocol is a class marked `@[protocol]`:
@@ -313,7 +334,7 @@ class Circle implements Shape, Printable {  # any module may do this
 }
 ```
 Rules:
-- No fields: a `@[protocol]` class can't have `public`/`private` blocks, and it can't be instantiated with `new`. Because there's no state, implementing several protocols has none of the diamond or layout problems of multiple inheritance.
+- No fields: a `@[protocol]` class can't have `public`/`private` blocks, and it can't be constructed. Because there's no state, implementing several protocols has none of the diamond or layout problems of multiple inheritance.
 - A message declared with `;` instead of a body is *required*. A message with a body is a *default* that implementers may override. Default bodies can only use `self` sends, since there are no fields.
 - Classes conform with `implements` (any number, from any module). They can also conform retroactively through an `extends` block in another module (`extends Counter implements Printable { ... }`).
 - A `@[protocol]` class can `inherits` another `@[protocol]` class to refine it. It can't inherit a concrete class.
@@ -640,7 +661,8 @@ Captured ideas, not yet decisions. The guiding idea: **a block is anything in `{
   - class-typed locals released at function exit;
   - field loads retained while in use.
 
-  There's no escape analysis or stack allocation of objects yet. Retain/release are runtime calls (`bobRetain`/`bobRelease`), not yet inlined. Details are in `docs/semantics.md`. Optimising the retain/release traffic (+0 field reads proven safe, inlined atomics, stack promotion) is later work, ideally on a mid-level IR (§11.1).
+  Retain/release are runtime calls (`bobRetain`/`bobRelease`), not yet inlined. Details are in `docs/semantics.md`. Optimising the retain/release traffic (+0 field reads proven safe, inlined atomics) is later work, ideally on a mid-level IR (§11.1).
+- **[Built after phase 5]** Escape analysis and stack placement of objects (§4.3a). A stack object carries the immortal flag, so the retain/release calls on it return at once; removing those calls is part of the optimisation work above.
 
 ### 6.2 Tracked allocator
 Every block the allocator hands out carries a header:
@@ -877,7 +899,7 @@ Runtime unit tests: gtest needs the CRT, so `bobTests` compiles the runtime sour
 ---
 
 ## 13. Open questions (summary)
-Decided: `x := 4;` implicit declaration with inference (§3.3); phase 4 choices (confirm or change): `Name new` is the built-in allocator and runs field initializers, non-optional class fields need an initializer, outside code reaches public fields through synthesized accessors `p x`/`p x: v`, `=`/`<>` on references compare identity, records can't hold references, every instance message gets a vtable slot, protocol messages can't return records yet (docs/semantics.md); `<>` for not equal and `shl`/`shr` word operators, no `<< >> == ~= ??` (§3.2); parameters and `for` variables are read-only, `and`/`or` short-circuit, runtime traps exit with code 101, program messages must be `@[static]` (docs/semantics.md); no `@` on keyword parts (§3.4); conventional operator precedence (§3.4); no symbol literals (§9); `@[protocol] class` replaces a `protocol` keyword (§4.4); concrete classes are closed to their module and there's no `@[open]` (§4.3, §5.4); unary binds tightest, no `->` (§3.4); no cascades (§3.4); compact message declarations with optional rename (§3.6); records allow both layout-prefix inheritance and embedding (§4.2); overflow traps by default, `@[overflow:]` at any level (§4.1); byte-wise string equality (§7.2); reflection access by capabilities, header declarations later (§9); generated import libs with SDK fallback (§11.2); inferred container element types, inferred unions for mixed contents, `array of: T` annotation (§4.5); compile-time reflection via `meta` (§8.3); records can't implement protocols (§4.4); no generic syntax; type-returning compile-time messages, tightly restricted, are the planned answer for user containers, revisited in phase 6 (§4.5); enums `enum Name : type { a := 1; }`, no implicit integer conversion, Pascal ordinal features, `set of: Enum` bitsets instead of flags, enum-indexed arrays, `case x of { … } else { … }` statement with Pascal labels (§4.6); formal control statements `if/else if/else`, `while`, `for … in`, `loop`, `break`, `continue`, braces always required, `whileTrue:`/`caseOf:` removed (§3.5); Pascal subranges, `type Name := ...`, `[ ]`-only grouping in type positions; named types are distinct by default, with `@[alias]` (§4.7).
+Decided: `x := 4;` implicit declaration with inference (§3.3); phase 4 choices (confirm or change): object creation without `new` (§4.3a: `p: Point;`, constructor messages from public fields, required fields must be passed, automatic per-class `init`, `copy`, stack placement by escape analysis and checked `@[stack]`, records stay values), outside code reaches public fields through synthesized accessors `p x`/`p x: v`, `=`/`<>` on references compare identity, records can't hold references, every instance message gets a vtable slot, protocol messages can't return records yet (docs/semantics.md); `<>` for not equal and `shl`/`shr` word operators, no `<< >> == ~= ??` (§3.2); parameters and `for` variables are read-only, `and`/`or` short-circuit, runtime traps exit with code 101, program messages must be `@[static]` (docs/semantics.md); no `@` on keyword parts (§3.4); conventional operator precedence (§3.4); no symbol literals (§9); `@[protocol] class` replaces a `protocol` keyword (§4.4); concrete classes are closed to their module and there's no `@[open]` (§4.3, §5.4); unary binds tightest, no `->` (§3.4); no cascades (§3.4); compact message declarations with optional rename (§3.6); records allow both layout-prefix inheritance and embedding (§4.2); overflow traps by default, `@[overflow:]` at any level (§4.1); byte-wise string equality (§7.2); reflection access by capabilities, header declarations later (§9); generated import libs with SDK fallback (§11.2); inferred container element types, inferred unions for mixed contents, `array of: T` annotation (§4.5); compile-time reflection via `meta` (§8.3); records can't implement protocols (§4.4); no generic syntax; type-returning compile-time messages, tightly restricted, are the planned answer for user containers, revisited in phase 6 (§4.5); enums `enum Name : type { a := 1; }`, no implicit integer conversion, Pascal ordinal features, `set of: Enum` bitsets instead of flags, enum-indexed arrays, `case x of { … } else { … }` statement with Pascal labels (§4.6); formal control statements `if/else if/else`, `while`, `for … in`, `loop`, `break`, `continue`, braces always required, `whileTrue:`/`caseOf:` removed (§3.5); Pascal subranges, `type Name := ...`, `[ ]`-only grouping in type positions; named types are distinct by default, with `@[alias]` (§4.7).
 
 Phase 5 choices (confirm or change): arrays are **0-based**; an empty string or container is a null pointer (no allocation), so only class optionals are nullable pointers and every other `T?` is `{present, value}`; strings are immutable (sharing makes COW unnecessary for them); enum and subrange variables start at the first member or low bound, not 0; an inferred container takes its element type from the **first** store, and later stores must match (no widening to a protocol after the fact); message parameters must annotate container element types until per-call-site specialisation exists; `for` over a dictionary or hashtable is an error (use `keys`, `values`, `keysAndValuesDo:`), while `do:` visits values; a union member can't be a class reference or optional; `string + x` needs a string on both sides (`printString` otherwise) (docs/semantics.md).
 

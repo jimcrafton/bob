@@ -36,6 +36,9 @@ struct FunctionContext {
     int loopDepth = 0;
 };
 
+// Escape analysis and stack placement (analyzerEscape.cpp); runs on a complete model.
+void analyzeEscapes(SemanticModel& model, DiagnosticEngine& diagnostics);
+
 class Analyzer {
 public:
     Analyzer(SemanticModel& model, DiagnosticEngine& diagnostics) : model_(model), types_(model.types), diagnostics_(diagnostics) {}
@@ -64,6 +67,17 @@ private:
     void declareParams(MessageInfo* message, const MessageDecl* decl);
     void completeClasses();
     void completeClass(ClassInfo* info);
+    // Construction (analyzerConstruction.cpp).
+    MessageInfo* declareInit(ClassInfo* info, const MessageDecl* decl, bool isStatic);
+    void addCopyMessage(ClassInfo* info);
+    // Whether `x: C;` can build one with every field defaulted; marks required fields.
+    bool resolveDefaultable(ClassInfo* info);
+    const Type* checkConstructor(const Node* send, ClassInfo* info, const std::string& selector, const std::vector<Node*>& arguments,
+                                 SourceRange selectorRange);
+    // `x: C;`: checks that C can be default-constructed and records it.
+    void checkDefaultObject(const VariableDecl* decl, const Type* type);
+    // `@[stack]` / `@[heap]` on a statement: only on declarations that create an object.
+    void checkPlacementAttributes(const Node* statement);
     void checkFieldInitializers(ClassInfo* info);
     bool sameSignature(const MessageInfo* a, const MessageInfo* b) const;
     const Type* checkInstanceSend(const Node* send, const Node* receiverNode, const Type* receiver, const std::string& selector,

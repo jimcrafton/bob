@@ -90,6 +90,9 @@ std::string describe(const SendInfo& send, const SemanticModel& model)
         return "tier 0, intrinsic reference identity";
     case SendKind::newObject:
         return "allocation of a '" + send.classInfo->name + "' (runs its field initializers)";
+    case SendKind::constructObject:
+        return "construction of a '" + send.classInfo->name + "' (" + std::to_string(send.fields.size()) +
+               " field(s) passed, then the other fields' initializers and each class's init)";
     case SendKind::classStaticCall:
         return "tier 1, direct call to class-side '" + send.target->owner->name + " " + send.target->selector + "'";
     case SendKind::directMethodCall:
@@ -173,6 +176,20 @@ std::string explainDispatch(const SemanticModel& model, const ast::AstArena& are
         }
         uint32_t offset = selectorOffset(node);
         lines.push_back({offset, position(offset) + "'" + selectorOf(node) + "' -> " + description});
+    }
+    // Where each object a message creates lives.
+    for (const auto& [id, classInfo] : model.defaultObjects) {
+        const Node* node = arena.byId(id);
+        if (node != nullptr && model.stackObjects.count(id) == 0) {
+            lines.push_back({node->range.begin, position(node->range.begin) + "'" + classInfo->name + "' object -> heap (it may outlive this frame)"});
+        }
+    }
+    for (const auto& [id, object] : model.stackObjects) {
+        const Node* node = arena.byId(id);
+        if (node != nullptr) {
+            lines.push_back({node->range.begin, position(node->range.begin) + "'" + object.classInfo->name + "' object '" + object.local->name +
+                                                    "' -> stack (it doesn't outlive this frame; no reference counting)"});
+        }
     }
     for (const auto& [id, block] : model.blocks) {
         const Node* node = arena.byId(id);

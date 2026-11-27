@@ -114,6 +114,9 @@ void Analyzer::run(const Unit* unit)
     }
     completeClasses();
     for (const auto& info : model_.classes) {
+        resolveDefaultable(info.get());
+    }
+    for (const auto& info : model_.classes) {
         checkFieldInitializers(info.get());
     }
     for (MessageInfo* message : model_.program.messages) {
@@ -126,6 +129,9 @@ void Analyzer::run(const Unit* unit)
     }
 
     finalizePendingContainers();
+    if (diagnostics_.errorCount() == 0) {
+        analyzeEscapes(model_, diagnostics_);
+    }
 
     if (unit->unitKind == UnitKind::program && model_.program.main == nullptr) {
         error(unit->nameRange, "sema.noMain",
@@ -382,11 +388,6 @@ void Analyzer::resolveClass(ClassInfo* info)
             if (rejectEscapingBlock(field->type, type, "a field")) {
                 type = types_.error();
             }
-            if (isClass(type) && field->initializer == nullptr) {
-                error(field->nameRange, "sema.uninitializedReference",
-                      "field '" + field->name + "' holds a '" + type->name + "', which can't be nil; give it an initial value (':= " +
-                          type->name + " new') or make it optional ('" + type->name + "?')");
-            }
             FieldInfo fieldInfo;
             fieldInfo.name = field->name;
             fieldInfo.type = type;
@@ -448,6 +449,10 @@ void Analyzer::declareParams(MessageInfo* message, const MessageDecl* decl)
 MessageInfo* Analyzer::declareMethod(ClassInfo* info, const MessageDecl* decl)
 {
     bool isStatic = hasAttribute(decl, "static");
+    // `init:`-style selectors too, so an init with arguments gets the explanation.
+    if (decl->selector == "init" || decl->selector.rfind("init:", 0) == 0) {
+        return declareInit(info, decl, isStatic);
+    }
     auto& table = isStatic ? info->classMethods : info->methods;
     if (table.count(decl->selector) != 0) {
         error(decl->selectorRange, "sema.redeclared", "'" + info->name + "' already declares '" + decl->selector + "'");
@@ -530,7 +535,7 @@ void Analyzer::completeClass(ClassInfo* info)
     if (!info->isProtocol) {
         for (MessageInfo* message : info->methodList) {
             const MessageInfo* inherited = info->superclass != nullptr ? info->superclass->lookup(message->selector) : nullptr;
-            if (inherited != nullptr && !sameSignature(message, inherited)) {
+            if (inherited != nullptr && !inherited->isCopy && !sameSignature(message, inherited)) {
                 error(message->decl->selectorRange, "sema.overrideMismatch",
                       "'" + message->selector + "' overrides '" + inherited->owner->name + " " + message->selector +
                           "' and must have the same parameter and return types");
@@ -566,6 +571,7 @@ void Analyzer::completeClass(ClassInfo* info)
             }
         }
 
+        addCopyMessage(info);
         if (info->superclass != nullptr) {
             info->slotSelectors = info->superclass->slotSelectors;
         }
@@ -632,17 +638,11 @@ bool Analyzer::canAccessField(const FieldInfo* field) const
 const Type* Analyzer::checkClassSideSend(const Node* send, const ClassInfo* info, const std::string& selector,
                                          const std::vector<Node*>& arguments, SourceRange selectorRange)
 {
-    if (selector == "new" && arguments.empty()) {
-        if (info->isProtocol) {
-            error(selectorRange, "sema.newProtocol", "'" + info->name + "' is a protocol and can't be instantiated");
-            return types_.error();
-        }
-        addSend(send, SendKind::newObject, selector, nullptr, info->type);
-        model_.sends[send->id].classInfo = info;
-        return info->type;
-    }
     auto it = info->classMethods.find(selector);
     if (it == info->classMethods.end()) {
+        if (const Type* constructed = checkConstructor(send, const_cast<ClassInfo*>(info), selector, arguments, selectorRange)) {
+            return constructed;
+        }
         for (const Node* argument : arguments) {
             check(argument, nullptr);
         }
@@ -1150,7 +1150,7 @@ void Analyzer::checkMessage(MessageInfo* message)
     for (LocalInfo* param : message->params) {
         scopes_.back()[param->name] = param;
     }
-    auto body = nodeCast<StatementGroup>(message->decl->body);
+    auto body = message->decl != nullptr ? nodeCast<StatementGroup>(message->decl->body) : nullptr;
     if (body != nullptr) {
         checkStatements(body->statements);
         if (message->returnType != types_.voidType() && message->returnType != types_.error() && !alwaysReturns(body->statements)) {
@@ -1221,7 +1221,10 @@ void Analyzer::checkStatement(const Node* statement)
 {
     if (statement->kind != NodeKind::statementGroup) {
         for (const Attribute* attribute : statement->attributes) {
-            unsupported(attribute, "the attribute '@[" + attribute->name + "]' on a statement", "a later phase");
+            bool placement = (attribute->name == "stack" || attribute->name == "heap") && attribute->value == nullptr;
+            if (!placement) {
+                unsupported(attribute, "the attribute '@[" + attribute->name + "]' on a statement", "a later phase");
+            }
         }
     }
     switch (statement->kind) {
@@ -1248,15 +1251,16 @@ void Analyzer::checkStatement(const Node* statement)
             requireAssignable(decl->initializer, initType, type, "initialize");
         }
         else if (isClass(type)) {
-            error(decl->nameRange, "sema.uninitializedReference",
-                  "'" + decl->name + "' is a '" + type->name + "', which can't be nil; give it a value or declare it '" + type->name + "?'");
+            checkDefaultObject(decl, type);
         }
         LocalInfo* local = declareLocal(decl->name, type, decl, decl->nameRange);
         model_.localRefs[decl->id] = local;
+        checkPlacementAttributes(statement);
         break;
     }
     case NodeKind::assignment:
         checkAssignment(static_cast<const Assignment*>(statement));
+        checkPlacementAttributes(statement);
         break;
     case NodeKind::expressionStmt:
         check(static_cast<const ExpressionStmt*>(statement)->expression, nullptr);

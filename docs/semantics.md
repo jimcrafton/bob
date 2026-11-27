@@ -91,14 +91,46 @@ An untyped literal takes its type from context: the declared type, the parameter
 - A concrete class can be subclassed only in its own module (design §5.4).
 
 **Creating**
-- `Name new` allocates a zero-filled object. It then runs field initializers, the superclass's first: `y: int32 := 7;` and `counter: Counter := Counter new;`.
+There's no `new` (design §4.3a).
+- `p: Point;` constructs a `Point` with every field defaulted. This is the only form that builds a default object; there's no expression for it.
+- `Point x: 4 y: 7` is a **constructor message** generated from the class's **public** fields, including inherited ones:
+  - Pass any of them, in declaration order (`sema.constructorOrder` otherwise). Private fields can't be passed.
+  - A user-declared `@[static]` message with the same selector takes precedence.
+  - `x := Point new` is `sema.unknownMessage`, with an explanation.
+- **Order of construction:**
+  1. Allocate a zero-filled object.
+  2. Store the fields that were passed.
+  3. Run the initializers of the other fields, superclass fields first. A field with no initializer gets its type's default: 0, the first enum member, the low bound of a subrange, nil, an empty string or container, or, for a non-optional class field, a **default-constructed** object of that class.
+  4. Send each class's `init`, superclass first.
+- **Required fields.** A non-optional class field with no initializer is *required* when its class can't be default-constructed: it's a protocol, it has required fields itself, or it would contain itself (`next: Node`).
+  - A constructor message must pass every required field (`sema.missingConstructorArgument`).
+  - `x: C;` is `sema.uninitializedReference` when C has required fields, and the error shows the constructor to write.
+  - A *private* required field is an error at its declaration, because nothing outside the class could set it.
+- **`msg init { … }`** takes no arguments and returns nothing (`sema.invalidInit` otherwise, also for `init:` selectors). It runs automatically for each class that declares one, superclass first. It sees every field and can set private ones. It isn't a message you can send.
+- **`copy`** is generated for every class that doesn't declare its own:
+  - It makes a new object of the receiver's dynamic class with the same field values. References and strings are shared and retained, not deep-copied.
+  - It then runs `init` again.
+  - It has a vtable slot, so `(a: Animal) copy` copies a `Bird`.
+- Construction that can fail, or that returns an existing object, is an ordinary `@[static]` message.
+
+**Where objects live** (`bobc --explain-dispatch` reports each allocation)
+- An object created by `x: C;` or `x := C f: …` goes **on the stack** when it provably doesn't outlive the function that creates it:
+  - Nothing it's assigned to escapes. Escaping means it's stored into a field or container, returned, passed to a block, used as a key, or passed to a message that keeps that parameter or `self`.
+  - Each message's summary of what it keeps is computed over the whole program, to a fixed point, so recursion is handled. Vtable and protocol sends use every implementation that could run.
+  - No `init` in the class chain keeps `self`.
+  - Every variable it's assigned to is declared in the same function and the same loop body. That lets the next pass of a loop, or the frame's exit, reuse the memory safely.
+  - The object is at most 4 KB (larger ones need `@[stack]`).
+- Everything else goes on the heap, including `copy` and other message results, which are built inside the message.
+- A stack object has the immortal flag, so retain/release on it do nothing and it never appears in the leak report. Its fields are released when the function returns, or when a loop runs its declaration again.
+- `@[stack] x := C f: …;` *requires* stack placement: if the object escapes, it's `sema.stackEscape` at the point where it escapes, with the reason. `@[heap]` keeps it on the heap.
+- Both attributes apply only to declarations that create an object (`sema.invalidAttribute` otherwise). Records and other values already live in the variable.
 
 **Fields**
 - Inside the class (and its subclasses), fields are reached by bare name (`count := count + 1`) or with `.` on another instance (`other.x`).
 - Outside, `.` is `sema.privateField`. Public fields get synthesized accessors instead (`p x`, `p x: 5`), compiled to inline loads and stores. A message with the same selector takes precedence.
 
 **`nil` and optionals**
-- A non-optional class reference is never `nil`, so a non-optional class-typed field needs an initializer and a local needs a value. Otherwise it's `sema.uninitializedReference`.
+- A non-optional class reference is never `nil`. A local or field declared without a value is default-constructed (see **Creating**), or it's `sema.uninitializedReference` when that isn't possible. A protocol-typed local needs a value (`sema.newProtocol`).
 - `Name?` may be `nil`.
 - `x = nil` and `x <> nil` test it.
 - `x ifNotNil: { :value | … }`, `ifNil:`, `ifNil:ifNotNil:` and `ifNotNil:ifNil:` unwrap it, inlined.

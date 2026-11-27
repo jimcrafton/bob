@@ -67,8 +67,8 @@ program polymorphism, 0.1.0
         @[static] msg main: args:array [int32] {
             failures := 0;
 
-            square := Square new;
-            circle := Circle new;
+            square: Square;
+            circle: Circle;
             failures := failures + (self check: (self describe: square) = 401 id: 1);
             failures := failures + (self check: (self describe: circle) = 999 id: 2);
             failures := failures + (self check: (self grow: square) = 36 id: 3);
@@ -79,16 +79,21 @@ program polymorphism, 0.1.0
             shape := square;
             failures := failures + (self check: shape area = 36 id: 6);
 
-            failures := failures + (self check: (self total: Animal new) = 4 id: 7);
-            failures := failures + (self check: (self total: Dog new) = 14 id: 8);
-            failures := failures + (self check: (self total: Puppy new) = 24 id: 9);
-            failures := failures + (self check: (self total: Bird new) = 32 id: 10);
+            animal: Animal;
+            dog: Dog;
+            puppy: Puppy;
+            bird: Bird;
+            failures := failures + (self check: (self total: animal) = 4 id: 7);
+            failures := failures + (self check: (self total: dog) = 14 id: 8);
+            failures := failures + (self check: (self total: puppy) = 24 id: 9);
+            failures := failures + (self check: (self total: bird) = 32 id: 10);
 
-            d: Dog := Puppy new;
+            d: Dog := puppy;
             failures := failures + (self check: d sound = 2 and d legs = 4 id: 11);
 
             for i in 1 to: 200 {
-                s: Shape := Square new;
+                fresh: Square;
+                s: Shape := fresh;
                 failures := failures + (self check: s area = 4 id: 12);
             }
             return failures;

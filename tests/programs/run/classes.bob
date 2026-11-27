@@ -24,11 +24,8 @@ program classes, 0.1.0
             x: int32;
             y: int32 := 7;
         }
-        @[static] msg x: px:int32 y: py:int32 [Point] {
-            p := Point new;
-            p.x := px;
-            p.y := py;
-            return p;
+        @[static] msg origin [Point] {
+            return Point x: 0 y: 0;
         }
         msg plus: other:Point [Point] {
             return Point x: x + other.x y: y + other.y;
@@ -55,12 +52,13 @@ program classes, 0.1.0
 
     class Holder {
         private {
-            counter: Counter := Counter new;
+            counter: Counter;
             spare: Counter?;
         }
         msg bump [int64] {
             counter increment;
-            spare := Counter new;
+            fresh: Counter;
+            spare := fresh;
             spare := counter;
             return counter count;
         }
@@ -91,7 +89,7 @@ program classes, 0.1.0
         @[static] msg main: args:array [int32] {
             failures := 0;
 
-            c := Counter new;
+            c: Counter;
             c increment;
             c increment;
             c addAll: 3;
@@ -101,21 +99,21 @@ program classes, 0.1.0
             p := Point x: 1 y: 2;
             q := p plus: (Point x: 10 y: 20);
             failures := failures + (self check: q x = 11 and q y = 22 id: 3);
-            fresh := Point new;
+            fresh: Point;
             failures := failures + (self check: fresh x = 0 and fresh y = 7 id: 4);
+            o := Point origin;
+            failures := failures + (self check: o x = 0 and o y = 0 id: 13);
             fresh x: 5;
             failures := failures + (self check: fresh x = 5 id: 5);
 
-            b := Bird new;
+            b: Bird;
             failures := failures + (self check: b describe = 41 and b legs = 4 id: 6);
             a: Animal := b;
             failures := failures + (self check: a describe = 41 id: 7);
 
             head: Node? := nil;
             for i in 1 to: 5 {
-                n := Node new;
-                n value: i;
-                n next: head;
+                n := Node value: i next: head;
                 head := n;
             }
             failures := failures + (self check: (self listSum: head) = 15 id: 8);
@@ -123,14 +121,15 @@ program classes, 0.1.0
             head := nil;
             failures := failures + (self check: head = nil id: 10);
 
-            h := Holder new;
+            h: Holder;
             h bump;
             failures := failures + (self check: h bump = 2 id: 11);
 
             for k in 1 to: 1000 {
-                temp := Counter new;
+                temp: Counter;
                 temp increment;
-                Counter new increment;
+                other := Point y: k;
+                failures := failures + (self check: other y = k and other x = 0 id: 12);
             }
             return failures;
         }

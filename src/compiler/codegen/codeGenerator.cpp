@@ -114,8 +114,10 @@ void Generator::declareClass(const sema::ClassInfo* info)
     classGlobals_[info] = new llvm::GlobalVariable(*module_, classInfoType(info->vtable.size()), false, linkage, nullptr, "class." + info->name);
     destroyFunctions_[info] = llvm::Function::Create(llvm::FunctionType::get(builder_.getVoidTy(), {ptr}, false), linkage,
                                                      "bob." + info->name + ".destroy", module_.get());
-    initFunctions_[info] = llvm::Function::Create(llvm::FunctionType::get(builder_.getVoidTy(), {ptr}, false), linkage,
-                                                  "bob." + info->name + ".init", module_.get());
+    initFunctions_[info] = llvm::Function::Create(llvm::FunctionType::get(builder_.getVoidTy(), {ptr, builder_.getInt64Ty()}, false), linkage,
+                                                  "bob." + info->name + ".fields", module_.get());
+    initsFunctions_[info] = llvm::Function::Create(llvm::FunctionType::get(builder_.getVoidTy(), {ptr}, false), linkage,
+                                                   "bob." + info->name + ".inits", module_.get());
     newFunctions_[info] = llvm::Function::Create(llvm::FunctionType::get(ptr, {}, false), linkage, "bob." + info->name + ".new", module_.get());
 }
 
@@ -146,36 +148,60 @@ void Generator::emitClass(const sema::ClassInfo* info)
     }
     builder_.CreateRetVoid();
 
-    // init: the superclass's initializers, then this class's own
+    // fields(object, passed): the field initializers, superclass first, skipping
+    // the fields a constructor message passed (bit n of `passed` = field n).
     beginFunction(initFunctions_.at(info), info->initializer, info->initializer->locals);
     llvm::Value* object = function_->getArg(0);
+    llvm::Value* passed = function_->getArg(1);
     if (info->superclass != nullptr) {
-        builder_.CreateCall(initFunctions_.at(info->superclass), {object});
+        builder_.CreateCall(initFunctions_.at(info->superclass), {object, passed});
     }
     for (const sema::FieldInfo& field : info->fields) {
         if (field.owner != info) {
             continue;
         }
-        if (field.initializer == nullptr) {
-            // Objects start zero-filled; only enums and subranges whose default isn't 0 need a store.
-            llvm::Constant* initial = defaultValue(field.type);
-            if (!initial->isNullValue()) {
-                builder_.CreateStore(initial, fieldAddress(object, &field));
-            }
+        llvm::Constant* initial = defaultValue(field.type);
+        // Objects start zero-filled, so a field defaulting to zero needs no code.
+        if (field.initializer == nullptr && !field.constructsDefault && initial->isNullValue()) {
             continue;
         }
+        llvm::BasicBlock* set = llvm::BasicBlock::Create(context_, "field." + field.name, function_);
+        llvm::BasicBlock* next = llvm::BasicBlock::Create(context_, "field.next", function_);
+        llvm::Value* bit = builder_.CreateAnd(passed, builder_.getInt64(uint64_t(1) << field.index));
+        builder_.CreateCondBr(builder_.CreateICmpEQ(bit, builder_.getInt64(0)), set, next);
+        builder_.SetInsertPoint(set);
         size_t mark = temporaries_.size();
-        llvm::Value* value = emitOwnedAs(field.initializer, field.type);
+        llvm::Value* value = initial;
+        if (field.initializer != nullptr) {
+            value = emitOwnedAs(field.initializer, field.type);
+        }
+        else if (field.constructsDefault) {
+            value = builder_.CreateCall(newFunctions_.at(field.type->classInfo), {}, field.name);
+        }
         builder_.CreateStore(value, fieldAddress(object, &field));
         flushTemporaries(mark);
+        builder_.CreateBr(next);
+        builder_.SetInsertPoint(next);
     }
     emitReturn(nullptr);
 
-    // new: allocate (zeroed, refCount 1) and initialize
+    // inits(object): each class's own `init`, superclass first. When it returns the object is complete.
+    function_ = initsFunctions_.at(info);
+    builder_.SetInsertPoint(llvm::BasicBlock::Create(context_, "entry", function_));
+    if (info->superclass != nullptr) {
+        builder_.CreateCall(initsFunctions_.at(info->superclass), {function_->getArg(0)});
+    }
+    if (info->initMessage != nullptr) {
+        builder_.CreateCall(functions_.at(info->initMessage), {function_->getArg(0), selectorGlobal("init")});
+    }
+    builder_.CreateRetVoid();
+
+    // new: the default constructor behind `x: C;` and default-constructed fields.
     function_ = newFunctions_.at(info);
     builder_.SetInsertPoint(llvm::BasicBlock::Create(context_, "entry", function_));
     llvm::Value* created = builder_.CreateCall(allocFunction_, {classGlobals_.at(info)}, "object");
-    builder_.CreateCall(initFunctions_.at(info), {created});
+    builder_.CreateCall(initFunctions_.at(info), {created, builder_.getInt64(0)});
+    builder_.CreateCall(initsFunctions_.at(info), {created});
     builder_.CreateRet(created);
 
     // class info: header, method table for bob_msgSend, vtable
@@ -205,6 +231,125 @@ void Generator::emitClass(const sema::ClassInfo* info)
         type, {superclass, name, builder_.getInt64(size), destroyFunctions_.at(info), table, builder_.getInt32(static_cast<uint32_t>(entries.size())),
                builder_.getInt32(0), llvm::ConstantPointerNull::get(builder_.getPtrTy()),
                llvm::ConstantArray::get(llvm::ArrayType::get(ptr, vtable.size()), vtable)}));
+}
+
+// `Point x: 4 y: 7`: evaluate the arguments, allocate, store the passed fields,
+// then run the other fields' initializers and each class's `init`.
+llvm::Value* Generator::emitConstruct(const KeywordSend* send, const sema::SendInfo& info, llvm::Value* place)
+{
+    std::vector<llvm::Value*> values;
+    uint64_t passed = 0;
+    for (size_t i = 0; i < send->arguments.size(); ++i) {
+        values.push_back(emitOwnedAs(send->arguments[i], info.fields[i]->type));
+        passed |= uint64_t(1) << info.fields[i]->index;
+    }
+    llvm::Value* object = place;
+    if (object == nullptr) {
+        object = builder_.CreateCall(allocFunction_, {classGlobals_.at(info.classInfo)}, "object");
+    }
+    else {
+        initializeObjectHeader(object, info.classInfo);
+    }
+    for (size_t i = 0; i < values.size(); ++i) {
+        builder_.CreateStore(values[i], fieldAddress(object, info.fields[i]));
+    }
+    builder_.CreateCall(initFunctions_.at(info.classInfo), {object, builder_.getInt64(passed)});
+    builder_.CreateCall(initsFunctions_.at(info.classInfo), {object});
+    return object;
+}
+
+void Generator::allocateStackObjects(const sema::MessageInfo* message, const sema::BlockInfo* block)
+{
+    for (const auto& [id, object] : model_.stackObjects) {
+        if (object.block != block || (block == nullptr && object.message != message)) {
+            continue;
+        }
+        StackSlot slot;
+        slot.object = entryAlloca(objectType(object.classInfo), object.local->name + ".stack");
+        slot.object->setAlignment(llvm::Align(16));
+        slot.built = entryAlloca(builder_.getInt1Ty(), object.local->name + ".built");
+        slot.classInfo = object.classInfo;
+        builder_.CreateStore(builder_.getFalse(), slot.built);
+        stackSlots_[id] = slot;
+    }
+}
+
+// A stack object's header: its class, and the immortal flag so retain/release
+// on it do nothing. If the slot already holds an object from an earlier pass of
+// a loop, that object's fields are released first.
+void Generator::initializeObjectHeader(llvm::Value* object, const sema::ClassInfo* info)
+{
+    for (const auto& [id, slot] : stackSlots_) {
+        if (slot.object != object) {
+            continue;
+        }
+        llvm::BasicBlock* drop = llvm::BasicBlock::Create(context_, "stack.drop", function_);
+        llvm::BasicBlock* build = llvm::BasicBlock::Create(context_, "stack.build", function_);
+        builder_.CreateCondBr(builder_.CreateLoad(builder_.getInt1Ty(), slot.built), drop, build);
+        builder_.SetInsertPoint(drop);
+        builder_.CreateCall(destroyFunctions_.at(info), {object});
+        builder_.CreateBr(build);
+        builder_.SetInsertPoint(build);
+    }
+    uint64_t size = module_->getDataLayout().getTypeAllocSize(objectType(info));
+    builder_.CreateMemSet(object, builder_.getInt8(0), size, llvm::MaybeAlign(16));
+    builder_.CreateStore(classGlobals_.at(info), object);
+    builder_.CreateStore(builder_.getInt32(1), builder_.CreateConstInBoundsGEP1_64(builder_.getInt8Ty(), object, 8));
+    builder_.CreateStore(builder_.getInt32(bobObjectImmortal), builder_.CreateConstInBoundsGEP1_64(builder_.getInt8Ty(), object, 12));
+}
+
+llvm::Value* Generator::emitStackObject(const Node* statement, const sema::StackObject& object)
+{
+    const StackSlot& slot = stackSlots_.at(statement->id);
+    llvm::Value* place = slot.object;
+    const sema::SendInfo* send = model_.sendOf(object.allocation);
+    if (send != nullptr && send->kind == SendKind::constructObject) {
+        emitConstruct(static_cast<const KeywordSend*>(object.allocation), *send, place);
+    }
+    else {
+        initializeObjectHeader(place, object.classInfo);
+        builder_.CreateCall(initFunctions_.at(object.classInfo), {place, builder_.getInt64(0)});
+        builder_.CreateCall(initsFunctions_.at(object.classInfo), {place});
+    }
+    builder_.CreateStore(builder_.getTrue(), slot.built);
+    return place;
+}
+
+void Generator::destroyStackObjects()
+{
+    for (const auto& [id, slot] : stackSlots_) {
+        llvm::BasicBlock* drop = llvm::BasicBlock::Create(context_, "stack.release", function_);
+        llvm::BasicBlock* done = llvm::BasicBlock::Create(context_, "stack.done", function_);
+        builder_.CreateCondBr(builder_.CreateLoad(builder_.getInt1Ty(), slot.built), drop, done);
+        builder_.SetInsertPoint(drop);
+        builder_.CreateCall(destroyFunctions_.at(slot.classInfo), {slot.object});
+        builder_.CreateBr(done);
+        builder_.SetInsertPoint(done);
+    }
+}
+
+// The generated `copy`: a new object of the same class with the same field
+// values (references shared, so each one is retained), then `init`.
+void Generator::emitCopy(const sema::MessageInfo* message)
+{
+    const sema::ClassInfo* info = message->owner;
+    function_ = functions_.at(message);
+    builder_.SetInsertPoint(llvm::BasicBlock::Create(context_, "entry", function_));
+    llvm::Value* self = function_->getArg(0);
+    llvm::Value* copy = builder_.CreateCall(allocFunction_, {classGlobals_.at(info)}, "copy");
+    uint64_t size = module_->getDataLayout().getTypeAllocSize(objectType(info));
+    if (size > abi::objectHeaderSize) {
+        builder_.CreateMemCpy(builder_.CreateConstInBoundsGEP1_64(builder_.getInt8Ty(), copy, abi::objectHeaderSize), llvm::MaybeAlign(8),
+                              builder_.CreateConstInBoundsGEP1_64(builder_.getInt8Ty(), self, abi::objectHeaderSize), llvm::MaybeAlign(8),
+                              size - abi::objectHeaderSize);
+    }
+    for (const sema::FieldInfo& field : info->fields) {
+        if (sema::needsCleanup(field.type)) {
+            retainValue(builder_.CreateLoad(llvmType(field.type), fieldAddress(copy, &field)), field.type);
+        }
+    }
+    builder_.CreateCall(initsFunctions_.at(info), {copy});
+    builder_.CreateRet(copy);
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +421,7 @@ void Generator::releaseLocals()
             releaseValue(builder_.CreateLoad(llvmType(local->type), slot), local->type);
         }
     }
+    destroyStackObjects();
 }
 
 // Every exit from a function: release pending temporaries (they stay listed for
@@ -313,6 +459,8 @@ void Generator::beginFunction(llvm::Function* function, const sema::MessageInfo*
             }
         }
     }
+    stackSlots_.clear();
+    allocateStackObjects(message, nullptr);
 }
 
 llvm::Type* Generator::llvmType(const Type* type)
@@ -395,6 +543,10 @@ void Generator::declareMessage(const sema::MessageInfo* message)
 
 void Generator::emitMessage(const sema::MessageInfo* message)
 {
+    if (message->isCopy) {
+        emitCopy(message);
+        return;
+    }
     beginFunction(functions_.at(message), message, message->locals);
     unsigned offset = 0;
     if (message->isInstance) {
@@ -496,8 +648,19 @@ void Generator::emitStatement(const Node* statement)
     case NodeKind::variableDecl: {
         auto decl = static_cast<const VariableDecl*>(statement);
         const sema::LocalInfo* local = model_.localOf(decl);
-        llvm::Value* value = decl->initializer != nullptr ? emitOwnedAs(decl->initializer, local->type)
-                                                          : defaultValue(local->type);
+        llvm::Value* value = nullptr;
+        if (auto stack = model_.stackObjects.find(decl->id); stack != model_.stackObjects.end()) {
+            value = emitStackObject(decl, stack->second);
+        }
+        else if (decl->initializer != nullptr) {
+            value = emitOwnedAs(decl->initializer, local->type);
+        }
+        else if (auto object = model_.defaultObjects.find(decl->id); object != model_.defaultObjects.end()) {
+            value = builder_.CreateCall(newFunctions_.at(object->second), {}, decl->name);
+        }
+        else {
+            value = defaultValue(local->type);
+        }
         storeReference(addressOf(local), value, local->type);
         break;
     }
@@ -505,7 +668,9 @@ void Generator::emitStatement(const Node* statement)
         auto assignment = static_cast<const Assignment*>(statement);
         const sema::LocalInfo* local = model_.localOf(assignment->target);
         if (local != nullptr) {
-            llvm::Value* value = emitOwnedAs(assignment->value, local->type);
+            auto stack = model_.stackObjects.find(assignment->id);
+            llvm::Value* value = stack != model_.stackObjects.end() ? emitStackObject(assignment, stack->second)
+                                                                    : emitOwnedAs(assignment->value, local->type);
             storeReference(addressOf(local), value, local->type);
         }
         else {
@@ -1027,6 +1192,8 @@ llvm::Value* Generator::emitSend(const Node* node, const sema::SendInfo& send)
         return nullptr;
     case SendKind::newObject:
         return builder_.CreateCall(newFunctions_.at(send.classInfo), {}, "new");
+    case SendKind::constructObject:
+        return emitConstruct(static_cast<const KeywordSend*>(node), send);
     case SendKind::classStaticCall: {
         std::vector<llvm::Value*> args;
         if (auto keyword = nodeCast<KeywordSend>(node)) {
@@ -1162,6 +1329,8 @@ llvm::Function* Generator::emitBlockFunction(const sema::BlockInfo* info)
     auto savedSlots = std::move(slots_);
     auto savedLoops = std::move(loops_);
     auto savedTemporaries = std::move(temporaries_);
+    auto savedStack = std::move(stackSlots_);
+    stackSlots_.clear();
     temporaries_.clear();
     llvm::IRBuilderBase::InsertPoint savedPoint = builder_.saveIP();
 
@@ -1186,6 +1355,7 @@ llvm::Function* Generator::emitBlockFunction(const sema::BlockInfo* info)
     for (size_t i = 0; i < info->params.size(); ++i) {
         builder_.CreateStore(function_->getArg(static_cast<unsigned>(i + 1)), slots_.at(info->params[i]));
     }
+    allocateStackObjects(message_, info);
 
     llvm::Value* result = emitInlinedBody(info->node, blockType->result);
     if (builder_.GetInsertBlock()->getTerminator() == nullptr) {
@@ -1199,6 +1369,7 @@ llvm::Function* Generator::emitBlockFunction(const sema::BlockInfo* info)
     slots_ = std::move(savedSlots);
     loops_ = std::move(savedLoops);
     temporaries_ = std::move(savedTemporaries);
+    stackSlots_ = std::move(savedStack);
     builder_.restoreIP(savedPoint);
     return function;
 }

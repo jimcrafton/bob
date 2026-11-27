@@ -54,7 +54,7 @@ import core.collections, 2.0.0;
         }
 
         @[static] msg named: n:string [Bob] {
-            b: Bob := Bob new;
+            b: Bob;
             b.name := n;
             return b;
         }

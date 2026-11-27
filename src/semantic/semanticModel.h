@@ -29,6 +29,10 @@ struct FieldInfo {
     const ClassInfo* owner = nullptr;
     bool isPublic = true;
     const ast::Node* initializer = nullptr;
+    // A non-optional class field with no initializer: default-constructed when its
+    // class allows it, otherwise `required` (a constructor message must pass it).
+    bool constructsDefault = false;
+    bool required = false;
 };
 
 struct RecordInfo {
@@ -91,6 +95,14 @@ struct MessageInfo {
     bool isProtocolDefault = false;
     bool isRequired = false;
     LocalInfo* self = nullptr;
+    // `msg init { }`: run automatically after construction (superclass first); not sendable.
+    bool isInit = false;
+    // The generated `copy` (no declaration): a shallow copy, then `init`.
+    bool isCopy = false;
+    // Escape summary (analyzerEscape.cpp): whether the message may keep `self` or a
+    // parameter beyond the call (store it in a field or container, return it ...).
+    bool selfEscapes = false;
+    std::vector<bool> paramEscapes;
 };
 
 struct ClassInfo {
@@ -108,8 +120,12 @@ struct ClassInfo {
     // Vtable slots: inherited slots first, then one per new selector.
     std::vector<std::string> slotSelectors;
     std::vector<const MessageInfo*> vtable;
-    // Context for field initializers, which run in the generated `new`.
+    // Context for field initializers, which run when an object is constructed.
     MessageInfo* initializer = nullptr;
+    MessageInfo* initMessage = nullptr;
+    // `x: C;` can construct one with every field defaulted (no required fields).
+    bool defaultable = false;
+    int defaultState = 0;
     Type* type = nullptr;
     bool resolved = false;
     bool resolving = false;
@@ -160,6 +176,19 @@ struct ProgramInfo {
     Type* type = nullptr;
 };
 
+// An object created by `x: C;` or `x := C f: …` that lives in its creator's
+// frame because it provably doesn't outlive it (design §4.3a).
+struct StackObject {
+    const ClassInfo* classInfo = nullptr;
+    const LocalInfo* local = nullptr;
+    // The `x: C;` declaration, or the constructor send.
+    const ast::Node* allocation = nullptr;
+    // The function whose frame holds it: a block function, or the message (block == null).
+    const MessageInfo* message = nullptr;
+    const BlockInfo* block = nullptr;
+    bool forced = false;
+};
+
 enum class SendKind : uint8_t {
     arithmetic,
     bitwise,
@@ -192,6 +221,7 @@ enum class SendKind : uint8_t {
     fieldGet,
     fieldSet,
     referenceCompare,
+    constructObject,   // `Point x: 4 y: 7`: `fields` are the public fields passed, in order
 
     // phase 5
     constant,          // a compile-time value: `constant` holds its bits, resultType its type
@@ -276,6 +306,7 @@ struct SendInfo {
     // constant: the value's bits. enum sends: the enum.
     uint64_t constant = 0;
     const EnumInfo* enumInfo = nullptr;
+    std::vector<const FieldInfo*> fields;
 };
 
 // One case label as an inclusive range of the subject's values, stored as
@@ -309,6 +340,10 @@ public:
     std::unordered_set<ast::NodeId> implicitDeclarations;
     // `case` statements that cover every value of their subject (no `else` needed).
     std::unordered_set<ast::NodeId> exhaustiveCases;
+    // `x: C;` declarations of class type: construct a C with every field defaulted.
+    std::unordered_map<ast::NodeId, const ClassInfo*> defaultObjects;
+    // Allocation statements whose object goes on the stack, keyed by the statement.
+    std::unordered_map<ast::NodeId, StackObject> stackObjects;
 
     const Type* typeOf(const ast::Node* node) const;
     const LocalInfo* localOf(const ast::Node* node) const;

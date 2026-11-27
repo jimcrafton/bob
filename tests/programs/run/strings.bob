@@ -71,7 +71,7 @@ program strings, 0.1.0
             bad := [104u8, 255u8];
             failures := failures + (self check: (string fromUtf8: bad) = nil and (string fromUtf8Lossy: bad) = "h\u{FFFD}" id: 22);
 
-            g := Greeter new;
+            g: Greeter;
             failures := failures + (self check: g greeting = "hello, world" id: 23);
             g name: "bob";
             failures := failures + (self check: g greeting = "hello, bob" id: 24);
