@@ -570,12 +570,19 @@ Prior art: Swift (`open`/`public`/`final`), Kotlin (final by default), C# (`seal
 ### 5.5 Blocks / closures
 - Non-escaping literal blocks (the vast majority) are inlined or lowered to a local function plus a frame pointer, with zero allocation.
 - Escaping blocks are ARC-managed closure objects (function pointer + captured context). Escape is inferred from the parameter type: `@[escaping]` on block parameters, Swift-style.
+- **[Decided, built in phase 3]**
+  - **Block types** are written `[block takes: [T, …] returns: R]`, the same type-message form as `array of:`.
+  - **Bare `block` parameters are inferred from how the message body uses them**, and the message is compiled once. That's option A, chosen over per-call-site specialisation, which would be generics in disguise. The annotation is only needed when the body doesn't pin the type down.
+  - **Blocks are non-escaping until phase 8.** They capture by reference through a stack environment of pointers.
+  - **`return` is allowed only inside inlined blocks**, so nothing ever unwinds the stack.
+
+  Details are in `docs/semantics.md`.
 
 ### 5.6 Blocks as a unifying concept **[Notes, to be designed]**
 Captured ideas, not yet decisions. The guiding idea: **a block is anything in `{ ... }`**, and blocks are used for many purposes. scratch-lang already modelled some of these (`PreConditionBlock`, `PostConditionBlock` and `ThreadBlock` in `compiletime.h`).
 
 1. **Code blocks.** Message bodies, statement groups, control-statement bodies, and block arguments to messages such as `do:` (§3.5).
-2. **Message objects (closures).** A block is a first-class value: a lambda, closure or function pointer. It can be stored, passed and returned ("message blocks can be passed around"). Non-escaping blocks are free. Escaping ones are ARC closure objects (§5.5). To design:
+2. **Message objects (closures).** *(Non-escaping closures built in phase 3, see §5.5.)* A block is a first-class value: a lambda, closure or function pointer. It can be stored, passed and returned ("message blocks can be passed around"). Non-escaping blocks are free. Escaping ones are ARC closure objects (§5.5). To design:
    - the block type syntax (with no angle brackets, so probably inferred like containers);
    - whether a block can be taken from an existing message (`obj messageFor: "add:"` → block bound to `obj`);
    - whether a block with no captures is guaranteed to be a plain C function pointer, which matters for callbacks and interrupt vectors.
@@ -849,7 +856,7 @@ Runtime unit tests: gtest needs the CRT, so `bobTests` compiles the runtime sour
 | 0 ✅ | CMake skeleton, LLVM found, gtest `bobTests`, `bobc` stub; `bobrt` freestanding with `bobStart`, console write, exit; link with lld-link | A hand-written LLVM IR "hello" links against bobrt with no CRT and runs. **Done 2026-11-27:** 16/16 tests pass in Debug and Release; exes import only kernel32 |
 | 1 ✅ | Lexer + parser for §3 (all constructs), AST, `--dump-ast` | Parses all of scratch-lang's tests (converted) and the §3.8 example. **Done 2026-11-27:** `bobSyntax` library (lossless, error-tolerant, tool-reusable); 17 converted scratch tests + §3.8 example + a file of every §3–4 construct parse cleanly; 67/67 tests in Debug and Release |
 | 2 ✅ | Sema + codegen for primitives, locals, records, intrinsic sends, `main:`, `return` | `factorial`/`fib` programs compile, run and return correct exit codes. **Done 2026-11-27:** `bobSemantic` (no LLVM) + LLVM codegen; also pulled in from phase 3: `if`/`while`/`for … to:`/`loop`/`break`/`continue`/integer `case`. Overflow modes, checked conversions and runtime traps (exit 101). 11 run programs at -O0 and -O2; 119/119 tests in Debug and Release. Rules as built: `docs/semantics.md` |
-| 3 | Blocks: block values, non-escaping closures, inlined `do:`/`to:do:`/`ifTrue:ifFalse:`; `for` over collections once they exist; `--explain-dispatch`. (Control statements were done in phase 2.) | Block/closure programs; dispatch report shows tier 0/1 |
+| 3 ✅ | Blocks: block values, non-escaping closures, inlined `do:`/`to:do:`/`ifTrue:ifFalse:`; `for` over collections once they exist; `--explain-dispatch`. (Control statements were done in phase 2.) | Block/closure programs; dispatch report shows tier 0/1. **Done 2026-11-27:** block values and types, bare-`block` inference from message bodies, capture by reference, inlined `ifTrue:`/`ifFalse:`/`ifTrue:ifFalse:` (value-producing)/`to:do:`/`timesRepeat:`, `--explain-dispatch`; 134/134 tests in Debug and Release. `do:` and `for` over collections wait for phase 5 collections |
 | 4 | Classes: layout, `new`, ARC insertion, static dispatch + CHA, class objects, selectors, `bob_msgSend` + cache, protocols | Polymorphism tests; leak report shows 0 bytes at exit |
 | 5 | Built-ins: `string` (UTF-8, views, conversions), `array`, `dictionary`, `hashtable`, `set` with element-type inference and inferred unions, COW | String/collection test suite incl. grapheme cases |
 | 6 | Compile-time execution via ORC; `compiler` object; `meta`; static asserts; constant tables. Revisit type-returning compile-time messages under the §4.5 leash rules | Compile-time CRC table and layout asserts work; decision made on `RingBuffer of: T` |
@@ -865,4 +872,4 @@ Decided: `x := 4;` implicit declaration with inference (§3.3); `<>` for not equ
 
 Still open:
 1. Can records have messages (statically dispatched helpers via `extends`, as in §3.6), or are they pure field layouts with no messages at all (§4.2)? Undecided, deferred. Leaning towards "no messages on records" (records strictly for data). The draft still shows record messages in §3.6 and §4.2 until this is decided.
-2. Blocks as a unifying concept (§5.6): closures, pre/post conditions, error-trapping blocks, thread blocks. Ideas only so far.
+2. Blocks as a unifying concept (§5.6): non-escaping closures are built (phase 3). Pre/post conditions, error-trapping blocks and thread blocks are still ideas only.

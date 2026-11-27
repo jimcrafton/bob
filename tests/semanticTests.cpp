@@ -191,12 +191,86 @@ TEST(Semantic, MainIsRequiredAndMessagesAreStatic)
 
 TEST(Semantic, UnsupportedFeaturesNameTheirPhase)
 {
-    auto a = analyzeMain("s := \"hi\";\nb := { :x | x };\nreturn 0;", "", "class Widget { }\nenum Color { red; }");
+    auto a = analyzeMain("s := \"hi\";\nreturn 0;", "", "class Widget { }\nenum Color { red; }");
     EXPECT_TRUE(a->hasCode("sema.unsupported")) << a->text();
     std::string text = a->text();
     EXPECT_NE(text.find("classes isn't supported yet (planned for phase 4)"), std::string::npos) << text;
     EXPECT_NE(text.find("strings and characters isn't supported yet (planned for phase 5)"), std::string::npos) << text;
-    EXPECT_NE(text.find("blocks as values isn't supported yet (planned for phase 3)"), std::string::npos) << text;
+}
+
+TEST(Semantic, BareBlockParameterIsInferredFromTheBody)
+{
+    auto a = analyzeMain("return self apply: { :n | n * 2 } to: 21;", "@[static] msg apply: f:block to: x:int32 [int32] { return f value: x; }");
+    EXPECT_EQ(a->diagnostics.errorCount(), 0u) << a->text();
+    const bob::sema::LocalInfo* f = localNamed(*a, "f");
+    ASSERT_NE(f, nullptr);
+    EXPECT_EQ(f->type->name, "block takes: [int32] returns: int32");
+    const bob::sema::LocalInfo* n = localNamed(*a, "n");
+    ASSERT_NE(n, nullptr);
+    EXPECT_EQ(n->type->name, "int32");
+}
+
+TEST(Semantic, UnusedBareBlockParameterNeedsAnAnnotation)
+{
+    auto a = analyzeMain("return 0;", "@[static] msg run: f:block { }");
+    EXPECT_TRUE(a->hasCode("sema.cannotInferBlock")) << a->text();
+}
+
+TEST(Semantic, BlockParameterTypeNeedsContextOrAnnotation)
+{
+    auto a = analyzeMain("sq := { :i | i * i };\nreturn 0;");
+    EXPECT_TRUE(a->hasCode("sema.cannotInferBlock")) << a->text();
+}
+
+TEST(Semantic, ReturnOnlyInsideInlinedBlocks)
+{
+    auto a = analyzeMain("b := { return 1; };\nx := 1;\n(x > 0) ifTrue: { return 2; };\nreturn 0;");
+    EXPECT_TRUE(a->hasCode("sema.returnInBlock")) << a->text();
+    EXPECT_EQ(a->diagnostics.errorCount(), 1u) << a->text();
+}
+
+TEST(Semantic, BreakDoesNotCrossABlockFunction)
+{
+    auto a = analyzeMain("loop {\n b := { break; };\n break;\n}\nreturn 0;");
+    EXPECT_TRUE(a->hasCode("sema.jumpOutsideLoop")) << a->text();
+    EXPECT_EQ(a->diagnostics.errorCount(), 1u) << a->text();
+}
+
+TEST(Semantic, BlocksCantEscape)
+{
+    auto a = analyzeMain("return 0;", "@[static] msg make [block takes: [int32] returns: int32] { return { :x | x }; }",
+                         "record Holder { f: block; }");
+    EXPECT_NE(a->text().find("a block as a message's return type"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("a block as a record field"), std::string::npos) << a->text();
+}
+
+TEST(Semantic, BlockArityMismatch)
+{
+    auto a = analyzeMain("return self apply: { :a :b | a } to: 1;", "@[static] msg apply: f:[block takes: [int32] returns: int32] to: x:int32 [int32] { return f value: x; }");
+    EXPECT_TRUE(a->hasCode("sema.blockArity")) << a->text();
+}
+
+TEST(Semantic, InlinedMessagesNeedBlockLiterals)
+{
+    auto a = analyzeMain("b := { 1 };\nx := 1;\n(x > 0) ifTrue: b;\n1 to: 3 do: { };\nreturn 0;");
+    EXPECT_TRUE(a->hasCode("sema.inlinedNeedsBlock")) << a->text();
+    EXPECT_EQ(a->diagnostics.errorCount(), 2u) << a->text();
+}
+
+TEST(Semantic, CapturesAreRecorded)
+{
+    auto a = analyzeMain("total := 0;\nlimit := 3;\nf := { :x: int32 | total := total + x + limit; };\nf value: 1;\nreturn total;");
+    EXPECT_EQ(a->diagnostics.errorCount(), 0u) << a->text();
+    const bob::sema::BlockInfo* block = nullptr;
+    for (const auto& info : a->model.blockInfos) {
+        if (!info->inlined) {
+            block = info.get();
+        }
+    }
+    ASSERT_NE(block, nullptr);
+    ASSERT_EQ(block->captures.size(), 2u);
+    EXPECT_EQ(block->captures[0]->name, "total");
+    EXPECT_EQ(block->captures[1]->name, "limit");
 }
 
 TEST(Semantic, MiscTypeRules)

@@ -26,6 +26,24 @@ TypeTable::TypeTable()
     for (const char* name : placeholders) {
         builtins_[name] = own({TypeKind::placeholder, name});
     }
+    builtins_["block"] = own({TypeKind::blockToInfer, "block"});
+}
+
+const Type* TypeTable::block(std::vector<const Type*> params, const Type* result)
+{
+    Type type{TypeKind::block, ""};
+    type.params = std::move(params);
+    type.result = result;
+    type.arityKnown = true;
+    type.name = blockTypeName(&type);
+    return own(std::move(type));
+}
+
+Type* TypeTable::pendingBlock()
+{
+    Type type{TypeKind::block, "block"};
+    type.pending = true;
+    return own(std::move(type));
 }
 
 Type* TypeTable::own(Type type)
@@ -91,16 +109,53 @@ bool isNumeric(const Type* type)
     return isInteger(type) || isReal(type);
 }
 
+bool isBlock(const Type* type)
+{
+    return type != nullptr && type->kind == TypeKind::block;
+}
+
 bool isValueType(const Type* type)
 {
     return type != nullptr && (type->kind == TypeKind::boolType || type->kind == TypeKind::integer ||
-                               type->kind == TypeKind::real || type->kind == TypeKind::record);
+                               type->kind == TypeKind::real || type->kind == TypeKind::record || type->kind == TypeKind::block);
+}
+
+bool sameBlockShape(const Type* a, const Type* b)
+{
+    if (!isBlock(a) || !isBlock(b) || a->params.size() != b->params.size() || a->result != b->result) {
+        return false;
+    }
+    for (size_t i = 0; i < a->params.size(); ++i) {
+        if (a->params[i] != b->params[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string blockTypeName(const Type* type)
+{
+    std::string name = "block";
+    if (!type->params.empty()) {
+        name += " takes: [";
+        for (size_t i = 0; i < type->params.size(); ++i) {
+            name += (i == 0 ? "" : ", ") + (type->params[i] != nullptr ? type->params[i]->name : std::string("?"));
+        }
+        name += "]";
+    }
+    if (type->result != nullptr && type->result->kind != TypeKind::voidType) {
+        name += " returns: " + type->result->name;
+    }
+    return name;
 }
 
 bool canWiden(const Type* from, const Type* to)
 {
     if (from == to) {
         return true;
+    }
+    if (isBlock(from) && isBlock(to)) {
+        return sameBlockShape(from, to);
     }
     if (isInteger(from) && isInteger(to)) {
         if (from->isSigned == to->isSigned) {

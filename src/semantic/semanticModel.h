@@ -37,6 +37,8 @@ struct RecordInfo {
     std::string constructorSelector() const;
 };
 
+struct BlockInfo;
+
 struct LocalInfo {
     std::string name;
     const Type* type = nullptr;
@@ -44,6 +46,23 @@ struct LocalInfo {
     bool isParameter = false;
     bool readOnly = false;
     uint32_t index = 0;
+    // The block function that owns this variable's storage; null = the message itself.
+    const BlockInfo* owner = nullptr;
+};
+
+// A block literal. Inlined blocks (literal arguments of ifTrue:, to:do:, ...)
+// run in the enclosing function and own no variables. Other blocks compile to
+// their own function and reach captured variables through an environment of
+// pointers (capture by reference; blocks don't escape their creating frame).
+struct BlockInfo {
+    const ast::BlockLiteral* node = nullptr;
+    const Type* type = nullptr;
+    bool inlined = false;
+    const BlockInfo* parent = nullptr;
+    std::vector<LocalInfo*> params;
+    std::vector<LocalInfo*> locals;
+    std::vector<const LocalInfo*> captures;
+    std::string symbolName;
 };
 
 struct MessageInfo {
@@ -83,6 +102,10 @@ enum class SendKind : uint8_t {
     staticCall,
     recordConstructor,
     interval,
+    blockInvoke,
+    inlineIf,
+    inlineToDo,
+    inlineTimesRepeat,
 };
 
 // How a send node is implemented. `operandType` is the type every operand is
@@ -113,8 +136,10 @@ public:
     std::vector<std::unique_ptr<RecordInfo>> records;
     std::vector<std::unique_ptr<MessageInfo>> messages;
     std::vector<std::unique_ptr<LocalInfo>> locals;
+    std::vector<std::unique_ptr<BlockInfo>> blockInfos;
 
     std::unordered_map<ast::NodeId, const Type*> expressionTypes;
+    std::unordered_map<ast::NodeId, const BlockInfo*> blocks;
     std::unordered_map<ast::NodeId, const LocalInfo*> localRefs;
     std::unordered_map<ast::NodeId, SendInfo> sends;
     std::unordered_map<ast::NodeId, const FieldInfo*> fieldRefs;
@@ -125,6 +150,7 @@ public:
     const LocalInfo* localOf(const ast::Node* node) const;
     const SendInfo* sendOf(const ast::Node* node) const;
     const FieldInfo* fieldOf(const ast::Node* node) const;
+    const BlockInfo* blockOf(const ast::Node* node) const;
     const RecordInfo* recordNamed(std::string_view name) const;
 };
 

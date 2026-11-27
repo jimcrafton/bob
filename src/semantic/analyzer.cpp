@@ -46,6 +46,33 @@ bool hasAttribute(const Node* node, std::string_view name)
     return false;
 }
 
+// Number of arguments for `value`, `value:`, `value:value:` ...; -1 otherwise.
+int valueSelectorArity(const std::string& selector)
+{
+    if (selector == "value") {
+        return 0;
+    }
+    if (selector.empty() || selector.size() % 6 != 0) {
+        return -1;
+    }
+    for (size_t i = 0; i < selector.size(); i += 6) {
+        if (selector.compare(i, 6, "value:") != 0) {
+            return -1;
+        }
+    }
+    return static_cast<int>(selector.size() / 6);
+}
+
+// Where the statements being checked run: the message body or a block function.
+// Inlined blocks keep the context of the code around them.
+struct FunctionContext {
+    MessageInfo* message = nullptr;
+    BlockInfo* block = nullptr;
+    std::vector<LocalInfo*>* locals = nullptr;
+    bool allowReturn = true;
+    int loopDepth = 0;
+};
+
 class Analyzer {
 public:
     Analyzer(SemanticModel& model, DiagnosticEngine& diagnostics) : model_(model), types_(model.types), diagnostics_(diagnostics) {}
@@ -66,10 +93,14 @@ private:
     void declareProgramMessages(const ExtendsDecl* decl);
     void declareMessage(const MessageDecl* decl);
     const Type* resolveType(const Node* node);
+    const Type* resolveBlockType(const TypeMessage* message);
     bool requireValueType(const Node* node, const Type* type);
+    bool rejectEscapingBlock(const Node* node, const Type* type, const char* where);
     OverflowMode overflowFrom(const Node* node, OverflowMode inherited, std::initializer_list<std::string_view> allowed);
 
+    void ensureChecked(MessageInfo* message);
     void checkMessage(MessageInfo* message);
+    void finalizeInferredBlocks(MessageInfo* message);
     void checkStatements(const std::vector<Node*>& statements);
     void checkGroup(const Node* group);
     void checkStatement(const Node* statement);
@@ -84,7 +115,7 @@ private:
     const Type* checkRealLiteral(const RealLiteral* literal, const Type* expected);
     const Type* checkIdentifier(const Identifier* identifier);
     const Type* checkFieldAccess(const FieldAccess* access);
-    const Type* checkUnary(const UnarySend* send);
+    const Type* checkUnary(const UnarySend* send, const Type* expected);
     const Type* checkBinary(const BinarySend* send, const Type* expected);
     const Type* checkKeyword(const KeywordSend* send, const Type* expected);
     const Type* checkOperandPair(const Node* lhs, const Node* rhs, const Type* expected, const char* what, const Node* site);
@@ -94,10 +125,20 @@ private:
     const Type* remember(const Node* node, const Type* type);
     void addSend(const Node* node, SendKind kind, std::string op, const Type* operandType, const Type* resultType);
 
+    const Type* checkBlockLiteral(const BlockLiteral* block, const Type* expected);
+    const Type* checkBlockValue(const std::vector<Node*>& statements, const Type* expected, bool hasExpectation);
+    const Type* checkBlockInvoke(const Node* send, const Type* blockType, const std::vector<Node*>& arguments, const Type* expected);
+    bool unify(const Type* pending, const Type* concrete, const Node* site);
+    BlockInfo* newBlockInfo(const BlockLiteral* literal, bool inlined);
+    const Type* checkInlinedBranch(const Node* argument, const char* selector, const Type* expected);
+    const Type* checkInlinedIf(const KeywordSend* send, const Type* expected);
+    const Type* checkInlinedToDo(const KeywordSend* send);
+    const Type* checkInlinedTimesRepeat(const KeywordSend* send, const Type* receiver);
+
     void pushScope() { scopes_.emplace_back(); }
     void popScope() { scopes_.pop_back(); }
     LocalInfo* declareLocal(const std::string& name, const Type* type, const Node* decl, SourceRange nameRange);
-    LocalInfo* lookupLocal(const std::string& name) const;
+    LocalInfo* lookupLocal(const std::string& name);
     const LocalInfo* rootLocal(const Node* node) const;
     bool isTypeName(const std::string& name) const;
 
@@ -111,11 +152,12 @@ private:
     TypeTable& types_;
     DiagnosticEngine& diagnostics_;
     const Unit* unit_ = nullptr;
-    MessageInfo* current_ = nullptr;
+    FunctionContext context_;
     std::vector<std::unordered_map<std::string, LocalInfo*>> scopes_;
     std::vector<OverflowMode> overflow_;
-    int loopDepth_ = 0;
     OverflowMode unitOverflow_ = OverflowMode::trap;
+    std::unordered_map<const MessageInfo*, int> checkState_;
+    int blockCounter_ = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -136,7 +178,7 @@ void Analyzer::run(const Unit* unit)
         resolveRecord(record.get());
     }
     for (MessageInfo* message : model_.program.messages) {
-        checkMessage(message);
+        ensureChecked(message);
     }
 
     if (unit->unitKind == UnitKind::program && model_.program.main == nullptr) {
@@ -253,6 +295,9 @@ void Analyzer::resolveRecord(RecordInfo* record)
         }
         const Type* type = resolveType(field->type);
         requireValueType(field->type, type);
+        if (rejectEscapingBlock(field->type, type, "a record field")) {
+            type = types_.error();
+        }
         if (type->kind == TypeKind::record) {
             resolveRecord(type->record);
         }
@@ -303,6 +348,9 @@ void Analyzer::declareMessage(const MessageDecl* decl)
     for (const Node* node : decl->params) {
         auto param = static_cast<const MessageParam*>(node);
         const Type* type = resolveType(param->type);
+        if (type->kind == TypeKind::blockToInfer) {
+            type = types_.pendingBlock();
+        }
         bool mainArgs = message->isMain && type->kind == TypeKind::placeholder && type->name == "array";
         if (!mainArgs) {
             requireValueType(param->type, type);
@@ -323,6 +371,9 @@ void Analyzer::declareMessage(const MessageDecl* decl)
     message->returnType = decl->returnType != nullptr ? resolveType(decl->returnType) : types_.voidType();
     if (decl->returnType != nullptr) {
         requireValueType(decl->returnType, message->returnType);
+        if (rejectEscapingBlock(decl->returnType, message->returnType, "a message's return type")) {
+            message->returnType = types_.error();
+        }
     }
 
     if (message->isMain) {
@@ -356,6 +407,12 @@ const Type* Analyzer::resolveType(const Node* node)
         error(node, "sema.unknownType", "unknown type '" + name->name + "'");
         return types_.error();
     }
+    if (auto message = nodeCast<TypeMessage>(node)) {
+        auto receiver = nodeCast<TypeName>(message->receiver);
+        if (receiver != nullptr && receiver->name == "block") {
+            return resolveBlockType(message);
+        }
+    }
     switch (node->kind) {
     case NodeKind::optionalType:
         unsupported(node, "optional types", "phase 4");
@@ -373,6 +430,45 @@ const Type* Analyzer::resolveType(const Node* node)
     return types_.error();
 }
 
+// `block takes: [T1, T2] returns: R`, `block takes: [T]`, `block returns: R`.
+const Type* Analyzer::resolveBlockType(const TypeMessage* message)
+{
+    std::vector<const Type*> params;
+    const Type* result = types_.voidType();
+    if (message->selector != "takes:returns:" && message->selector != "takes:" && message->selector != "returns:") {
+        error(message, "sema.invalidBlockType", "a block type is written 'block takes: [T, ...] returns: R'");
+        return types_.error();
+    }
+    size_t argument = 0;
+    if (message->selector.rfind("takes:", 0) == 0) {
+        const Node* takes = message->arguments[argument++];
+        if (auto tuple = nodeCast<TupleType>(takes)) {
+            for (const Node* element : tuple->elements) {
+                params.push_back(resolveType(static_cast<const TupleTypeElement*>(element)->type));
+            }
+        }
+        else {
+            params.push_back(resolveType(takes));
+        }
+    }
+    if (argument < message->arguments.size()) {
+        result = resolveType(message->arguments[argument]);
+    }
+    for (const Type* param : params) {
+        if (param == types_.error()) {
+            return types_.error();
+        }
+        if (!isValueType(param)) {
+            error(message, "sema.invalidBlockType", "block parameters need value types, not '" + typeName(param) + "'");
+            return types_.error();
+        }
+    }
+    if (result == types_.error()) {
+        return types_.error();
+    }
+    return types_.block(std::move(params), result);
+}
+
 bool Analyzer::requireValueType(const Node* node, const Type* type)
 {
     if (type->kind == TypeKind::placeholder) {
@@ -380,6 +476,16 @@ bool Analyzer::requireValueType(const Node* node, const Type* type)
         return false;
     }
     return true;
+}
+
+bool Analyzer::rejectEscapingBlock(const Node* node, const Type* type, const char* where)
+{
+    if (isBlock(type) || type->kind == TypeKind::blockToInfer) {
+        unsupported(node, std::string("a block as ") + where + " (the block would outlive the frame that created it)",
+                    "phase 8, escaping closures");
+        return true;
+    }
+    return false;
 }
 
 OverflowMode Analyzer::overflowFrom(const Node* node, OverflowMode inherited, std::initializer_list<std::string_view> allowed)
@@ -411,14 +517,35 @@ OverflowMode Analyzer::overflowFrom(const Node* node, OverflowMode inherited, st
 }
 
 // ---------------------------------------------------------------------------
-// statements
+// message bodies
+
+// Messages are checked on demand so a caller sees the inferred types of a
+// callee's bare `block` parameters; a cycle leaves them to be annotated.
+void Analyzer::ensureChecked(MessageInfo* message)
+{
+    int& state = checkState_[message];
+    if (state != 0) {
+        return;
+    }
+    state = 1;
+    FunctionContext savedContext = context_;
+    auto savedScopes = std::move(scopes_);
+    auto savedOverflow = std::move(overflow_);
+    scopes_.clear();
+    overflow_.clear();
+
+    checkMessage(message);
+
+    context_ = savedContext;
+    scopes_ = std::move(savedScopes);
+    overflow_ = std::move(savedOverflow);
+    state = 2;
+}
 
 void Analyzer::checkMessage(MessageInfo* message)
 {
-    current_ = message;
-    scopes_.clear();
+    context_ = FunctionContext{message, nullptr, &message->locals, true, 0};
     overflow_ = {message->overflow};
-    loopDepth_ = 0;
     pushScope();
     for (LocalInfo* param : message->params) {
         scopes_.back()[param->name] = param;
@@ -432,7 +559,33 @@ void Analyzer::checkMessage(MessageInfo* message)
         }
     }
     popScope();
-    current_ = nullptr;
+    finalizeInferredBlocks(message);
+}
+
+void Analyzer::finalizeInferredBlocks(MessageInfo* message)
+{
+    for (LocalInfo* param : message->params) {
+        if (!isBlock(param->type) || !param->type->pending) {
+            continue;
+        }
+        Type* type = const_cast<Type*>(param->type);
+        bool complete = type->arityKnown;
+        for (const Type* p : type->params) {
+            complete = complete && p != nullptr;
+        }
+        if (!complete) {
+            error(static_cast<const MessageParam*>(param->decl)->nameRange, "sema.cannotInferBlock",
+                  "the type of block parameter '" + param->name +
+                      "' can't be inferred from how it's used; write it as '" + param->name + ":[block takes: [T] returns: R]'");
+            param->type = types_.error();
+            continue;
+        }
+        if (type->result == nullptr) {
+            type->result = types_.voidType();
+        }
+        type->pending = false;
+        type->name = blockTypeName(type);
+    }
 }
 
 void Analyzer::checkStatements(const std::vector<Node*>& statements)
@@ -476,7 +629,21 @@ void Analyzer::checkStatement(const Node* statement)
         auto decl = static_cast<const VariableDecl*>(statement);
         const Type* type = resolveType(decl->type);
         requireValueType(decl->type, type);
-        if (decl->initializer != nullptr) {
+        if (type->kind == TypeKind::blockToInfer) {
+            if (decl->initializer == nullptr) {
+                error(decl->type, "sema.cannotInferBlock",
+                      "a bare 'block' variable needs an initializer to take its type from, or write 'block takes: [T] returns: R'");
+                type = types_.error();
+            }
+            else {
+                type = check(decl->initializer, nullptr);
+                if (!isBlock(type) && type != types_.error()) {
+                    error(decl->initializer, "sema.typeMismatch", "'" + decl->name + "' is a block, but this is a '" + typeName(type) + "'");
+                    type = types_.error();
+                }
+            }
+        }
+        else if (decl->initializer != nullptr) {
             const Type* initType = check(decl->initializer, type);
             requireAssignable(decl->initializer, initType, type, "initialize");
         }
@@ -508,22 +675,22 @@ void Analyzer::checkStatement(const Node* statement)
     case NodeKind::whileStmt: {
         auto whileStmt = static_cast<const WhileStmt*>(statement);
         checkCondition(whileStmt->condition, "while");
-        ++loopDepth_;
+        ++context_.loopDepth;
         checkGroup(whileStmt->body);
-        --loopDepth_;
+        --context_.loopDepth;
         break;
     }
     case NodeKind::forStmt:
         checkFor(static_cast<const ForStmt*>(statement));
         break;
     case NodeKind::loopStmt:
-        ++loopDepth_;
+        ++context_.loopDepth;
         checkGroup(static_cast<const LoopStmt*>(statement)->body);
-        --loopDepth_;
+        --context_.loopDepth;
         break;
     case NodeKind::breakStmt:
     case NodeKind::continueStmt:
-        if (loopDepth_ == 0) {
+        if (context_.loopDepth == 0) {
             error(statement, "sema.jumpOutsideLoop",
                   std::string("'") + (statement->kind == NodeKind::breakStmt ? "break" : "continue") + "' is only valid inside a loop");
         }
@@ -593,20 +760,30 @@ void Analyzer::checkAssignment(const Assignment* assignment)
 
 void Analyzer::checkReturn(const ReturnStmt* statement)
 {
-    const Type* returnType = current_->returnType;
+    if (!context_.allowReturn) {
+        error(statement, "sema.returnInBlock",
+              "'return' inside a block that isn't inlined would have to unwind the stack; make the value the block's last "
+              "expression instead (only blocks given directly to ifTrue:, to:do:, timesRepeat: ... may return)");
+        for (const Node* value : statement->values) {
+            check(value, nullptr);
+        }
+        return;
+    }
+    const Type* returnType = context_.message->returnType;
     if (statement->values.size() > 1) {
         unsupported(statement, "returning several values", "a later phase");
         return;
     }
     if (statement->values.empty()) {
         if (returnType != types_.voidType() && returnType != types_.error()) {
-            error(statement, "sema.missingReturnValue", "'" + current_->selector + "' must return a value of type '" + typeName(returnType) + "'");
+            error(statement, "sema.missingReturnValue",
+                  "'" + context_.message->selector + "' must return a value of type '" + typeName(returnType) + "'");
         }
         return;
     }
     if (returnType == types_.voidType()) {
         error(statement->values[0], "sema.unexpectedReturnValue",
-              "'" + current_->selector + "' has no return type; add one such as [int32] or remove the value");
+              "'" + context_.message->selector + "' has no return type; add one such as [int32] or remove the value");
         check(statement->values[0], nullptr);
         return;
     }
@@ -642,9 +819,9 @@ void Analyzer::checkFor(const ForStmt* statement)
     LocalInfo* local = declareLocal(statement->variable, elementType, statement, statement->variableRange);
     local->readOnly = true;
     model_.localRefs[statement->id] = local;
-    ++loopDepth_;
+    ++context_.loopDepth;
     checkGroup(statement->body);
-    --loopDepth_;
+    --context_.loopDepth;
     popScope();
 }
 
@@ -783,6 +960,9 @@ bool Analyzer::requireAssignable(const Node* node, const Type* from, const Type*
     if (from == types_.error() || to == types_.error() || to == nullptr) {
         return true;
     }
+    if (isBlock(from) && from->pending && isBlock(to)) {
+        return unify(from, to, node);
+    }
     if (canWiden(from, to) && isValueType(from)) {
         return true;
     }
@@ -827,7 +1007,7 @@ const Type* Analyzer::check(const Node* node, const Type* expected)
         type = checkFieldAccess(static_cast<const FieldAccess*>(node));
         break;
     case NodeKind::unarySend:
-        type = checkUnary(static_cast<const UnarySend*>(node));
+        type = checkUnary(static_cast<const UnarySend*>(node), expected);
         break;
     case NodeKind::binarySend:
         type = checkBinary(static_cast<const BinarySend*>(node), expected);
@@ -839,7 +1019,7 @@ const Type* Analyzer::check(const Node* node, const Type* expected)
         unsupported(node, "array literals", "phase 5");
         break;
     case NodeKind::blockLiteral:
-        unsupported(node, "blocks as values", "phase 3");
+        type = checkBlockLiteral(static_cast<const BlockLiteral*>(node), isBlock(expected) && !expected->pending ? expected : nullptr);
         break;
     case NodeKind::attributedExpr: {
         auto attributed = static_cast<const AttributedExpr*>(node);
@@ -946,13 +1126,16 @@ const Type* Analyzer::checkFieldAccess(const FieldAccess* access)
     return field->type;
 }
 
-const Type* Analyzer::checkUnary(const UnarySend* send)
+const Type* Analyzer::checkUnary(const UnarySend* send, const Type* expected)
 {
     const Type* receiver = check(send->receiver, nullptr);
     if (receiver == types_.error()) {
         return types_.error();
     }
     const std::string& selector = send->selector;
+    if (isBlock(receiver) && selector == "value") {
+        return checkBlockInvoke(send, receiver, {}, expected);
+    }
     if (receiver->kind == TypeKind::meta && receiver->program != nullptr) {
         auto it = receiver->program->bySelector.find(selector);
         if (it == receiver->program->bySelector.end()) {
@@ -1032,7 +1215,7 @@ const Type* Analyzer::checkOperandPair(const Node* lhs, const Node* rhs, const T
         return types_.error();
     }
     const Type* common = commonType(left, right);
-    if (common == nullptr || !isValueType(common)) {
+    if (common == nullptr || !isValueType(common) || isBlock(common)) {
         std::string message = std::string("mismatched types in ") + what + ": '" + typeName(left) + "' and '" + typeName(right) + "'";
         if (isNumeric(left) && isNumeric(right)) {
             message += "; convert one side explicitly, for example with 'as" + capitalize(left->name) + "'";
@@ -1125,14 +1308,28 @@ void Analyzer::checkArgument(const Node* argument, const Type* parameterType)
 
 const Type* Analyzer::checkKeyword(const KeywordSend* send, const Type* expected)
 {
-    const Type* receiver = check(send->receiver, nullptr);
     const std::string& selector = send->selector;
     SourceRange selectorRange = send->partRanges.empty() ? send->range : send->partRanges.front();
+    const Type* receiver = check(send->receiver, nullptr);
     if (receiver == types_.error()) {
         for (const Node* argument : send->arguments) {
             check(argument, nullptr);
         }
         return types_.error();
+    }
+
+    if (receiver == types_.boolType() &&
+        (selector == "ifTrue:" || selector == "ifFalse:" || selector == "ifTrue:ifFalse:" || selector == "ifFalse:ifTrue:")) {
+        return checkInlinedIf(send, expected);
+    }
+    if (isInteger(receiver) && selector == "to:do:") {
+        return checkInlinedToDo(send);
+    }
+    if (isInteger(receiver) && selector == "timesRepeat:") {
+        return checkInlinedTimesRepeat(send, receiver);
+    }
+    if (isBlock(receiver) && valueSelectorArity(selector) > 0) {
+        return checkBlockInvoke(send, receiver, send->arguments, expected);
     }
 
     if (receiver->kind == TypeKind::meta && receiver->program != nullptr) {
@@ -1144,9 +1341,18 @@ const Type* Analyzer::checkKeyword(const KeywordSend* send, const Type* expected
             error(selectorRange, "sema.unknownMessage", "'" + receiver->name + "' has no message '" + selector + "'");
             return types_.error();
         }
-        const MessageInfo* target = it->second;
+        MessageInfo* target = it->second;
+        ensureChecked(target);
         for (size_t i = 0; i < send->arguments.size(); ++i) {
-            checkArgument(send->arguments[i], target->params[i]->type);
+            const Type* parameterType = target->params[i]->type;
+            if (isBlock(parameterType) && parameterType->pending) {
+                error(send->arguments[i], "sema.cannotInferBlock",
+                      "the block parameter '" + target->params[i]->name + "' of '" + target->selector +
+                          "' is still being inferred (the messages call each other); annotate it with 'block takes: [T] returns: R'");
+                check(send->arguments[i], nullptr);
+                continue;
+            }
+            checkArgument(send->arguments[i], parameterType);
         }
         addSend(send, SendKind::staticCall, selector, nullptr, target->returnType);
         model_.sends[send->id].target = target;
@@ -1222,14 +1428,274 @@ const Type* Analyzer::checkKeyword(const KeywordSend* send, const Type* expected
         error(send, "sema.intervalOutsideFor", "an interval 'a to: b' can only be the iterable of a 'for' loop for now");
         return types_.error();
     }
-    if (receiver == types_.boolType() && (selector == "ifTrue:" || selector == "ifFalse:" || selector == "ifTrue:ifFalse:" ||
-                                          selector == "ifFalse:ifTrue:")) {
-        unsupported(send, "'" + selector + "' with blocks", "phase 3");
-        return types_.error();
-    }
-    (void)expected;
     error(selectorRange, "sema.unknownMessage", "'" + typeName(receiver) + "' doesn't understand '" + selector + "'");
     return types_.error();
+}
+
+// ---------------------------------------------------------------------------
+// blocks
+
+BlockInfo* Analyzer::newBlockInfo(const BlockLiteral* literal, bool inlined)
+{
+    auto info = std::make_unique<BlockInfo>();
+    info->node = literal;
+    info->inlined = inlined;
+    info->parent = context_.block;
+    BlockInfo* raw = info.get();
+    model_.blocks[literal->id] = raw;
+    model_.blockInfos.push_back(std::move(info));
+    return raw;
+}
+
+// A block's value is its last statement, when that's an expression with a value.
+const Type* Analyzer::checkBlockValue(const std::vector<Node*>& statements, const Type* expected, bool hasExpectation)
+{
+    if (statements.empty()) {
+        return types_.voidType();
+    }
+    for (size_t i = 0; i + 1 < statements.size(); ++i) {
+        checkStatement(statements[i]);
+    }
+    auto last = nodeCast<ExpressionStmt>(statements.back());
+    if (last == nullptr) {
+        checkStatement(statements.back());
+        if (hasExpectation && expected != nullptr && expected != types_.voidType()) {
+            error(statements.back(), "sema.missingBlockValue",
+                  "this block must produce a '" + typeName(expected) + "'; end it with an expression");
+        }
+        return types_.voidType();
+    }
+    bool wantsValue = hasExpectation && expected != nullptr && expected != types_.voidType();
+    const Type* type = check(last->expression, wantsValue || isValueType(expected) ? expected : nullptr);
+    if (wantsValue) {
+        requireAssignable(last->expression, type, expected, "produce");
+        return expected;
+    }
+    if (hasExpectation) {
+        return types_.voidType();
+    }
+    return isValueType(type) ? type : types_.voidType();
+}
+
+const Type* Analyzer::checkBlockLiteral(const BlockLiteral* block, const Type* expected)
+{
+    BlockInfo* info = newBlockInfo(block, false);
+    info->symbolName = context_.message->symbolName + ".block" + std::to_string(++blockCounter_);
+    if (expected != nullptr && expected->params.size() != block->params.size()) {
+        error(block, "sema.blockArity",
+              "this block takes " + std::to_string(block->params.size()) + " argument(s) but '" + typeName(expected) + "' takes " +
+                  std::to_string(expected->params.size()));
+        expected = nullptr;
+    }
+
+    FunctionContext savedContext = context_;
+    auto savedScopes = scopes_.size();
+    context_.block = info;
+    context_.locals = &info->locals;
+    context_.allowReturn = false;
+    context_.loopDepth = 0;
+    pushScope();
+
+    std::vector<const Type*> params;
+    bool paramsOk = true;
+    for (size_t i = 0; i < block->params.size(); ++i) {
+        auto param = static_cast<const BlockParam*>(block->params[i]);
+        const Type* declared = param->type != nullptr ? resolveType(param->type) : nullptr;
+        const Type* fromContext = expected != nullptr ? expected->params[i] : nullptr;
+        const Type* type = declared != nullptr ? declared : fromContext;
+        if (declared != nullptr && fromContext != nullptr && declared != fromContext && declared != types_.error()) {
+            error(param, "sema.typeMismatch",
+                  "block parameter '" + param->name + "' is declared '" + typeName(declared) + "' but '" + typeName(fromContext) + "' is expected");
+        }
+        if (type == nullptr) {
+            error(param, "sema.cannotInferBlock",
+                  "the type of block parameter '" + param->name + "' can't be inferred here; write it as ':" + param->name + ": int32'");
+            type = types_.error();
+        }
+        paramsOk = paramsOk && type != types_.error();
+        params.push_back(type);
+        LocalInfo* local = declareLocal(param->name, type, param, param->range);
+        local->isParameter = true;
+        local->readOnly = true;
+        info->params.push_back(local);
+        model_.localRefs[param->id] = local;
+    }
+
+    const Type* result = checkBlockValue(block->statements, expected != nullptr ? expected->result : nullptr, expected != nullptr);
+
+    popScope();
+    scopes_.resize(savedScopes);
+    context_ = savedContext;
+
+    if (!paramsOk || result == types_.error()) {
+        info->type = types_.error();
+        return types_.error();
+    }
+    info->type = expected != nullptr ? expected : types_.block(std::move(params), result);
+    return info->type;
+}
+
+// Fills a bare `block` parameter's shape from a concrete block type it meets.
+bool Analyzer::unify(const Type* pendingType, const Type* concrete, const Node* site)
+{
+    Type* pending = const_cast<Type*>(pendingType);
+    if (concrete->pending) {
+        error(site, "sema.cannotInferBlock", "two inferred blocks meet here; annotate one with 'block takes: [T] returns: R'");
+        return false;
+    }
+    if (pending->arityKnown && pending->params.size() != concrete->params.size()) {
+        error(site, "sema.blockArity", "block arity mismatch: '" + typeName(concrete) + "'");
+        return false;
+    }
+    if (!pending->arityKnown) {
+        pending->params.assign(concrete->params.size(), nullptr);
+        pending->arityKnown = true;
+    }
+    for (size_t i = 0; i < concrete->params.size(); ++i) {
+        if (pending->params[i] == nullptr) {
+            pending->params[i] = concrete->params[i];
+        }
+        else if (pending->params[i] != concrete->params[i]) {
+            error(site, "sema.typeMismatch", "this block is used as '" + typeName(concrete) + "' elsewhere it takes '" +
+                                                 typeName(pending->params[i]) + "'");
+            return false;
+        }
+    }
+    if (pending->result == nullptr) {
+        pending->result = concrete->result;
+    }
+    else if (pending->result != concrete->result) {
+        error(site, "sema.typeMismatch", "this block's result is used inconsistently");
+        return false;
+    }
+    return true;
+}
+
+const Type* Analyzer::checkBlockInvoke(const Node* send, const Type* blockType, const std::vector<Node*>& arguments, const Type* expected)
+{
+    Type* pending = blockType->pending ? const_cast<Type*>(blockType) : nullptr;
+    size_t arity = arguments.size();
+    if (pending != nullptr && !pending->arityKnown) {
+        pending->params.assign(arity, nullptr);
+        pending->arityKnown = true;
+    }
+    if (blockType->params.size() != arity) {
+        error(send, "sema.blockArity",
+              "this block takes " + std::to_string(blockType->params.size()) + " argument(s), not " + std::to_string(arity));
+        for (const Node* argument : arguments) {
+            check(argument, nullptr);
+        }
+        return types_.error();
+    }
+    for (size_t i = 0; i < arity; ++i) {
+        const Type* parameter = blockType->params[i];
+        if (parameter == nullptr) {
+            const Type* argumentType = check(arguments[i], nullptr);
+            if (isValueType(argumentType)) {
+                pending->params[i] = argumentType;
+            }
+            continue;
+        }
+        checkArgument(arguments[i], parameter);
+    }
+
+    const Type* result = blockType->result;
+    if (pending != nullptr && result == nullptr && expected != nullptr && isValueType(expected)) {
+        pending->result = expected;
+        result = expected;
+    }
+    if (result == nullptr) {
+        result = types_.voidType();
+    }
+    addSend(send, SendKind::blockInvoke, "value", blockType, result);
+    return result;
+}
+
+const Type* Analyzer::checkInlinedBranch(const Node* argument, const char* selector, const Type* expected)
+{
+    auto literal = nodeCast<BlockLiteral>(argument);
+    if (literal == nullptr || !literal->params.empty()) {
+        check(argument, nullptr);
+        error(argument, "sema.inlinedNeedsBlock", std::string("'") + selector + "' needs a block literal without parameters, such as '{ x := 1; }'");
+        return types_.error();
+    }
+    newBlockInfo(literal, true);
+    pushScope();
+    const Type* value = checkBlockValue(literal->statements, expected, false);
+    popScope();
+    remember(literal, value);
+    return value;
+}
+
+const Type* Analyzer::checkInlinedIf(const KeywordSend* send, const Type* expected)
+{
+    std::vector<const Type*> values;
+    for (const Node* argument : send->arguments) {
+        values.push_back(checkInlinedBranch(argument, send->selector.c_str(), expected));
+    }
+    const Type* result = types_.voidType();
+    if (values.size() == 2 && isValueType(values[0]) && isValueType(values[1])) {
+        const Type* common = commonType(values[0], values[1]);
+        if (common != nullptr) {
+            result = common;
+        }
+    }
+    addSend(send, SendKind::inlineIf, send->selector, types_.boolType(), result);
+    return result;
+}
+
+const Type* Analyzer::checkInlinedToDo(const KeywordSend* send)
+{
+    auto literal = nodeCast<BlockLiteral>(send->arguments[1]);
+    if (literal == nullptr || literal->params.size() != 1) {
+        check(send->arguments[0], nullptr);
+        check(send->arguments[1], nullptr);
+        error(send->arguments[1], "sema.inlinedNeedsBlock", "'to:do:' needs a block literal with one parameter, such as '{ :i | ... }'");
+        return types_.error();
+    }
+    auto param = static_cast<const BlockParam*>(literal->params[0]);
+    const Type* declared = param->type != nullptr ? resolveType(param->type) : nullptr;
+    const Type* common = checkOperandPair(send->receiver, send->arguments[0], declared, "the bounds of 'to:do:'", send);
+    const Type* elementType = common;
+    if (common != types_.error() && !isInteger(common)) {
+        error(send, "sema.invalidInterval", "the bounds of 'to:do:' must be integers");
+        elementType = types_.error();
+    }
+    if (declared != nullptr && elementType != types_.error() && requireAssignable(send, elementType, declared, "iterate")) {
+        elementType = declared;
+    }
+    BlockInfo* info = newBlockInfo(literal, true);
+    pushScope();
+    LocalInfo* local = declareLocal(param->name, elementType, param, param->range);
+    local->readOnly = true;
+    info->params.push_back(local);
+    model_.localRefs[param->id] = local;
+    ++context_.loopDepth;
+    checkStatements(literal->statements);
+    --context_.loopDepth;
+    popScope();
+    remember(literal, types_.voidType());
+    addSend(send, SendKind::inlineToDo, "to:do:", elementType, types_.voidType());
+    return types_.voidType();
+}
+
+const Type* Analyzer::checkInlinedTimesRepeat(const KeywordSend* send, const Type* receiver)
+{
+    auto literal = nodeCast<BlockLiteral>(send->arguments[0]);
+    if (literal == nullptr || !literal->params.empty()) {
+        check(send->arguments[0], nullptr);
+        error(send->arguments[0], "sema.inlinedNeedsBlock", "'timesRepeat:' needs a block literal without parameters");
+        return types_.error();
+    }
+    newBlockInfo(literal, true);
+    pushScope();
+    ++context_.loopDepth;
+    checkStatements(literal->statements);
+    --context_.loopDepth;
+    popScope();
+    remember(literal, types_.voidType());
+    addSend(send, SendKind::inlineTimesRepeat, "timesRepeat:", receiver, types_.voidType());
+    return types_.voidType();
 }
 
 // ---------------------------------------------------------------------------
@@ -1247,21 +1713,32 @@ LocalInfo* Analyzer::declareLocal(const std::string& name, const Type* type, con
     local->name = name;
     local->type = type;
     local->decl = decl;
-    local->index = static_cast<uint32_t>(current_->locals.size());
+    local->owner = context_.block;
+    local->index = static_cast<uint32_t>(context_.locals->size());
     LocalInfo* raw = local.get();
-    current_->locals.push_back(raw);
+    context_.locals->push_back(raw);
     scopes_.back()[name] = raw;
     model_.locals.push_back(std::move(local));
     return raw;
 }
 
-LocalInfo* Analyzer::lookupLocal(const std::string& name) const
+// Looking up a variable owned by an enclosing function records it as captured
+// by every block function between here and its owner.
+LocalInfo* Analyzer::lookupLocal(const std::string& name)
 {
     for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
         auto found = it->find(name);
-        if (found != it->end()) {
-            return found->second;
+        if (found == it->end()) {
+            continue;
         }
+        LocalInfo* local = found->second;
+        for (BlockInfo* block = context_.block; block != nullptr && block != local->owner;
+             block = const_cast<BlockInfo*>(block->parent)) {
+            if (std::find(block->captures.begin(), block->captures.end(), local) == block->captures.end()) {
+                block->captures.push_back(local);
+            }
+        }
+        return local;
     }
     return nullptr;
 }
@@ -1319,6 +1796,16 @@ bool Analyzer::alwaysReturns(const Node* statement) const
         }
         return true;
     }
+    case NodeKind::expressionStmt: {
+        auto send = nodeCast<KeywordSend>(static_cast<const ExpressionStmt*>(statement)->expression);
+        const SendInfo* info = send != nullptr ? model_.sendOf(send) : nullptr;
+        if (info == nullptr || info->kind != SendKind::inlineIf || send->arguments.size() != 2) {
+            return false;
+        }
+        auto first = nodeCast<BlockLiteral>(send->arguments[0]);
+        auto second = nodeCast<BlockLiteral>(send->arguments[1]);
+        return first != nullptr && second != nullptr && alwaysReturns(first->statements) && alwaysReturns(second->statements);
+    }
     default:
         return false;
     }
@@ -1332,6 +1819,11 @@ bool Analyzer::breaksOut(const Node* node, int depth) const
     int inner = depth;
     if (node->kind == NodeKind::whileStmt || node->kind == NodeKind::forStmt || node->kind == NodeKind::loopStmt) {
         inner = depth + 1;
+    }
+    if (const SendInfo* send = model_.sendOf(node)) {
+        if (send->kind == SendKind::inlineToDo || send->kind == SendKind::inlineTimesRepeat) {
+            inner = depth + 1;
+        }
     }
     for (const ChildRef& child : childrenOf(node)) {
         if (breaksOut(child.node, inner)) {

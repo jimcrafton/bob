@@ -198,6 +198,26 @@ TEST_F(EndToEnd, ProgramWithoutMainIsRejected)
     EXPECT_NE(diagnostics.find("sema.noMain"), std::string::npos) << diagnostics;
 }
 
+TEST_F(EndToEnd, ExplainDispatchReportsEachSend)
+{
+    bob::driver::DriverOptions options;
+    options.inputPath = std::string(BOB_TEST_PROGRAMS_DIR) + "/run/blocks.bob";
+    options.outputPath = workPath("blocks.exe");
+    options.runtimeDir = BOB_TEST_RUNTIME_DIR;
+    options.explainDispatch = true;
+    std::string output;
+    std::string diagnostics;
+    llvm::raw_string_ostream out(output);
+    llvm::raw_string_ostream err(diagnostics);
+    bob::driver::Driver driver(out, err);
+    EXPECT_EQ(driver.run(options), 0) << diagnostics;
+    EXPECT_NE(output.find("'value:' -> block call"), std::string::npos) << output;
+    EXPECT_NE(output.find("'apply:to:' -> tier 1, direct call to 'blocks apply:to:'"), std::string::npos) << output;
+    EXPECT_NE(output.find("'*' -> tier 0, intrinsic int32 (overflow: trap)"), std::string::npos) << output;
+    EXPECT_NE(output.find("'ifTrue:ifFalse:' -> tier 0, inlined control flow"), std::string::npos) << output;
+    EXPECT_NE(output.find("captures total by reference"), std::string::npos) << output;
+}
+
 TEST_F(EndToEnd, DumpLlvmPrintsTheModule)
 {
     bob::driver::DriverOptions options;

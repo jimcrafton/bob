@@ -55,6 +55,9 @@ std::optional<std::string> parseDriverArguments(std::span<const std::string> arg
         else if (arg == "--dump-llvm") {
             options.dumpLlvm = true;
         }
+        else if (arg == "--explain-dispatch") {
+            options.explainDispatch = true;
+        }
         else if (arg.size() == 3 && arg.starts_with("-O") && arg[2] >= '0' && arg[2] <= '3') {
             options.optLevel = arg[2] - '0';
         }
@@ -117,6 +120,7 @@ const char* driverUsage()
            "  --dump-tokens           print the token stream of a .bob file\n"
            "  --dump-ast[=text|json]  print the syntax tree of a .bob file\n"
            "  --dump-llvm             print the generated LLVM IR of a .bob file instead of compiling it\n"
+           "  --explain-dispatch      report how each message send is compiled (intrinsic, inlined, direct, block call)\n"
            "  -v, --verbose           print the link command\n"
            "  --linker=<path>         lld-link to use (default: found at build time, then PATH)\n"
            "  --runtime-dir=<dir>     directory holding bobrt.lib and kernel32.lib (default: bobc's directory)\n"

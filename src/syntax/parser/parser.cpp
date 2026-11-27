@@ -1265,9 +1265,6 @@ Node* Parser::parseBlockLiteral()
             }
             else {
                 param->name = std::string(expect(TokenKind::identifier, "a block parameter name").text);
-                if (accept(TokenKind::colon)) {
-                    param->type = parseType(false);
-                }
             }
             param->range = rangeFrom(paramBegin);
             block->params.push_back(param);

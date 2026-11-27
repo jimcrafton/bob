@@ -103,7 +103,7 @@ postfix     = primary { '.' identifier }                             # field acc
 primary     = literal | identifier | 'self' | 'super' | 'nil' | 'true' | 'false'
             | '-' number | '(' expression ')' | block | array | attributes '(' expression ')'
 block       = '{' [ {':' blockParam} '|' ] statementList '}'
-blockParam  = identifier [':' typeTerm] | keywordSelector typeTerm     # :i  :i: int32  :i : int32
+blockParam  = identifier | keywordSelector typeTerm                   # :i   :i: int32   (`:a :b` is two parameters)
 array       = '[' [expression {',' expression} [',']] ']'
 ```
 | Precedence (high → low) | Operators |

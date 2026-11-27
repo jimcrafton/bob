@@ -157,6 +157,18 @@ TEST(Parser, BlockWithTypedParameter)
               "        argument: Ident name=j\n");
 }
 
+TEST(Parser, BlockParametersWithoutTypes)
+{
+    EXPECT_EQ(expectClean("f := { :a :b | a };"),
+              "Assign\n"
+              "  target: Ident name=f\n"
+              "  value: Block\n"
+              "    param: BlockParam name=a\n"
+              "    param: BlockParam name=b\n"
+              "    statement: ExprStmt\n"
+              "      expression: Ident name=a\n");
+}
+
 TEST(Parser, BlockReceiverOnSameLine)
 {
     EXPECT_EQ(expectClean("{ i < 10 } whileTrue: { i := i + 1; };"),

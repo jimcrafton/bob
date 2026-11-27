@@ -21,12 +21,16 @@ enum class TypeKind : uint8_t {
     record,
     meta,
     placeholder,
+    block,
+    blockToInfer,
 };
 
 // `meta` is the class side of something named in an expression: the program
 // (`hello fact: 5`, `self` in a static message) or a record type (`Point x: 1 y: 2`).
 // `placeholder` is a built-in type name that exists but isn't implemented yet
 // (array, string, ...): it can be named, but values of it can't be used.
+// `block` is a block type; `blockToInfer` is the bare type name `block`, whose
+// parameter and result types are inferred from how it's used.
 struct Type {
     TypeKind kind = TypeKind::error;
     std::string name;
@@ -35,6 +39,13 @@ struct Type {
     RecordInfo* record = nullptr;
     const Type* instance = nullptr;
     ProgramInfo* program = nullptr;
+
+    // block: parameter types and result (void = no result). While a bare `block`
+    // parameter is being inferred, `pending` is set and entries may be null.
+    std::vector<const Type*> params;
+    const Type* result = nullptr;
+    bool pending = false;
+    bool arityKnown = false;
 };
 
 class TypeTable {
@@ -56,6 +67,10 @@ public:
     const Type* metaOf(const Type* instance);
     Type* addProgram(ProgramInfo* program);
 
+    const Type* block(std::vector<const Type*> params, const Type* result);
+    // A fresh, mutable block type whose shape is filled in by inference.
+    Type* pendingBlock();
+
 private:
     Type* own(Type type);
 
@@ -70,7 +85,10 @@ private:
 bool isInteger(const Type* type);
 bool isReal(const Type* type);
 bool isNumeric(const Type* type);
+bool isBlock(const Type* type);
 bool isValueType(const Type* type);
+bool sameBlockShape(const Type* a, const Type* b);
+std::string blockTypeName(const Type* type);
 
 // Lossless implicit conversions only: wider integer of compatible signedness,
 // real32 -> real64, or identity.

@@ -5,6 +5,7 @@ add_library(bobSemantic STATIC
     types.cpp
     semanticModel.cpp
     analyzer.cpp
+    explainDispatch.cpp
 )
 
 target_include_directories(bobSemantic PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")

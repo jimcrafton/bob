@@ -45,6 +45,12 @@ const FieldInfo* SemanticModel::fieldOf(const ast::Node* node) const
     return it == fieldRefs.end() ? nullptr : it->second;
 }
 
+const BlockInfo* SemanticModel::blockOf(const ast::Node* node) const
+{
+    auto it = node != nullptr ? blocks.find(node->id) : blocks.end();
+    return it == blocks.end() ? nullptr : it->second;
+}
+
 const RecordInfo* SemanticModel::recordNamed(std::string_view name) const
 {
     for (const auto& record : records) {

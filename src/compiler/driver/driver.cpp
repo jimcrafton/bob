@@ -3,6 +3,7 @@
 #include "analyzer.h"
 #include "ast/astDump.h"
 #include "codegen/codeGenerator.h"
+#include "explainDispatch.h"
 #include "driver/linker.h"
 #include "driver/objectEmitter.h"
 #include "driver/toolchain.h"
@@ -52,8 +53,8 @@ int Driver::run(const DriverOptions& options)
     if (!input.ends_with(".ll")) {
         return fail("unsupported input '" + options.inputPath + "' (expected a .bob or .ll file)");
     }
-    if (options.dumpAst != AstDumpFormat::none || options.dumpTokens || options.syntaxOnly || options.dumpLlvm) {
-        return fail("--dump-ast, --dump-tokens, --dump-llvm and --syntax-only apply to .bob input only");
+    if (options.dumpAst != AstDumpFormat::none || options.dumpTokens || options.syntaxOnly || options.dumpLlvm || options.explainDispatch) {
+        return fail("--dump-ast, --dump-tokens, --dump-llvm, --explain-dispatch and --syntax-only apply to .bob input only");
     }
     return produceOutput(options, [&](const std::string& objectPath) { return emitObjectFromIrFile(options.inputPath, objectPath, options.optLevel); });
 }
@@ -95,6 +96,9 @@ int Driver::runBobSource(const DriverOptions& options)
     sema::analyze(parsed.unit, model, diagnostics);
     if (reportDiagnostics(diagnostics, file) != 0) {
         return 1;
+    }
+    if (options.explainDispatch) {
+        out_ << sema::explainDispatch(model, *parsed.arena, file);
     }
     if (parsed.unit->unitKind != ast::UnitKind::program && !options.compileOnly && !options.dumpLlvm) {
         return fail("only a 'program' can be linked into an executable; compile modules and libraries with -c");

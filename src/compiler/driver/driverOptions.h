@@ -17,6 +17,7 @@ struct DriverOptions {
     AstDumpFormat dumpAst = AstDumpFormat::none;
     bool dumpTokens = false;
     bool dumpLlvm = false;
+    bool explainDispatch = false;
     bool syntaxOnly = false;
     int optLevel = 0;
     std::string outputPath;

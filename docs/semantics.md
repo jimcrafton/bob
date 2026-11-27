@@ -17,6 +17,8 @@ What the analyzer (`bobSemantic`, `src/semantic`) and code generator (`src/compi
 | `real32 real64` | IEEE |
 | records | value types, C layout in declaration order, `inherits` places the base fields first, `@[packed]` supported |
 
+| blocks | closures, see [Blocks](#blocks-phase-3) |
+
 Not yet: `int128`, `char`, strings, arrays and other containers, optionals, tuples, enums, subranges, named types, classes, protocols.
 
 ### Implicit conversions
@@ -55,6 +57,25 @@ An untyped literal takes its type from context: the declared type, the parameter
 `if`/`else if`/`else`, `while`, `loop`, `break`, `continue`, `return`, statement groups, and:
 - `for i in a to: b { … }` visits `a`…`b` inclusive (nothing if `a > b`), and it's correct up to the type's maximum (`250u8 to: 255u8`). The bounds must be integers. The loop variable has their common type, or the declared type (`for b: uint8 in …`). Intervals aren't values yet: `k := 1 to: 3` is `sema.intervalOutsideFor`.
 - `case x of { … } else { … }` on integers. Labels are integer literals or `(lo to: hi)` ranges and must not overlap. Because an integer can't be covered completely, `else` is required (`sema.caseNotExhaustive`). Enums and unions come in phase 5.
+
+## Blocks (phase 3)
+- **Values.** `{ :a :b | statements }` is a closure. Its value is its last statement when that's an expression, so `{ :i: int32 | i * i }` returns `i * i`. Call it with `value`, `value:`, `value:value:` and so on.
+- **Types** are written as a type message when needed: `[block takes: [int32, int32] returns: bool]`, `[block takes: [int32]]` (no result), `[block returns: int32]` (no parameters), or plain `block`.
+- **Inference.**
+  - A message parameter typed plain `block` gets its type from how the body uses it. `f value: x` fixes the parameter types, and a result used as `int32` fixes the result. Passing it to another message's block parameter fixes it from there.
+  - If the body doesn't pin it down (never invoked, or only in a cycle of messages), you get `sema.cannotInferBlock`, asking for the annotation.
+  - A block literal's parameter types come from the expected block type. Without one, write them, as in `{ :i: int32 | … }`.
+  - A local declared `b: block := …` takes its type from the initializer.
+- **Capture by reference.** A block reads and writes the variables it uses from enclosing code directly. Its environment is a stack record of pointers to those variables, with no allocation.
+- **No escaping (until phase 8).** A block can be passed as an argument, held in a local, and invoked. It can't be a message's return type or a record field (`sema.unsupported`), so it never outlives the frame that created it.
+- **Inlined messages.** These compile to plain branches and loops, with no closure:
+  - `b ifTrue: { … }`, `ifFalse:`, `ifTrue:ifFalse:`, `ifFalse:ifTrue:` with block literals. The two-branch forms produce a value when both branches end in expressions of a common type: `m := (x > 3) ifTrue: { 100 } ifFalse: { 200 };`.
+  - `a to: b do: { :i | … }` behaves like `for i in a to: b`.
+  - `n timesRepeat: { … }`.
+
+  Non-literal arguments are `sema.inlinedNeedsBlock`. `break`/`continue` inside `to:do:` and `timesRepeat:` apply to them, and inside the `ifTrue:` family they apply to the surrounding loop.
+- **`return`** is allowed only in code that runs in the message's own frame: its body and inlined blocks. Inside any other block it's `sema.returnInBlock`, because it would have to unwind through whoever called the block. Make the value the block's last expression instead. Likewise, `break`/`continue` can't leave a block function.
+- **Code generation.** A non-inlined block becomes an internal function `bob.<program>.<message>.blockN(env, args…)`. A block value is `{function pointer, environment pointer}`, and calling it is an indirect call. `bobc --explain-dispatch` lists every send and block with how it was compiled.
 
 ## Overflow and traps
 - `+ - *`, `negated`, `abs` and `shl` follow the overflow mode: `trap` (default), `wrap` or `saturate`. It's set with `@[overflow: …]` on the unit, a message, a statement group or a parenthesised expression, and the innermost wins.
