@@ -727,6 +727,24 @@ Node* Parser::parseStatement(std::vector<Attribute*> attributes)
     if (at(TokenKind::kwReturn)) {
         statement = parseReturn(begin);
     }
+    else if (at(TokenKind::kwIf)) {
+        statement = parseIf(begin);
+    }
+    else if (at(TokenKind::kwWhile)) {
+        statement = parseWhile(begin);
+    }
+    else if (at(TokenKind::kwFor)) {
+        statement = parseFor(begin);
+    }
+    else if (at(TokenKind::kwLoop)) {
+        statement = parseLoop(begin);
+    }
+    else if (at(TokenKind::kwBreak) || at(TokenKind::kwContinue)) {
+        statement = parseJump(begin);
+    }
+    else if (at(TokenKind::kwCase)) {
+        statement = parseCase(begin);
+    }
     else if (atKeywordPart()) {
         statement = parseVariableDecl(begin);
     }
@@ -835,11 +853,155 @@ Node* Parser::parseExpressionStatement(uint32_t begin)
 Node* Parser::parseStatementGroupBody()
 {
     const Token& open = expect(TokenKind::leftBrace, "'{'");
+    ValueRestorer<bool> condition(conditionMode_, false);
+    ValueRestorer<bool> caseSubject(caseSubjectMode_, false);
     StatementGroup* group = make<StatementGroup>(open.range.begin);
     parseList(group->statements, [this]() { return parseStatement({}); });
     expect(TokenKind::rightBrace, "'}' to close the body");
     group->range = rangeFrom(open.range.begin);
     return group;
+}
+
+// Conditions are ordinary expressions, but a `{` in operand position would be
+// ambiguous with the statement body, so it is rejected unless parenthesised.
+Node* Parser::parseCondition()
+{
+    ValueRestorer<bool> condition(conditionMode_, true);
+    return parseExpression();
+}
+
+Node* Parser::parseControlBody(const char* statement)
+{
+    if (!at(TokenKind::leftBrace)) {
+        fail(current().range, "parse.expectedBraces",
+             std::string("expected '{' to start the body of '") + statement + "'; bodies always need braces, even for one statement");
+    }
+    return parseStatementGroupBody();
+}
+
+Node* Parser::parseIf(uint32_t begin)
+{
+    advance();
+    IfStmt* statement = make<IfStmt>(begin);
+    statement->condition = parseCondition();
+    statement->thenBody = parseControlBody("if");
+    if (accept(TokenKind::kwElse)) {
+        if (at(TokenKind::kwIf)) {
+            statement->elseBody = parseIf(current().range.begin);
+        }
+        else {
+            statement->elseBody = parseControlBody("else");
+        }
+    }
+    accept(TokenKind::semicolon);
+    statement->range = rangeFrom(begin);
+    return statement;
+}
+
+Node* Parser::parseWhile(uint32_t begin)
+{
+    advance();
+    WhileStmt* statement = make<WhileStmt>(begin);
+    statement->condition = parseCondition();
+    statement->body = parseControlBody("while");
+    accept(TokenKind::semicolon);
+    statement->range = rangeFrom(begin);
+    return statement;
+}
+
+Node* Parser::parseFor(uint32_t begin)
+{
+    advance();
+    ForStmt* statement = make<ForStmt>(begin);
+    if (at(TokenKind::keywordSelector)) {
+        statement->variable = takeKeywordPart(&statement->variableRange);
+        statement->variableType = parseType(false);
+    }
+    else {
+        const Token& name = expect(TokenKind::identifier, "a loop variable name");
+        statement->variable = std::string(name.text);
+        statement->variableRange = name.range;
+        if (accept(TokenKind::colon)) {
+            statement->variableType = parseType(false);
+        }
+    }
+    expect(TokenKind::kwIn, "'in' after the loop variable");
+    statement->iterable = parseCondition();
+    statement->body = parseControlBody("for");
+    accept(TokenKind::semicolon);
+    statement->range = rangeFrom(begin);
+    return statement;
+}
+
+Node* Parser::parseLoop(uint32_t begin)
+{
+    advance();
+    LoopStmt* statement = make<LoopStmt>(begin);
+    statement->body = parseControlBody("loop");
+    accept(TokenKind::semicolon);
+    statement->range = rangeFrom(begin);
+    return statement;
+}
+
+Node* Parser::parseJump(uint32_t begin)
+{
+    bool isBreak = advance().kind == TokenKind::kwBreak;
+    Node* statement = isBreak ? static_cast<Node*>(make<BreakStmt>(begin)) : static_cast<Node*>(make<ContinueStmt>(begin));
+    expectTerminator();
+    statement->range = rangeFrom(begin);
+    return statement;
+}
+
+Node* Parser::parseCase(uint32_t begin)
+{
+    advance();
+    CaseStmt* statement = make<CaseStmt>(begin);
+    {
+        ValueRestorer<bool> caseSubject(caseSubjectMode_, true);
+        statement->subject = parseCondition();
+    }
+    if (!atWord("of")) {
+        failExpected("'of' after the case subject");
+    }
+    advance();
+    expect(TokenKind::leftBrace, "'{' to open the case entries");
+    parseList(statement->entries, [this]() { return parseCaseEntry(); });
+    expect(TokenKind::rightBrace, "'}' to close the case entries");
+    if (accept(TokenKind::kwElse)) {
+        statement->elseBody = parseControlBody("else");
+    }
+    accept(TokenKind::semicolon);
+    statement->range = rangeFrom(begin);
+    return statement;
+}
+
+Node* Parser::parseCaseEntry()
+{
+    uint32_t begin = current().range.begin;
+    CaseEntry* entry = make<CaseEntry>(begin);
+    {
+        ValueRestorer<bool> caseMode(caseLabelMode_, true);
+        ValueRestorer<bool> caseEnded(caseLabelEnded_, false);
+        while (true) {
+            caseLabelEnded_ = false;
+            entry->labels.push_back(parseBinaryExpression(1));
+            if (caseLabelEnded_) {
+                break;
+            }
+            if (accept(TokenKind::comma)) {
+                continue;
+            }
+            expect(TokenKind::colon, "':' after the case labels");
+            break;
+        }
+    }
+    if (!at(TokenKind::leftBrace)) {
+        fail(current().range, "parse.expectedBraces", "expected '{' after the case labels; case bodies always need braces");
+    }
+    entry->body = parseBlockLiteral();
+    accept(TokenKind::semicolon);
+    entry->range = rangeFrom(begin);
+    return entry;
 }
 
 // ---------------------------------------------------------------------------
@@ -857,12 +1019,7 @@ Node* Parser::parseExpression()
         const Token& part = advance();
         send->selector += part.text;
         send->partRanges.push_back(part.range);
-        if (part.text == "caseOf:" && at(TokenKind::leftBrace)) {
-            send->arguments.push_back(parseCaseBlock());
-        }
-        else {
-            send->arguments.push_back(parseBinaryExpression(1));
-        }
+        send->arguments.push_back(parseBinaryExpression(1));
     }
     send->range = rangeFrom(receiver->range.begin);
     return send;
@@ -909,6 +1066,9 @@ Node* Parser::parseUnaryExpression()
 {
     Node* receiver = parsePostfixExpression();
     while (!caseLabelEnded_) {
+        if (caseSubjectMode_ && atWord("of") && at(TokenKind::leftBrace, 1)) {
+            break;
+        }
         // `name :=` starts the next statement (a forgotten ';'), never a unary send.
         if (at(TokenKind::identifier) && !at(TokenKind::assign, 1)) {
             const Token& selector = advance();
@@ -1033,11 +1193,17 @@ Node* Parser::parsePrimary()
         advance();
         ValueRestorer<bool> caseMode(caseLabelMode_, false);
         ValueRestorer<bool> caseEnded(caseLabelEnded_, false);
+        ValueRestorer<bool> condition(conditionMode_, false);
+        ValueRestorer<bool> caseSubject(caseSubjectMode_, false);
         Node* inner = parseExpression();
         expect(TokenKind::rightParen, "')'");
         return inner;
     }
     case TokenKind::leftBrace:
+        if (conditionMode_) {
+            fail(token.range, "parse.blockInCondition",
+                 "a block can't appear unparenthesised in an if/while/for/case condition; wrap that part of the condition in '( )'");
+        }
         return parseBlockLiteral();
     case TokenKind::leftBracket:
         return parseArrayLiteral();
@@ -1046,6 +1212,8 @@ Node* Parser::parsePrimary()
         expect(TokenKind::leftParen, "'(' after expression attributes, as in '@[overflow: wrap] (a + b)'");
         ValueRestorer<bool> caseMode(caseLabelMode_, false);
         ValueRestorer<bool> caseEnded(caseLabelEnded_, false);
+        ValueRestorer<bool> condition(conditionMode_, false);
+        ValueRestorer<bool> caseSubject(caseSubjectMode_, false);
         AttributedExpr* expression = make<AttributedExpr>(begin);
         expression->attributes = std::move(attributes);
         expression->expression = parseExpression();
@@ -1120,6 +1288,8 @@ Node* Parser::parseArrayLiteral()
     const Token& open = advance();
     ValueRestorer<bool> caseMode(caseLabelMode_, false);
     ValueRestorer<bool> caseEnded(caseLabelEnded_, false);
+    ValueRestorer<bool> condition(conditionMode_, false);
+    ValueRestorer<bool> caseSubject(caseSubjectMode_, false);
     ArrayLiteral* array = make<ArrayLiteral>(open.range.begin);
     while (!at(TokenKind::rightBracket) && !at(TokenKind::endOfFile)) {
         array->elements.push_back(parseExpression());
@@ -1130,42 +1300,6 @@ Node* Parser::parseArrayLiteral()
     expect(TokenKind::rightBracket, "']' to close the array literal");
     array->range = rangeFrom(open.range.begin);
     return array;
-}
-
-Node* Parser::parseCaseBlock()
-{
-    const Token& open = expect(TokenKind::leftBrace, "'{' to open the case entries");
-    CaseBlock* caseBlock = make<CaseBlock>(open.range.begin);
-    parseList(caseBlock->entries, [this]() -> Node* {
-        uint32_t begin = current().range.begin;
-        CaseEntry* entry = make<CaseEntry>(begin);
-        {
-            ValueRestorer<bool> caseMode(caseLabelMode_, true);
-            while (true) {
-                caseLabelEnded_ = false;
-                entry->labels.push_back(parseBinaryExpression(1));
-                if (caseLabelEnded_) {
-                    break;
-                }
-                if (accept(TokenKind::comma)) {
-                    continue;
-                }
-                expect(TokenKind::colon, "':' after the case labels");
-                break;
-            }
-            caseLabelEnded_ = false;
-        }
-        if (!at(TokenKind::leftBrace)) {
-            failExpected("a block after the case labels");
-        }
-        entry->body = parseBlockLiteral();
-        accept(TokenKind::semicolon);
-        entry->range = rangeFrom(begin);
-        return entry;
-    });
-    expect(TokenKind::rightBrace, "'}' to close the case entries");
-    caseBlock->range = rangeFrom(open.range.begin);
-    return caseBlock;
 }
 
 // ---------------------------------------------------------------------------

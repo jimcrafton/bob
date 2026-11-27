@@ -187,7 +187,8 @@ TEST_F(EndToEnd, DumpAstJson)
     llvm::raw_string_ostream err(diagnostics);
     bob::driver::Driver driver(out, err);
     EXPECT_EQ(driver.run(options), 0) << diagnostics;
-    EXPECT_NE(output.find("\"selector\": \"to:do:\""), std::string::npos);
+    EXPECT_NE(output.find("\"kind\": \"For\""), std::string::npos);
+    EXPECT_NE(output.find("\"variable\": \"i\""), std::string::npos);
 }
 
 TEST_F(EndToEnd, BobSourceNotYetSupported)

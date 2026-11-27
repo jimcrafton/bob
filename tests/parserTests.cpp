@@ -182,41 +182,144 @@ TEST(Parser, AttributedExpression)
               "      argument: Int value=31\n");
 }
 
-TEST(Parser, CaseOfWithPascalLabels)
+TEST(Parser, CaseStatementWithPascalLabels)
 {
-    EXPECT_EQ(expectClean("c caseOf: { Color red, Color green: { self go; }; (1 to: 9): { }; int32: { :n | n }; } otherwise: { };"),
-              "ExprStmt\n"
-              "  expression: Keyword selector=caseOf:otherwise:\n"
-              "    receiver: Ident name=c\n"
-              "    argument: Case\n"
-              "      entry: CaseEntry\n"
-              "        label: Unary selector=red\n"
-              "          receiver: Ident name=Color\n"
-              "        label: Unary selector=green\n"
-              "          receiver: Ident name=Color\n"
-              "        body: Block\n"
-              "          statement: ExprStmt\n"
-              "            expression: Unary selector=go\n"
-              "              receiver: Self\n"
-              "      entry: CaseEntry\n"
-              "        label: Keyword selector=to:\n"
-              "          receiver: Int value=1\n"
-              "          argument: Int value=9\n"
-              "        body: Block\n"
-              "      entry: CaseEntry\n"
-              "        label: Ident name=int32\n"
-              "        body: Block\n"
-              "          param: BlockParam name=n\n"
-              "          statement: ExprStmt\n"
-              "            expression: Ident name=n\n"
-              "    argument: Block\n");
+    EXPECT_EQ(expectClean("case c of {\n Color red, Color green: { self go; }\n (1 to: 9): { }\n int32: { :n | n }\n} else {\n x := 1;\n}"),
+              "Case\n"
+              "  subject: Ident name=c\n"
+              "  entry: CaseEntry\n"
+              "    label: Unary selector=red\n"
+              "      receiver: Ident name=Color\n"
+              "    label: Unary selector=green\n"
+              "      receiver: Ident name=Color\n"
+              "    body: Block\n"
+              "      statement: ExprStmt\n"
+              "        expression: Unary selector=go\n"
+              "          receiver: Self\n"
+              "  entry: CaseEntry\n"
+              "    label: Keyword selector=to:\n"
+              "      receiver: Int value=1\n"
+              "      argument: Int value=9\n"
+              "    body: Block\n"
+              "  entry: CaseEntry\n"
+              "    label: Ident name=int32\n"
+              "    body: Block\n"
+              "      param: BlockParam name=n\n"
+              "      statement: ExprStmt\n"
+              "        expression: Ident name=n\n"
+              "  else: Group\n"
+              "    statement: Assign\n"
+              "      target: Ident name=x\n"
+              "      value: Int value=1\n");
 }
 
-TEST(Parser, CaseOfLabelWithSpacedColon)
+TEST(Parser, CaseSubjectCanBeAnExpression)
 {
-    std::string dump = expectClean("c caseOf: { Color blue : { }; 0: { }; };");
+    std::string dump = expectClean("case self state next of { Color blue : { } 0: { } }");
+    EXPECT_NE(dump.find("subject: Unary selector=next\n    receiver: Unary selector=state"), std::string::npos) << dump;
     EXPECT_NE(dump.find("label: Unary selector=blue"), std::string::npos) << dump;
     EXPECT_NE(dump.find("label: Int value=0"), std::string::npos) << dump;
+}
+
+TEST(Parser, CaseNeedsOf)
+{
+    std::string diagnostics;
+    dumpFirstItem("case c { }", &diagnostics);
+    EXPECT_NE(diagnostics.find("'of' after the case subject"), std::string::npos) << diagnostics;
+}
+
+TEST(Parser, IfElseIfElse)
+{
+    EXPECT_EQ(expectClean("if a > b {\n m := a;\n} else if a = b {\n} else {\n m := b;\n}"),
+              "If\n"
+              "  condition: Binary selector=>\n"
+              "    receiver: Ident name=a\n"
+              "    argument: Ident name=b\n"
+              "  then: Group\n"
+              "    statement: Assign\n"
+              "      target: Ident name=m\n"
+              "      value: Ident name=a\n"
+              "  else: If\n"
+              "    condition: Binary selector==\n"
+              "      receiver: Ident name=a\n"
+              "      argument: Ident name=b\n"
+              "    then: Group\n"
+              "    else: Group\n"
+              "      statement: Assign\n"
+              "        target: Ident name=m\n"
+              "        value: Ident name=b\n");
+}
+
+TEST(Parser, IfConditionWithKeywordSend)
+{
+    EXPECT_EQ(expectClean("if items includes: x {\n}"),
+              "If\n"
+              "  condition: Keyword selector=includes:\n"
+              "    receiver: Ident name=items\n"
+              "    argument: Ident name=x\n"
+              "  then: Group\n");
+}
+
+TEST(Parser, WhileLoopBreakContinue)
+{
+    EXPECT_EQ(expectClean("while i < 10 {\n continue;\n}\nloop {\n break;\n}"),
+              "While\n"
+              "  condition: Binary selector=<\n"
+              "    receiver: Ident name=i\n"
+              "    argument: Int value=10\n"
+              "  body: Group\n"
+              "    statement: Continue\n");
+    auto parsed = parse("{ loop { break; } }");
+    EXPECT_EQ(bob::ast::dumpAstText(parsed->unit.unit->items.front()), "Loop\n  body: Group\n    statement: Break\n");
+}
+
+TEST(Parser, ForInWithOptionalType)
+{
+    EXPECT_EQ(expectClean("for i in 1 to: 10 {\n}"),
+              "For variable=i\n"
+              "  iterable: Keyword selector=to:\n"
+              "    receiver: Int value=1\n"
+              "    argument: Int value=10\n"
+              "  body: Group\n");
+    EXPECT_EQ(expectClean("for c: Color in Color {\n}"),
+              "For variable=c\n"
+              "  type: Type name=Color\n"
+              "  iterable: Ident name=Color\n"
+              "  body: Group\n");
+    EXPECT_EQ(expectClean("for b : uint8 in bytes {\n}"),
+              "For variable=b\n"
+              "  type: Type name=uint8\n"
+              "  iterable: Ident name=bytes\n"
+              "  body: Group\n");
+}
+
+TEST(Parser, ControlBodiesNeedBraces)
+{
+    const char* cases[] = {"if a b := 1;", "if a { } else b := 1;", "while a x foo;", "for i in items return;", "loop break;",
+                           "case c of { 1: x; }"};
+    for (const char* source : cases) {
+        std::string diagnostics;
+        dumpFirstItem(source, &diagnostics);
+        EXPECT_NE(diagnostics.find("parse.expected"), std::string::npos) << source << "\n" << diagnostics;
+    }
+    std::string diagnostics;
+    dumpFirstItem("if a > b return 1;", &diagnostics);
+    EXPECT_NE(diagnostics.find("parse.expectedBraces"), std::string::npos) << diagnostics;
+}
+
+TEST(Parser, BlockInConditionMustBeParenthesised)
+{
+    std::string diagnostics;
+    dumpFirstItem("if items detect: { :e | e } {\n}", &diagnostics);
+    EXPECT_NE(diagnostics.find("parse.blockInCondition"), std::string::npos) << diagnostics;
+    EXPECT_EQ(expectClean("if (items anySatisfy: { :e | e }) {\n}").substr(0, 3), "If\n");
+}
+
+TEST(Parser, ControlWordsAreReserved)
+{
+    std::string diagnostics;
+    dumpFirstItem("in := 3;", &diagnostics);
+    EXPECT_NE(diagnostics.find("parse.expected"), std::string::npos) << diagnostics;
 }
 
 TEST(Parser, TypeMessagesInTypePositions)

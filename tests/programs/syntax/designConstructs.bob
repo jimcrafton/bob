@@ -166,9 +166,36 @@ import core.collections, 2.0.0;
             eq := a == b;
             ne := a ~= b;
 
-            # 3.5 blocks and control flow
-            (a > b) ifTrue: { m := a; } ifFalse: { m := b; };
-            { x < 10 } whileTrue: { x := x + 1; };
+            # 3.5 control statements (braces always required)
+            if a > b {
+                m := a;
+            } else if a = b {
+                m := 0;
+            } else {
+                m := b;
+            }
+            while x < 10 {
+                x := x + 1;
+            }
+            for i in 1 to: 10 {
+                z := z + i;
+            }
+            for j: int64 in items {
+                if j = 0 {
+                    continue;
+                }
+                if j > 99 {
+                    break;
+                }
+            }
+            loop {
+                if (items includes: x) and done {
+                    break;
+                }
+            }
+
+            # blocks as values and block messages
+            mx := (a > b) ifTrue: { a } ifFalse: { b };
             1 to: 10 do: { :i | z := z + i; };
             items do: { :each | io out println: each; };
             sq := { :i: int32 | i * i };
@@ -184,24 +211,30 @@ import core.collections, 2.0.0;
             n := c ordinal;
             c2 := c succ;
             p2: set of: Perm := [Perm read, Perm write];
-            (p2 includes: Perm write) ifTrue: { x := 1; };
+            if p2 includes: Perm write {
+                x := 1;
+            }
             p2 := p2 + [Perm exec];
-            Color do: { :each | x := x + each value; };
+            for each in Color {
+                x := x + each value;
+            }
             (handlers at: Opcode nop) run;
 
-            # caseOf: with Pascal labels
-            c caseOf: {
-                Color red, Color green: { self go; };
-                Color blue:             { self wait; };
-            };
-            a caseOf: {
-                0:         { x := 0; };
-                (1 to: 9): { x := 1; };
-            } otherwise: { x := 2; };
-            v caseOf: {
-                int32:  { :n | z := z + n; };
-                string: { :s | io out println: s; };
-            };
+            # case statement with Pascal labels
+            case c of {
+                Color red, Color green: { self go; }
+                Color blue:             { self wait; }
+            }
+            case a of {
+                0:         { x := 0; }
+                (1 to: 9): { x := 1; }
+            } else {
+                x := 2;
+            }
+            case v of {
+                int32:  { :n | z := z + n; }
+                string: { :s | io out println: s; }
+            }
 
             # 8.3 meta
             size := x meta size;

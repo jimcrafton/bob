@@ -17,7 +17,7 @@ This is the grammar the `bobSyntax` parser accepts (phase 1). `docs/design.md` �
 | punctuation | `:=` `:` `;` `,` `.` `(` `)` `{` `}` `[` `]` `@[` | |
 | comments | `# …` to end of line, `#{ … }#` block (not nested) | trivia |
 
-**Reserved words** (never identifiers): `return self super nil true false and or`.
+**Reserved words** (never identifiers): `return self super nil true false and or if else while for in loop break continue case`.
 
 **Contextual words** are ordinary identifiers that only mean something at the start of a declaration: `program lib module import namespace class record enum type extends inherits implements public private msg`. So `obj class` is a unary send, and `msg` or `type` can be variable names.
 
@@ -68,14 +68,30 @@ The selector is every label plus `:` (`toString:isFat:`). For later parameters, 
 ```
 statementList = { statement }                 # ';' required between statements, optional before '}'
 statement   = [attributes] ( 'return' [expression {',' expression}] ';'
+                           | ifStatement | whileStatement | forStatement | loopStatement | caseStatement
+                           | ('break' | 'continue') ';'
                            | keywordPart type [':=' expression] ';'         # explicit declaration
                            | blockStatement
                            | expression [':=' expression] ';' )             # assignment target: identifier or field access
 blockStatement = block                        # statement group, when nothing follows on the same line
-               | block messageContinuation    # block receiver: `{ i < 10 } whileTrue: { … };`
+               | block messageContinuation    # block receiver: `{ … } fork;`
+
+ifStatement    = 'if' condition body ['else' (ifStatement | body)] [';']
+whileStatement = 'while' condition body [';']
+forStatement   = 'for' (identifier [':' typeTerm] | keywordSelector typeTerm) 'in' condition body [';']
+loopStatement  = 'loop' body [';']
+caseStatement  = 'case' condition 'of' '{' { caseEntry } '}' ['else' body] [';']
+caseEntry      = labels ':' block [';']                                     # block may bind `{ :n | … }` for unions
+labels         = binaryExpr { ',' binaryExpr }
+condition      = expression                   # no unparenthesised block literal anywhere inside
+body           = '{' statementList '}'        # braces are mandatory: no one-line bodies
 ```
+- **Braces are mandatory** for every control-statement body and every case entry. A missing `{` is `parse.expectedBraces`.
+- **Conditions** are ordinary expressions without surrounding parentheses. A block literal in operand position inside a condition is `parse.blockInCondition`, because its `{` would be ambiguous with the body. Parenthesise that part: `if (items anySatisfy: { :e | e }) { … }`.
+- **`of`** is not reserved (`array of: Part` must keep working). After a `case` subject, the identifier `of` followed by `{` ends the subject instead of being read as a unary send.
+- **Case labels** are members, constants, types or parenthesised ranges: `Color red, Color green: { … }`, `0: { … }`, `(1 to: 9): { … }`, `int32: { :n | … }`. The lexer turns `green:` into a keyword token, and inside the entries the parser splits it back into the label and the colon.
 - `x := 4;` is an assignment syntactically. Whether it declares `x` (implicit declaration, design §3.3) is decided in semantic analysis.
-- **Group or block?** A `{ … }` at the start of a statement is a block *receiver* only if a message (identifier, keyword, operator) follows **on the same line** as its closing `}`. Otherwise it's a statement group and the next line starts a new statement. That way `@[overflow: wrap] { … }` followed by `x: int32;` on the next line isn't read as a keyword send.
+- **Group or block?** A `{ … }` at the start of a statement is a block *receiver* only if a message (identifier, keyword, operator) follows **on the same line** as its closing `}`. Otherwise it's a statement group and the next line starts a new statement. That way `@[overflow: wrap] { … }` followed by `x: int32;` on the next line isn't read as a keyword send. (Control statements aren't affected: their bodies are always statement lists.)
 - **Forgotten `;`.** An identifier followed by `:=` is never consumed as a unary selector, so `x := 1` followed by `y := 2;` reports the missing `;` and continues.
 
 ## Expressions
@@ -102,13 +118,6 @@ array       = '[' [expression {',' expression} [',']] ']'
 
 `?` is only valid as an optional-type suffix. `-` directly before a number in operand position is a negative literal (`a -1` is still subtraction).
 
-### `caseOf:`
-When a keyword part is `caseOf:` and its argument starts with `{`, the argument is a case block:
-```
-caseBlock   = '{' { labels ':' block [';'] } '}'
-labels      = binaryExpr { ',' binaryExpr }
-```
-Labels are members, constants, types or parenthesised ranges: `Color red, Color green: { … }`, `0: { … }`, `(1 to: 9): { … }`, `int32: { :n | … }`. The lexer turns `green:` into a keyword token; inside a case block the parser splits it back into label and colon. `otherwise:` is an ordinary following keyword part (`caseOf:otherwise:`).
 
 ## Types
 ```

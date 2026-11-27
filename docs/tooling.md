@@ -45,10 +45,10 @@ JSON node:
 ```json
 {
   "id": 12,
-  "kind": "Keyword",
-  "role": "expression",
-  "range": {"begin": 210, "end": 245, "line": 13, "column": 13, "endLine": 13, "endColumn": 48},
-  "properties": {"selector": "to:do:"},
+  "kind": "For",
+  "role": "statement",
+  "range": {"begin": 210, "end": 270, "line": 13, "column": 13, "endLine": 15, "endColumn": 14},
+  "properties": {"variable": "i"},
   "children": [ ... ]
 }
 ```
@@ -64,6 +64,8 @@ JSON node:
 | `parse.expected` | generic "expected X, found Y" |
 | `parse.expectedSemicolon` | missing `;` between statements (parsing continues) |
 | `parse.expectedType` | a constant where a type is required |
+| `parse.expectedBraces` | a control-statement body or case entry without `{ }` (braces are mandatory) |
+| `parse.blockInCondition` | an unparenthesised block literal inside an `if`/`while`/`for`/`case` condition |
 | `parse.invalidAssignmentTarget` | `:=` after something that isn't a variable or field |
 | `parse.duplicateParameter` | two message parameters with the same name |
 | `parse.messageOutsideClass` | `msg` outside a class or `extends` block |
@@ -72,4 +74,4 @@ JSON node:
 | `parse.trailingTokens` | tokens after the unit's closing `}` |
 
 ## Node kinds
-`Unit Import Namespace Class Record Extends Enum EnumMember TypeAlias FieldGroup Field Message Param Attribute VarDecl Assign Return ExprStmt Group Int Real String Char Bool Nil Self Super Ident FieldAccess Array Block BlockParam Unary Binary Keyword Case CaseEntry AttributedExpr Type Optional Tuple TupleElement TypeMessage Error`. Type positions produce `Type`, `Optional`, `Tuple`, `TypeMessage`, or constant expressions as arguments of a `TypeMessage`.
+`Unit Import Namespace Class Record Extends Enum EnumMember TypeAlias FieldGroup Field Message Param Attribute VarDecl Assign Return ExprStmt Group If While For Loop Break Continue Case CaseEntry Int Real String Char Bool Nil Self Super Ident FieldAccess Array Block BlockParam Unary Binary Keyword AttributedExpr Type Optional Tuple TupleElement TypeMessage Error`. Type positions produce `Type`, `Optional`, `Tuple`, `TypeMessage`, or constant expressions as arguments of a `TypeMessage`.

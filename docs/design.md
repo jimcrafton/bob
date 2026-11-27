@@ -118,17 +118,58 @@ x := (p distanceTo: q) sqrt;
   All levels are left-associative. User-defined binary selectors (for example `+` on `Point`) take the precedence of their operator. Binary selectors that aren't in the table bind at level 3.
 - **[Decided]** No cascades for now (Smalltalk's `;` is our statement terminator). Repeat the receiver instead. A Dart-style `..` cascade could be added later without breaking existing code.
 
-### 3.5 Blocks and control flow
-Control flow is messages to blocks, as in Smalltalk. The compiler inlines them, so they cost the same as C `if`/`while`.
+### 3.5 Control statements and blocks
+**[Decided]** Control flow uses formal statements, not Smalltalk-style messages to blocks. The message forms were already compiler special cases in disguise, they forced awkward grammar rules, they had no natural `break`/`continue`, and they made `return` inside a branch a subtle non-local return. Practicality wins (§1).
 ```
-(a > b) ifTrue: { max := a; } ifFalse: { max := b; };
-{ i < 10 } whileTrue: { i := i + 1; };
-1 to: 10 do: { :i | sum := sum + i; };
-items do: { :each | io out println: each; };
+if a > b {
+    max := a;
+} else if a = b {
+    max := 0;
+} else {
+    max := b;
+}
+
+while i < 10 {
+    i := i + 1;
+}
+
+for i in 1 to: 10 {            # intervals
+    sum := sum + i;
+}
+for each in items { ... }      # arrays, sets, dictionary keys, string views...
+for c in Color { ... }         # enums and subranges
+for b: uint8 in bytes { ... }  # optional explicit type
+
+loop {                         # infinite loop
+    if done {
+        break;
+    }
+    if skip {
+        continue;
+    }
+}
+
+case c of {                    # Pascal case, see 4.6
+    Color red, Color green: { self go; }
+    Color blue:             { self wait; }
+} else {
+    self stop;
+}
 ```
-- Block literal: `{ :p1 :p2 | statements }`. Parameter types come from the expected block type. They can also be written explicitly: `{ :i: int32 | ... }`.
-- When the receiver is `bool` and the argument is a literal block, `ifTrue:`/`ifFalse:`/`whileTrue:`/`to:do:`/`do:` (on built-in collections) are always inlined. Non-literal blocks become closures (§5.5).
-- `return expr;` inside a block returns from the enclosing *message* (Smalltalk `^` semantics). That's only allowed for non-escaping blocks.
+- **Braces are always required**, even for a single statement, for every `if`/`else`/`while`/`for`/`loop` body and every `case` entry. There are no one-line forms. `else if` chains are allowed, and each branch has its own braces.
+- Conditions are ordinary expressions with no surrounding parentheses (like Swift, Go and Rust). A block literal can't appear unparenthesised in a condition, because its `{` would be ambiguous with the body: write `if (items anySatisfy: { :e | e }) { … }`.
+- `break` and `continue` apply to the innermost `while`/`for`/`loop`. Labelled breaks may come later.
+- `for x in e` works on anything iterable (arrays, sets, dictionaries, strings' views, intervals `a to: b`, enum and subrange types) and compiles to a direct loop.
+- Reserved words: `if else while for in loop break continue case`. `of` is recognised only after a `case` subject, so `array of: Part` still works.
+- `return` inside a control statement returns from the enclosing message, as you'd expect.
+
+**What stays as messages.**
+- **Blocks as values**: `{ :p1 :p2 | statements }`, with parameter types inferred from the expected block type or written explicitly (`{ :i: int32 | … }`).
+- **Block-taking library messages**: `items do: { :e | … }`, `collect:`, `select:`, `1 to: 10 do: { … }`. These are ordinary messages any class can implement. For built-in collections with a literal block, the compiler inlines them.
+- **Value-producing conditionals**: `m := (a > b) ifTrue: { a } ifFalse: { b };` is an ordinary message on `bool`.
+- **User-defined control abstractions**: error blocks (`onError:`), thread blocks (`fork`) and the like (§5.6).
+- `whileTrue:` and `caseOf:` are no longer part of the language. `while` and `case` replace them.
+- `return expr;` inside a *block* returns from the enclosing message (Smalltalk `^` semantics). That's only allowed for non-escaping blocks.
 
 ### 3.6 Classes, records, extensions
 ```
@@ -194,8 +235,12 @@ import core.io;
     extends hello {
         @[static] msg main: args:array [int32] {
             c: Counter := Counter new;
-            1 to: 10 do: { :i | c increment; };
-            (c count > 5) ifTrue: { io out println: "big"; };
+            for i in 1 to: 10 {
+                c increment;
+            }
+            if c count > 5 {
+                io out println: "big";
+            }
             return 0;
         }
     }
@@ -380,16 +425,18 @@ k: PciClass := PciClass network;
 | Position | `c ordinal` | 0 … `count - 1`. Differs from `value` when explicit values are sparse |
 | Next / previous | `c succ`, `c pred` | Stepping past `last`/`first` traps (consistent with overflow, §4.1) |
 | Bounds | `Color first`, `Color last`, `Color count` | Compile-time constants |
-| Iteration | `Color do: { :c \| ... };`, `(Color red to: Color blue) do: { ... };` | Inlined like `to:do:` |
+| Iteration | `for c in Color { ... }`, `for c in Color red to: Color blue { ... }`; also `Color do: { :c \| ... };` | Direct loop |
 | Sets | `s: set of: Color := [Color red, Color blue];` | See below |
 | Enum-indexed arrays | `names: array of: string by: Color;`, `names at: Color red` | See below |
-| Branching | `caseOf:` with Pascal-style labels | See below |
+| Branching | `case x of { ... } else { ... }` with Pascal-style labels | See below |
 
 **Sets of enums replace flags.** There's no `@[flags]` attribute. A `set` whose element type is an enum is always stored as a bitmask, with bit *n* = the member whose value is *n*. The storage width is the smallest of 8/16/32/64 bits that holds the largest value, or the enum's storage type if that's wider, so it's C-compatible.
 ```
 enum Perm : uint32 { read; write; exec; }           # values 0, 1, 2 = bit positions
 p: set of: Perm := [Perm read, Perm write];          # mask 0b011
-(p includes: Perm write) ifTrue: { ... };
+if p includes: Perm write {
+    ...
+}
 p := p + [Perm exec];                                # union
 p := p - [Perm write];                               # difference
 q := p * other;                                      # intersection
@@ -404,24 +451,26 @@ handlers: array of: Handler by: Opcode;
 (handlers at: op) run;
 ```
 
-**`caseOf:` (Pascal `case`).** This is the general branch for enums, integers and inferred unions. It's always compiled to a jump table or compare chain. Each entry is a *label list, then `:`, then a block*. Labels can be members, constants, or ranges (`(1 to: 9)`). Without `otherwise:`, every member must be covered (a compile error otherwise, so adding a member later finds every switch that needs updating). Labels must not overlap.
+**`case` statement (Pascal `case`).** **[Decided]** This is the general branch for enums, integers and inferred unions. It's a statement, `case <subject> of { entries } [else { … }]`, always compiled to a jump table or compare chain. Each entry is a *label list, then `:`, then a braced body*. Labels can be members, constants, or ranges (`(1 to: 9)`). Without `else`, every member must be covered (a compile error otherwise, so adding a member later finds every `case` that needs updating). Labels must not overlap.
 ```
-c caseOf: {
-    Color red, Color green: { self go; };
-    Color blue:             { self wait; };
-};
+case c of {
+    Color red, Color green: { self go; }
+    Color blue:             { self wait; }
+}
 
-n caseOf: {
-    0:         { ... };
-    (1 to: 9): { ... };
-} otherwise: { ... };
+case n of {
+    0:         { ... }
+    (1 to: 9): { ... }
+} else {
+    ...
+}
 
-v caseOf: {                          # inferred union int32 | string
-    int32:  { :n | total := total + n; };
-    string: { :s | names add: s; };
-};
+case v of {                          # inferred union int32 | string
+    int32:  { :n | total := total + n; }
+    string: { :s | names add: s; }
+}
 ```
-Parsing: inside a `caseOf:` block, entries are parsed as labels, `:`, block. The lexer's keyword token on the last label (`green:`) is split back into the label and the colon. That's unambiguous, because a case entry can't be an ordinary statement.
+For a union subject, an entry body can bind the narrowed value as a block parameter (`{ :n | … }`). Parsing: the lexer's keyword token on the last label (`green:`) is split back into the label and the colon. That's unambiguous, because a case entry can't be an ordinary statement.
 
 ### 4.7 Subranges and named types **[Decided]**
 A subrange is a contiguous slice of an integer or enum type, checked when values are assigned into it (Pascal).
@@ -439,7 +488,7 @@ sector: array of: uint8 by: [0 to: 511];    # fixed-size, index type 0..511
 - **Arithmetic is done in the base type.** `pct + 1` is `uint8`, with the normal overflow rules. Assigning back into a `Percent` is checked. There's no range-arithmetic type algebra (unlike Ada).
 - **Inference keeps the subrange.** `x := pct;` gives a `Percent`. `x := pct + 1;` gives a `uint8`.
 - **Arrays indexed by a subrange** (`array of: T by: [lo to: hi]`) are fixed-size and stored inline. `at:` takes the subrange type, so there's no bounds check. This covers most fixed-capacity kernel buffers.
-- **Enum subranges** support the ordinal messages (`succ`, `first`, `last`, `do:`). `caseOf:` on a subrange only has to cover the range.
+- **Enum subranges** support the ordinal messages (`succ`, `first`, `last`, `do:`). `case` on a subrange only has to cover the range.
 - `meta` exposes `first`, `last` and `size`.
 - **Out of scope:** non-contiguous ranges, `real` subranges, runtime-computed bounds.
 
@@ -473,7 +522,7 @@ The central idea: syntactically every operation is a send, and semantically the 
 ### 5.1 Resolution tiers (decided per send site, at compile time)
 | Tier | When | Lowered to |
 |---|---|---|
-| 0 Intrinsic | Receiver is a primitive, or a built-in with an intrinsic selector (`array at:`, `bool ifTrue:` with literal block) | Inline LLVM IR (`add nsw`, `icmp`, branch, bounds-checked GEP) |
+| 0 Intrinsic | Receiver is a primitive, or a built-in with an intrinsic selector (`array at:`, `bool ifTrue:ifFalse:` and collection `do:` with literal blocks) | Inline LLVM IR (`add nsw`, `icmp`, branch, bounds-checked GEP) |
 | 1 Static | Receiver static type is a record; or class message (`@[static]`); or selector is `@[final]`; or class-hierarchy analysis shows exactly one implementation reachable in the module's closed hierarchy; or the exact dynamic type is known (just constructed, flow analysis) | Direct call, candidate for inlining |
 | 1v Vtable | Receiver static type is a class and several overrides are reachable in its closed hierarchy (§5.4) | One indexed load from the class's vtable + indirect call |
 | 2 Dynamic | Receiver static type is a `@[protocol]` class; reflection `perform:`; dynamically loaded library | `bob_msgSend(self, sel, args...)` |
@@ -526,7 +575,7 @@ Prior art: Swift (`open`/`public`/`final`), Kotlin (final by default), C# (`seal
 ### 5.6 Blocks as a unifying concept **[Notes, to be designed]**
 Captured ideas, not yet decisions. The guiding idea: **a block is anything in `{ ... }`**, and blocks are used for many purposes. scratch-lang already modelled some of these (`PreConditionBlock`, `PostConditionBlock` and `ThreadBlock` in `compiletime.h`).
 
-1. **Code blocks.** Message bodies, statement groups and the arguments to `ifTrue:`/`whileTrue:`/`do:` (§3.5).
+1. **Code blocks.** Message bodies, statement groups, control-statement bodies, and block arguments to messages such as `do:` (§3.5).
 2. **Message objects (closures).** A block is a first-class value: a lambda, closure or function pointer. It can be stored, passed and returned ("message blocks can be passed around"). Non-escaping blocks are free. Escaping ones are ARC closure objects (§5.5). To design:
    - the block type syntax (with no angle brackets, so probably inferred like containers);
    - whether a block can be taken from an existing message (`obj messageFor: "add:"` → block bound to `obj`);
@@ -646,7 +695,11 @@ There are no implicit conversions between `string` and byte arrays or raw pointe
 - Compile-time code is ordinary bob, type checked like everything else. It may only depend on declarations already compiled (the compiler orders declarations by dependency, and cycles are errors).
 - It can send messages to a `compiler` object exposing the semantic model: query types, fields, selectors, sizes; emit diagnostics; synthesise messages, classes and conformances. This is the hook for generics, derive-style code generation (`printOn:`, equality, serialization) and static asserts.
 ```
-@[compiletime] (Point meta size = 8) ifFalse: { compiler error: "Point layout changed"; };
+@[compiletime] {
+    if Point meta size ~= 8 {
+        compiler error: "Point layout changed";
+    }
+}
 TABLE := @[compiletime] (self crc32Table);     # array of uint32, embedded as constant data
 ```
 
@@ -795,7 +848,7 @@ Runtime unit tests: gtest needs the CRT, so `bobTests` compiles the runtime sour
 | 0 ✅ | CMake skeleton, LLVM found, gtest `bobTests`, `bobc` stub; `bobrt` freestanding with `bobStart`, console write, exit; link with lld-link | A hand-written LLVM IR "hello" links against bobrt with no CRT and runs. **Done 2026-11-27:** 16/16 tests pass in Debug and Release; exes import only kernel32 |
 | 1 ✅ | Lexer + parser for §3 (all constructs), AST, `--dump-ast` | Parses all of scratch-lang's tests (converted) and the §3.8 example. **Done 2026-11-27:** `bobSyntax` library (lossless, error-tolerant, tool-reusable); 17 converted scratch tests + §3.8 example + a file of every §3–4 construct parse cleanly; 67/67 tests in Debug and Release |
 | 2 | Sema + codegen for primitives, locals, records, intrinsic sends, `main:`, `return` | `factorial`/`fib` programs compile, run and return correct exit codes |
-| 3 | Blocks: inlined `ifTrue:`/`whileTrue:`/`to:do:`; non-escaping closures | Loops/conditionals programs; dispatch report shows tier 0/1 |
+| 3 | Control statements (`if`/`while`/`for in`/`loop`/`break`/`continue`/`case` with exhaustiveness); blocks: inlined `do:`/`to:do:`/`ifTrue:ifFalse:`, non-escaping closures | Loops/conditionals programs; dispatch report shows tier 0/1 |
 | 4 | Classes: layout, `new`, ARC insertion, static dispatch + CHA, class objects, selectors, `bob_msgSend` + cache, protocols | Polymorphism tests; leak report shows 0 bytes at exit |
 | 5 | Built-ins: `string` (UTF-8, views, conversions), `array`, `dictionary`, `hashtable`, `set` with element-type inference and inferred unions, COW | String/collection test suite incl. grapheme cases |
 | 6 | Compile-time execution via ORC; `compiler` object; `meta`; static asserts; constant tables. Revisit type-returning compile-time messages under the §4.5 leash rules | Compile-time CRC table and layout asserts work; decision made on `RingBuffer of: T` |
@@ -807,7 +860,7 @@ Runtime unit tests: gtest needs the CRT, so `bobTests` compiles the runtime sour
 ---
 
 ## 13. Open questions (summary)
-Decided: `x := 4;` implicit declaration with inference (§3.3); no `@` on keyword parts (§3.4); conventional operator precedence (§3.4); no symbol literals (§9); `@[protocol] class` replaces a `protocol` keyword (§4.4); concrete classes are closed to their module and there's no `@[open]` (§4.3, §5.4); unary binds tightest, no `->` (§3.4); no cascades (§3.4); compact message declarations with optional rename (§3.6); records allow both layout-prefix inheritance and embedding (§4.2); overflow traps by default, `@[overflow:]` at any level (§4.1); byte-wise string equality (§7.2); reflection access by capabilities, header declarations later (§9); generated import libs with SDK fallback (§11.2); inferred container element types, inferred unions for mixed contents, `array of: T` annotation (§4.5); compile-time reflection via `meta` (§8.3); records can't implement protocols (§4.4); no generic syntax; type-returning compile-time messages, tightly restricted, are the planned answer for user containers, revisited in phase 6 (§4.5); enums `enum Name : type { a := 1; }`, no implicit integer conversion, Pascal ordinal features, `set of: Enum` bitsets instead of flags, enum-indexed arrays, `caseOf:` with Pascal labels (§4.6); Pascal subranges, `type Name := ...`, `[ ]`-only grouping in type positions; named types are distinct by default, with `@[alias]` (§4.7).
+Decided: `x := 4;` implicit declaration with inference (§3.3); no `@` on keyword parts (§3.4); conventional operator precedence (§3.4); no symbol literals (§9); `@[protocol] class` replaces a `protocol` keyword (§4.4); concrete classes are closed to their module and there's no `@[open]` (§4.3, §5.4); unary binds tightest, no `->` (§3.4); no cascades (§3.4); compact message declarations with optional rename (§3.6); records allow both layout-prefix inheritance and embedding (§4.2); overflow traps by default, `@[overflow:]` at any level (§4.1); byte-wise string equality (§7.2); reflection access by capabilities, header declarations later (§9); generated import libs with SDK fallback (§11.2); inferred container element types, inferred unions for mixed contents, `array of: T` annotation (§4.5); compile-time reflection via `meta` (§8.3); records can't implement protocols (§4.4); no generic syntax; type-returning compile-time messages, tightly restricted, are the planned answer for user containers, revisited in phase 6 (§4.5); enums `enum Name : type { a := 1; }`, no implicit integer conversion, Pascal ordinal features, `set of: Enum` bitsets instead of flags, enum-indexed arrays, `case x of { … } else { … }` statement with Pascal labels (§4.6); formal control statements `if/else if/else`, `while`, `for … in`, `loop`, `break`, `continue`, braces always required, `whileTrue:`/`caseOf:` removed (§3.5); Pascal subranges, `type Name := ...`, `[ ]`-only grouping in type positions; named types are distinct by default, with `@[alias]` (§4.7).
 
 Still open:
 1. Can records have messages (statically dispatched helpers via `extends`, as in §3.6), or are they pure field layouts with no messages at all (§4.2)? Undecided, deferred. Leaning towards "no messages on records" (records strictly for data). The draft still shows record messages in §3.6 and §4.2 until this is decided.

@@ -106,7 +106,6 @@ private:
     ast::Node* parseNumber(bool negative, uint32_t begin);
     ast::Node* parseBlockLiteral();
     ast::Node* parseArrayLiteral();
-    ast::Node* parseCaseBlock();
 
     ast::Node* parseType(bool allowTypeMessage);
     ast::Node* parseTypeTerm();
@@ -122,6 +121,8 @@ private:
     ast::Node* pendingPrimary_ = nullptr;
     bool caseLabelMode_ = false;
     bool caseLabelEnded_ = false;
+    bool conditionMode_ = false;
+    bool caseSubjectMode_ = false;
 };
 
 int binaryPrecedence(std::string_view op);
