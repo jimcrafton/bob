@@ -51,10 +51,10 @@ bobc --dump-tokens prog.bob        # token stream
 bobc --dump-ast prog.bob           # syntax tree, text
 bobc --dump-ast=json prog.bob      # syntax tree, JSON (see docs/tooling.md)
 ```
-The grammar is in `docs/grammar.md`, the type rules in `docs/semantics.md`. Runtime traps (overflow, division by zero…) print to stderr and exit with code 101.
+The grammar is in `docs/grammar.md`, the type rules in `docs/semantics.md`. Runtime traps (overflow, division by zero…) print to stderr and exit with code 101. If objects are still allocated when `main` returns, the runtime prints `bob: leak: …` to stderr.
 
 ## Test programs
-`tests/programs/run/*.bob` are compiled and run by `bobTests` at `-O0` and `-O2`. Each declares its outcome in header comments: `# expect-exit: <code>` and optionally `# expect-stderr: <text>`. To add a test, drop in a new file. No other registration is needed.
+`tests/programs/run/*.bob` are compiled and run by `bobTests` at `-O0` and `-O2`. Each declares its outcome in header comments: `# expect-exit: <code>` and optionally `# expect-stderr: <text>`. Every program must also exit without a leak report, unless its expected stderr is the leak report itself. To add a test, drop in a new file. No other registration is needed.
 
 ## Using bobc on LLVM IR (phase 0)
 `bobc` accepts hand-written LLVM IR that defines `i32 @bobMain()`:

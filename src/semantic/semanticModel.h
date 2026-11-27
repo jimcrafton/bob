@@ -17,11 +17,18 @@ enum class OverflowMode : uint8_t {
     saturate,
 };
 
+struct ClassInfo;
+struct MessageInfo;
+
 struct FieldInfo {
     std::string name;
     const Type* type = nullptr;
     uint32_t index = 0;
     const ast::FieldDecl* decl = nullptr;
+    // Class fields only: declaring class, visibility, initializer run by `new`.
+    const ClassInfo* owner = nullptr;
+    bool isPublic = true;
+    const ast::Node* initializer = nullptr;
 };
 
 struct RecordInfo {
@@ -48,6 +55,8 @@ struct LocalInfo {
     uint32_t index = 0;
     // The block function that owns this variable's storage; null = the message itself.
     const BlockInfo* owner = nullptr;
+    // Some block captures it by reference (loads of references are then retained).
+    bool captured = false;
 };
 
 // A block literal. Inlined blocks (literal arguments of ifTrue:, to:do:, ...)
@@ -74,6 +83,43 @@ struct MessageInfo {
     std::string symbolName;
     OverflowMode overflow = OverflowMode::trap;
     bool isMain = false;
+
+    // Class messages. Instance messages take (self, selector, params...);
+    // class-side (@[static]) messages take only their params.
+    ClassInfo* owner = nullptr;
+    bool isInstance = false;
+    bool isProtocolDefault = false;
+    bool isRequired = false;
+    LocalInfo* self = nullptr;
+};
+
+struct ClassInfo {
+    std::string name;
+    const ast::ClassDecl* decl = nullptr;
+    bool isProtocol = false;
+    ClassInfo* superclass = nullptr;
+    std::vector<ClassInfo*> protocols;
+    std::vector<ClassInfo*> subclasses;
+    std::vector<FieldInfo> fields;
+    // Own instance messages (including protocol defaults adopted here), in order.
+    std::vector<MessageInfo*> methodList;
+    std::unordered_map<std::string, MessageInfo*> methods;
+    std::unordered_map<std::string, MessageInfo*> classMethods;
+    // Vtable slots: inherited slots first, then one per new selector.
+    std::vector<std::string> slotSelectors;
+    std::vector<const MessageInfo*> vtable;
+    // Context for field initializers, which run in the generated `new`.
+    MessageInfo* initializer = nullptr;
+    Type* type = nullptr;
+    bool resolved = false;
+    bool resolving = false;
+
+    const FieldInfo* field(std::string_view fieldName) const;
+    // Class: self or an ancestor or a conformed protocol; protocol: self or a refined protocol.
+    bool isKindOf(const ClassInfo* other) const;
+    // Instance message visible on this class or protocol (own, inherited, protocol default).
+    MessageInfo* lookup(const std::string& selector) const;
+    int slotOf(const std::string& selector) const;
 };
 
 struct ProgramInfo {
@@ -106,6 +152,16 @@ enum class SendKind : uint8_t {
     inlineIf,
     inlineToDo,
     inlineTimesRepeat,
+    inlineIfNil,
+    newObject,
+    classStaticCall,
+    directMethodCall,
+    vtableCall,
+    dynamicSend,
+    superCall,
+    fieldGet,
+    fieldSet,
+    referenceCompare,
 };
 
 // How a send node is implemented. `operandType` is the type every operand is
@@ -119,6 +175,9 @@ struct SendInfo {
     OverflowMode overflow = OverflowMode::trap;
     const MessageInfo* target = nullptr;
     const RecordInfo* record = nullptr;
+    const ClassInfo* classInfo = nullptr;
+    const FieldInfo* field = nullptr;
+    int slot = -1;
 };
 
 // One case label as an inclusive range of the subject's values, stored as
@@ -137,12 +196,15 @@ public:
     std::vector<std::unique_ptr<MessageInfo>> messages;
     std::vector<std::unique_ptr<LocalInfo>> locals;
     std::vector<std::unique_ptr<BlockInfo>> blockInfos;
+    std::vector<std::unique_ptr<ClassInfo>> classes;
 
     std::unordered_map<ast::NodeId, const Type*> expressionTypes;
     std::unordered_map<ast::NodeId, const BlockInfo*> blocks;
     std::unordered_map<ast::NodeId, const LocalInfo*> localRefs;
     std::unordered_map<ast::NodeId, SendInfo> sends;
     std::unordered_map<ast::NodeId, const FieldInfo*> fieldRefs;
+    // Bare identifiers inside instance messages that name a field of self.
+    std::unordered_map<ast::NodeId, const FieldInfo*> selfFieldRefs;
     std::unordered_map<ast::NodeId, std::vector<CaseRange>> caseRanges;
     std::unordered_set<ast::NodeId> implicitDeclarations;
 
@@ -152,6 +214,7 @@ public:
     const FieldInfo* fieldOf(const ast::Node* node) const;
     const BlockInfo* blockOf(const ast::Node* node) const;
     const RecordInfo* recordNamed(std::string_view name) const;
+    ClassInfo* classNamed(std::string_view name) const;
 };
 
 }

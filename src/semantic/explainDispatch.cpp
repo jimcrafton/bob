@@ -84,6 +84,27 @@ std::string describe(const SendInfo& send, const SemanticModel& model)
     case SendKind::inlineToDo:
     case SendKind::inlineTimesRepeat:
         return "tier 0, inlined control flow (no closure created)";
+    case SendKind::inlineIfNil:
+        return "tier 0, inlined nil test (no closure created)";
+    case SendKind::referenceCompare:
+        return "tier 0, intrinsic reference identity";
+    case SendKind::newObject:
+        return "allocation of a '" + send.classInfo->name + "' (runs its field initializers)";
+    case SendKind::classStaticCall:
+        return "tier 1, direct call to class-side '" + send.target->owner->name + " " + send.target->selector + "'";
+    case SendKind::directMethodCall:
+        return "tier 1, direct call to '" + send.target->owner->name + ">>" + send.target->selector +
+               "' (the only implementation in the hierarchy below '" + send.classInfo->name + "')";
+    case SendKind::superCall:
+        return "tier 1, direct call to '" + send.target->owner->name + ">>" + send.target->selector + "' (super)";
+    case SendKind::vtableCall:
+        return "tier 1v, vtable slot " + std::to_string(send.slot) + " of '" + send.classInfo->name + "' (overridden below it)";
+    case SendKind::dynamicSend:
+        return "tier 2, bob_msgSend (receiver is the protocol '" + send.classInfo->name + "')";
+    case SendKind::fieldGet:
+        return "tier 0, inlined field read";
+    case SendKind::fieldSet:
+        return "tier 0, inlined field write";
     case SendKind::interval:
         return "";
     }

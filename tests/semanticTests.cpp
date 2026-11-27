@@ -194,7 +194,7 @@ TEST(Semantic, UnsupportedFeaturesNameTheirPhase)
     auto a = analyzeMain("s := \"hi\";\nreturn 0;", "", "class Widget { }\nenum Color { red; }");
     EXPECT_TRUE(a->hasCode("sema.unsupported")) << a->text();
     std::string text = a->text();
-    EXPECT_NE(text.find("classes isn't supported yet (planned for phase 4)"), std::string::npos) << text;
+    EXPECT_NE(text.find("enums isn't supported yet (planned for phase 5)"), std::string::npos) << text;
     EXPECT_NE(text.find("strings and characters isn't supported yet (planned for phase 5)"), std::string::npos) << text;
 }
 
@@ -271,6 +271,78 @@ TEST(Semantic, CapturesAreRecorded)
     ASSERT_EQ(block->captures.size(), 2u);
     EXPECT_EQ(block->captures[0]->name, "total");
     EXPECT_EQ(block->captures[1]->name, "limit");
+}
+
+namespace {
+
+bob::sema::SendKind kindOfSend(const Analyzed& a, const std::string& selector, const std::string& receiverClass)
+{
+    for (const auto& [id, send] : a.model.sends) {
+        if (send.target != nullptr && send.target->selector == selector && send.classInfo != nullptr &&
+            send.classInfo->name == receiverClass) {
+            return send.kind;
+        }
+    }
+    return bob::sema::SendKind::interval;
+}
+
+}
+
+TEST(Semantic, DispatchTierFollowsTheClosedHierarchy)
+{
+    auto a = analyzeMain("x := A new;\ny := B new;\nz: P := C new;\nx f;\nx g;\ny f;\nz h;\nreturn 0;", "",
+                         "@[protocol] class P { msg h [int32]; }\n"
+                         "class A { msg f [int32] { return 1; } msg g [int32] { return 2; } }\n"
+                         "class B inherits A { msg f [int32] { return 3; } }\n"
+                         "class C implements P { msg h [int32] { return 4; } }");
+    EXPECT_EQ(a->diagnostics.errorCount(), 0u) << a->text();
+    EXPECT_EQ(kindOfSend(*a, "f", "A"), bob::sema::SendKind::vtableCall);
+    EXPECT_EQ(kindOfSend(*a, "g", "A"), bob::sema::SendKind::directMethodCall);
+    EXPECT_EQ(kindOfSend(*a, "f", "B"), bob::sema::SendKind::directMethodCall);
+    EXPECT_EQ(kindOfSend(*a, "h", "P"), bob::sema::SendKind::dynamicSend);
+}
+
+TEST(Semantic, ProtocolConformanceIsChecked)
+{
+    auto a = analyzeMain("return 0;", "",
+                         "@[protocol] class P { msg h [int32]; msg k [int32] { return 1; } }\n"
+                         "class Missing implements P { }\n"
+                         "class Wrong implements P { msg h [int64] { return 1; } }\n"
+                         "@[protocol] class WithField { public { x: int32; } }");
+    EXPECT_TRUE(a->hasCode("sema.missingRequiredMessage")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.overrideMismatch")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.protocolField")) << a->text();
+}
+
+TEST(Semantic, OverridesMustKeepTheSignature)
+{
+    auto a = analyzeMain("return 0;", "", "class A { msg f: x:int32 [int32] { return x; } }\nclass B inherits A { msg f: x:int64 [int32] { return 1; } }");
+    EXPECT_TRUE(a->hasCode("sema.overrideMismatch")) << a->text();
+}
+
+TEST(Semantic, FieldsArePrivateToTheClass)
+{
+    auto a = analyzeMain("c := C new;\nv := c.secret;\nw := c secret;\nu := c open;\nc open: 3;\nreturn 0;", "",
+                         "class C { private { secret: int32; } public { open: int32; } }");
+    EXPECT_TRUE(a->hasCode("sema.privateField")) << a->text();
+    EXPECT_EQ(a->diagnostics.errorCount(), 2u) << a->text();
+}
+
+TEST(Semantic, ReferencesAreNeverNilUnlessOptional)
+{
+    auto a = analyzeMain("x: C;\ny: C := nil;\nz: C? := nil;\nz f;\nreturn 0;", "", "class C { msg f { } }\nclass D { private { c: C; } }");
+    EXPECT_TRUE(a->hasCode("sema.uninitializedReference")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.typeMismatch")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.optionalReceiver")) << a->text();
+}
+
+TEST(Semantic, ClassRulesMisc)
+{
+    auto a = analyzeMain("p := P new;\nreturn 0;", "",
+                         "@[protocol] class P { }\nclass C inherits P { }\nrecord R { c: P; }");
+    EXPECT_TRUE(a->hasCode("sema.newProtocol")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.invalidBase")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.referenceInRecord")) << a->text();
 }
 
 TEST(Semantic, MiscTypeRules)

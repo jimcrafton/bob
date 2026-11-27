@@ -135,6 +135,9 @@ TEST_P(RunProgram, ExitCodeAndStderrMatch)
     if (!expectation.stderrContains.empty()) {
         EXPECT_NE(stderrText.find(expectation.stderrContains), std::string::npos) << stderrText;
     }
+    if (expectation.stderrContains.find("bob: leak") == std::string::npos) {
+        EXPECT_EQ(stderrText.find("bob: leak"), std::string::npos) << stderrText;
+    }
 }
 
 INSTANTIATE_TEST_SUITE_P(Programs, RunProgram, ::testing::ValuesIn(programCases()), [](const auto& info) {

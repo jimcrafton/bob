@@ -104,8 +104,13 @@ int Driver::runBobSource(const DriverOptions& options)
         return fail("only a 'program' can be linked into an executable; compile modules and libraries with -c");
     }
 
+    std::string layoutError;
+    std::string dataLayout = targetDataLayout(layoutError);
+    if (dataLayout.empty()) {
+        return fail(layoutError);
+    }
     llvm::LLVMContext context;
-    std::unique_ptr<llvm::Module> module = codegen::generateModule(parsed.unit, model, context);
+    std::unique_ptr<llvm::Module> module = codegen::generateModule(parsed.unit, model, context, dataLayout);
     if (options.dumpLlvm) {
         if (std::optional<std::string> error = prepareModule(*module)) {
             return fail(*error);

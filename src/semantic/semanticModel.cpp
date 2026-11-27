@@ -21,6 +21,68 @@ std::string RecordInfo::constructorSelector() const
     return selector;
 }
 
+const FieldInfo* ClassInfo::field(std::string_view fieldName) const
+{
+    for (const FieldInfo& info : fields) {
+        if (info.name == fieldName) {
+            return &info;
+        }
+    }
+    return nullptr;
+}
+
+bool ClassInfo::isKindOf(const ClassInfo* other) const
+{
+    if (other == this) {
+        return true;
+    }
+    for (const ClassInfo* protocol : protocols) {
+        if (protocol->isKindOf(other)) {
+            return true;
+        }
+    }
+    return superclass != nullptr && superclass->isKindOf(other);
+}
+
+MessageInfo* ClassInfo::lookup(const std::string& selector) const
+{
+    auto it = methods.find(selector);
+    if (it != methods.end()) {
+        return it->second;
+    }
+    if (superclass != nullptr) {
+        if (MessageInfo* inherited = superclass->lookup(selector)) {
+            return inherited;
+        }
+    }
+    for (const ClassInfo* protocol : protocols) {
+        if (MessageInfo* declared = protocol->lookup(selector)) {
+            return declared;
+        }
+    }
+    return nullptr;
+}
+
+int ClassInfo::slotOf(const std::string& selector) const
+{
+    for (size_t i = 0; i < slotSelectors.size(); ++i) {
+        if (slotSelectors[i] == selector) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+ClassInfo* SemanticModel::classNamed(std::string_view name) const
+{
+    for (const auto& info : classes) {
+        if (info->name == name) {
+            return info.get();
+        }
+    }
+    return nullptr;
+}
+
 const Type* SemanticModel::typeOf(const ast::Node* node) const
 {
     auto it = node != nullptr ? expressionTypes.find(node->id) : expressionTypes.end();

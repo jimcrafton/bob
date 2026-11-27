@@ -18,8 +18,9 @@ What the analyzer (`bobSemantic`, `src/semantic`) and code generator (`src/compi
 | records | value types, C layout in declaration order, `inherits` places the base fields first, `@[packed]` supported |
 
 | blocks | closures, see [Blocks](#blocks-phase-3) |
+| classes, protocols, `C?` | references, see [Classes](#classes-protocols-and-arc-phase-4) |
 
-Not yet: `int128`, `char`, strings, arrays and other containers, optionals, tuples, enums, subranges, named types, classes, protocols.
+Not yet: `int128`, `char`, strings, arrays and other containers, optionals of non-class types, tuples, enums, subranges, named types.
 
 ### Implicit conversions
 Only lossless ones: a wider integer of the same signedness, an unsigned integer to a strictly wider signed one, `real32` to `real64`. Everything else is explicit.
@@ -76,6 +77,68 @@ An untyped literal takes its type from context: the declared type, the parameter
   Non-literal arguments are `sema.inlinedNeedsBlock`. `break`/`continue` inside `to:do:` and `timesRepeat:` apply to them, and inside the `ifTrue:` family they apply to the surrounding loop.
 - **`return`** is allowed only in code that runs in the message's own frame: its body and inlined blocks. Inside any other block it's `sema.returnInBlock`, because it would have to unwind through whoever called the block. Make the value the block's last expression instead. Likewise, `break`/`continue` can't leave a block function.
 - **Code generation.** A non-inlined block becomes an internal function `bob.<program>.<message>.blockN(env, args…)`. A block value is `{function pointer, environment pointer}`, and calling it is an indirect call. `bobc --explain-dispatch` lists every send and block with how it was compiled.
+
+## Classes, protocols and ARC (phase 4)
+**Declaring**
+- `class Name [inherits Base] [implements P, Q] { public { … } private { … } msg … }`.
+- Messages without `@[static]` are instance messages, where `self` is the receiver. `@[static]` messages are class-side (`Point x: 1 y: 2`).
+- `extends Name [implements P] { msg … }` adds messages and conformances to a class in the same unit.
+- A concrete class can be subclassed only in its own module (design §5.4).
+
+**Creating**
+- `Name new` allocates a zero-filled object. It then runs field initializers, the superclass's first: `y: int32 := 7;` and `counter: Counter := Counter new;`.
+
+**Fields**
+- Inside the class (and its subclasses), fields are reached by bare name (`count := count + 1`) or with `.` on another instance (`other.x`).
+- Outside, `.` is `sema.privateField`. Public fields get synthesized accessors instead (`p x`, `p x: 5`), compiled to inline loads and stores. A message with the same selector takes precedence.
+
+**`nil` and optionals**
+- A non-optional class reference is never `nil`, so a non-optional class-typed field needs an initializer and a local needs a value. Otherwise it's `sema.uninitializedReference`.
+- `Name?` may be `nil`.
+- `x = nil` and `x <> nil` test it.
+- `x ifNotNil: { :value | … }`, `ifNil:`, `ifNil:ifNotNil:` and `ifNotNil:ifNil:` unwrap it, inlined.
+- Sending other messages to an optional is `sema.optionalReceiver`.
+- Optionals of non-class types come later.
+
+**Equality and records**
+- `=` and `<>` on references compare identity.
+- Records can't hold references (`sema.referenceInRecord`), since records are strictly data.
+
+**Protocols**
+- `@[protocol] class P { msg area [int32]; msg describe [int32] { … } }` declares required messages (no body) and defaults (body).
+- No fields, no `new`, no class-side messages.
+- `@[protocol] class Q inherits P` refines P.
+- A conforming class must define every required message with exactly the declared signature (`sema.missingRequiredMessage`, `sema.overrideMismatch`). Defaults it doesn't define are adopted.
+- Overrides in subclasses must also keep the signature.
+
+**Dispatch** (`--explain-dispatch` shows it per send)
+| Receiver's static type | Selector | Compiled to |
+|---|---|---|
+| class `C` | one implementation in `C` and everything below it | **tier 1**: direct call |
+| class `C` | overridden somewhere below `C` | **tier 1v**: load `isa`, call through vtable slot |
+| protocol `P` | any | **tier 2**: `bob_msgSend(self, selector, args…)` |
+| `super` | any | direct call to the superclass's implementation |
+
+- Instance messages compile to `bob.<Class>.<selector>(self, selector, args…)`. Protocol defaults compile to `bob.<Protocol>.<selector>`, which dispatches sends to `self` dynamically.
+- Every class gets a vtable slot for each of its instance messages, with inherited slots first.
+- Messages that can be reached through `bob_msgSend` (protocol messages) can't return records yet.
+
+**Object layout and runtime**
+- An object is `{class*, refCount: uint32, flags: uint32, fields…}`, with inherited fields first and the object allocated from the process heap.
+- The class info (`BobClass` in `src/shared/objectModel.h`) holds the superclass, name, instance size, `destroy` function, method table `{selector, implementation}` and the cache pointer, followed by the vtable.
+- Selectors are unique strings, compared by address.
+- `bob_msgSend` (MASM) probes a per-class cache and falls back to `bobMsgSendLookup`, which walks the superclass chain. An unknown selector traps.
+
+**Reference counting (ARC)** (atomic counts)
+- Variables and fields own one reference. Parameters and `self` are borrowed.
+- Message results and `new` are owned (+1).
+- An owned value that's only used within a statement (an argument, a receiver, a result that's ignored) is released when the statement ends.
+- Assignments retain the new value and release the old one.
+- A function releases its class-typed locals when it returns. Variables declared in a loop release their previous value on each new declaration.
+- Values loaded from fields, or from variables captured by a block, are retained while in use, because the callee could overwrite their source.
+- When the count reaches 0, the class's `destroy` releases the object's reference fields and the memory is freed.
+- Cycles aren't collected. `weak`/`unowned` come with escaping closures in phase 8.
+- **Leak report:** at exit, the runtime prints `bob: leak: N object(s), M bytes still allocated at exit` to stderr if anything is still alive. The test harness requires every program to report nothing, except `leakCycle.bob`, which checks that the report works.
 
 ## Overflow and traps
 - `+ - *`, `negated`, `abs` and `shl` follow the overflow mode: `trap` (default), `wrap` or `saturate`. It's set with `@[overflow: …]` on the unit, a message, a statement group or a parenthesised expression, and the innermost wins.

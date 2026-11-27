@@ -11,6 +11,7 @@ namespace bob::sema {
 
 struct RecordInfo;
 struct ProgramInfo;
+struct ClassInfo;
 
 enum class TypeKind : uint8_t {
     error,
@@ -23,6 +24,9 @@ enum class TypeKind : uint8_t {
     placeholder,
     block,
     blockToInfer,
+    classType,
+    optional,
+    nilType,
 };
 
 // `meta` is the class side of something named in an expression: the program
@@ -46,6 +50,11 @@ struct Type {
     const Type* result = nullptr;
     bool pending = false;
     bool arityKnown = false;
+
+    // classType: the class or protocol (instances are references); meta of a
+    // class uses `instance`. optional: `inner` is the class type it wraps.
+    ClassInfo* classInfo = nullptr;
+    const Type* inner = nullptr;
 };
 
 class TypeTable {
@@ -67,6 +76,10 @@ public:
     const Type* metaOf(const Type* instance);
     Type* addProgram(ProgramInfo* program);
 
+    Type* addClass(ClassInfo* info);
+    const Type* optionalOf(const Type* inner);
+    const Type* nilType() const { return nil_; }
+
     const Type* block(std::vector<const Type*> params, const Type* result);
     // A fresh, mutable block type whose shape is filled in by inference.
     Type* pendingBlock();
@@ -77,6 +90,8 @@ private:
     std::vector<std::unique_ptr<Type>> owned_;
     std::unordered_map<std::string, const Type*> builtins_;
     std::unordered_map<const Type*, const Type*> metas_;
+    std::unordered_map<const Type*, const Type*> optionals_;
+    const Type* nil_ = nullptr;
     const Type* error_ = nullptr;
     const Type* void_ = nullptr;
     const Type* bool_ = nullptr;
@@ -86,6 +101,10 @@ bool isInteger(const Type* type);
 bool isReal(const Type* type);
 bool isNumeric(const Type* type);
 bool isBlock(const Type* type);
+bool isClass(const Type* type);
+bool isOptional(const Type* type);
+// Reference-counted values: class/protocol instances and optionals of them.
+bool isReference(const Type* type);
 bool isValueType(const Type* type);
 bool sameBlockShape(const Type* a, const Type* b);
 std::string blockTypeName(const Type* type);

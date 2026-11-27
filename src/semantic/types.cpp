@@ -7,6 +7,7 @@ namespace bob::sema {
 TypeTable::TypeTable()
 {
     error_ = own({TypeKind::error, "<error>"});
+    nil_ = own({TypeKind::nilType, "nil"});
     void_ = own({TypeKind::voidType, "void"});
     bool_ = own({TypeKind::boolType, "bool"});
 
@@ -27,6 +28,26 @@ TypeTable::TypeTable()
         builtins_[name] = own({TypeKind::placeholder, name});
     }
     builtins_["block"] = own({TypeKind::blockToInfer, "block"});
+}
+
+Type* TypeTable::addClass(ClassInfo* info)
+{
+    Type* type = own({TypeKind::classType, info->name});
+    type->classInfo = info;
+    return type;
+}
+
+const Type* TypeTable::optionalOf(const Type* inner)
+{
+    auto it = optionals_.find(inner);
+    if (it != optionals_.end()) {
+        return it->second;
+    }
+    Type* type = own({TypeKind::optional, inner->name + "?"});
+    type->inner = inner;
+    type->classInfo = inner->classInfo;
+    optionals_[inner] = type;
+    return type;
 }
 
 const Type* TypeTable::block(std::vector<const Type*> params, const Type* result)
@@ -114,10 +135,26 @@ bool isBlock(const Type* type)
     return type != nullptr && type->kind == TypeKind::block;
 }
 
+bool isClass(const Type* type)
+{
+    return type != nullptr && type->kind == TypeKind::classType;
+}
+
+bool isOptional(const Type* type)
+{
+    return type != nullptr && type->kind == TypeKind::optional;
+}
+
+bool isReference(const Type* type)
+{
+    return isClass(type) || isOptional(type);
+}
+
 bool isValueType(const Type* type)
 {
     return type != nullptr && (type->kind == TypeKind::boolType || type->kind == TypeKind::integer ||
-                               type->kind == TypeKind::real || type->kind == TypeKind::record || type->kind == TypeKind::block);
+                               type->kind == TypeKind::real || type->kind == TypeKind::record || type->kind == TypeKind::block ||
+                               type->kind == TypeKind::classType || type->kind == TypeKind::optional);
 }
 
 bool sameBlockShape(const Type* a, const Type* b)
@@ -156,6 +193,15 @@ bool canWiden(const Type* from, const Type* to)
     }
     if (isBlock(from) && isBlock(to)) {
         return sameBlockShape(from, to);
+    }
+    if (from != nullptr && from->kind == TypeKind::nilType) {
+        return isOptional(to);
+    }
+    if (isClass(from) && isClass(to)) {
+        return from->classInfo->isKindOf(to->classInfo);
+    }
+    if (isOptional(to)) {
+        return canWiden(isOptional(from) ? from->inner : from, to->inner);
     }
     if (isInteger(from) && isInteger(to)) {
         if (from->isSigned == to->isSigned) {

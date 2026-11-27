@@ -92,6 +92,26 @@ private:
     void resolveRecord(RecordInfo* record);
     void declareProgramMessages(const ExtendsDecl* decl);
     void declareMessage(const MessageDecl* decl);
+
+    void declareClass(const ClassDecl* decl);
+    void resolveClass(ClassInfo* info);
+    void declareClassMembers(ClassInfo* info, const std::vector<Node*>& members);
+    void addProtocols(ClassInfo* info, const std::vector<Node*>& names);
+    MessageInfo* declareMethod(ClassInfo* info, const MessageDecl* decl);
+    void declareParams(MessageInfo* message, const MessageDecl* decl);
+    void completeClasses();
+    void completeClass(ClassInfo* info);
+    void checkFieldInitializers(ClassInfo* info);
+    bool sameSignature(const MessageInfo* a, const MessageInfo* b) const;
+    const Type* checkInstanceSend(const Node* send, const Node* receiverNode, const Type* receiver, const std::string& selector,
+                                  const std::vector<Node*>& arguments, SourceRange selectorRange);
+    const Type* checkClassSideSend(const Node* send, const ClassInfo* info, const std::string& selector,
+                                   const std::vector<Node*>& arguments, SourceRange selectorRange);
+    const Type* checkReferenceComparison(const BinarySend* send, const Type* left);
+    const Type* checkInlinedIfNil(const KeywordSend* send, const Type* receiver);
+    const FieldInfo* selfField(const std::string& name);
+    bool canAccessField(const FieldInfo* field) const;
+    ClassInfo* currentClass() const { return context_.message != nullptr ? context_.message->owner : nullptr; }
     const Type* resolveType(const Node* node);
     const Type* resolveBlockType(const TypeMessage* message);
     bool requireValueType(const Node* node, const Type* type);
@@ -177,8 +197,33 @@ void Analyzer::run(const Unit* unit)
     for (const auto& record : model_.records) {
         resolveRecord(record.get());
     }
+    for (const auto& info : model_.classes) {
+        resolveClass(info.get());
+    }
+    for (const auto& info : model_.classes) {
+        declareClassMembers(info.get(), info->decl->members);
+    }
+    for (const Node* item : unit->items) {
+        auto decl = nodeCast<ExtendsDecl>(item);
+        auto target = decl != nullptr ? nodeCast<TypeName>(decl->target) : nullptr;
+        if (target != nullptr) {
+            if (ClassInfo* info = model_.classNamed(target->name)) {
+                addProtocols(info, decl->protocols);
+                declareClassMembers(info, decl->members);
+            }
+        }
+    }
+    completeClasses();
+    for (const auto& info : model_.classes) {
+        checkFieldInitializers(info.get());
+    }
     for (MessageInfo* message : model_.program.messages) {
         ensureChecked(message);
+    }
+    for (const auto& message : model_.messages) {
+        if (message->owner != nullptr && !message->isRequired && message->decl != nullptr) {
+            ensureChecked(message.get());
+        }
     }
 
     if (unit->unitKind == UnitKind::program && model_.program.main == nullptr) {
@@ -194,10 +239,14 @@ void Analyzer::collect(const Unit* unit)
         if (auto record = nodeCast<RecordDecl>(item)) {
             declareRecord(record);
         }
+        else if (auto classDecl = nodeCast<ClassDecl>(item)) {
+            declareClass(classDecl);
+        }
     }
     for (const Node* item : unit->items) {
         switch (item->kind) {
         case NodeKind::recordDecl:
+        case NodeKind::classDecl:
         case NodeKind::error:
         case NodeKind::messageDecl:
             break;
@@ -208,6 +257,9 @@ void Analyzer::collect(const Unit* unit)
             if (!model_.program.name.empty() && name == model_.program.name) {
                 declareProgramMessages(decl);
             }
+            else if (model_.classNamed(name) != nullptr) {
+                // handled after the classes are resolved
+            }
             else if (model_.recordNamed(name) != nullptr) {
                 unsupported(decl->target, "messages on records ('extends " + name + "')",
                             "a later phase; whether records get messages at all is still an open design question");
@@ -217,9 +269,6 @@ void Analyzer::collect(const Unit* unit)
             }
             break;
         }
-        case NodeKind::classDecl:
-            unsupported(item, "classes", "phase 4");
-            break;
         case NodeKind::enumDecl:
             unsupported(item, "enums", "phase 5");
             break;
@@ -238,7 +287,7 @@ void Analyzer::collect(const Unit* unit)
 
 void Analyzer::declareRecord(const RecordDecl* decl)
 {
-    if (isTypeName(decl->name) || decl->name == model_.program.name) {
+    if (isTypeName(decl->name) || model_.classNamed(decl->name) != nullptr || decl->name == model_.program.name) {
         error(decl->nameRange, "sema.redeclared", "'" + decl->name + "' is already declared");
         return;
     }
@@ -298,6 +347,11 @@ void Analyzer::resolveRecord(RecordInfo* record)
         if (rejectEscapingBlock(field->type, type, "a record field")) {
             type = types_.error();
         }
+        if (isReference(type)) {
+            error(field->type, "sema.referenceInRecord",
+                  "records hold plain data; a class reference ('" + typeName(type) + "') can't be a record field");
+            type = types_.error();
+        }
         if (type->kind == TypeKind::record) {
             resolveRecord(type->record);
         }
@@ -310,6 +364,548 @@ void Analyzer::resolveRecord(RecordInfo* record)
     }
     record->resolving = false;
     record->resolved = true;
+}
+
+// ---------------------------------------------------------------------------
+// classes and protocols
+
+void Analyzer::declareClass(const ClassDecl* decl)
+{
+    if (isTypeName(decl->name) || decl->name == model_.program.name) {
+        error(decl->nameRange, "sema.redeclared", "'" + decl->name + "' is already declared");
+        return;
+    }
+    auto info = std::make_unique<ClassInfo>();
+    info->name = decl->name;
+    info->decl = decl;
+    for (const Attribute* attribute : decl->attributes) {
+        if (attribute->name == "protocol" && attribute->value == nullptr) {
+            info->isProtocol = true;
+        }
+        else {
+            unsupported(attribute, "the class attribute '@[" + attribute->name + "]'", "a later phase");
+        }
+    }
+    info->type = types_.addClass(info.get());
+    model_.classes.push_back(std::move(info));
+}
+
+void Analyzer::addProtocols(ClassInfo* info, const std::vector<Node*>& names)
+{
+    for (const Node* node : names) {
+        const Type* type = resolveType(node);
+        if (type == types_.error()) {
+            continue;
+        }
+        if (!isClass(type) || !type->classInfo->isProtocol) {
+            error(node, "sema.notAProtocol", "'" + typeName(type) + "' isn't a protocol; mark it @[protocol] to implement it");
+            continue;
+        }
+        if (info->isProtocol) {
+            error(node, "sema.notAProtocol", "a protocol refines another protocol with 'inherits', not 'implements'");
+            continue;
+        }
+        if (std::find(info->protocols.begin(), info->protocols.end(), type->classInfo) == info->protocols.end()) {
+            info->protocols.push_back(type->classInfo);
+        }
+    }
+}
+
+void Analyzer::resolveClass(ClassInfo* info)
+{
+    if (info->resolved) {
+        return;
+    }
+    if (info->resolving) {
+        error(info->decl->nameRange, "sema.recursiveClass", "'" + info->name + "' inherits from itself");
+        return;
+    }
+    info->resolving = true;
+    const ClassDecl* decl = info->decl;
+    if (decl->superclass != nullptr) {
+        const Type* base = resolveType(decl->superclass);
+        if (isClass(base)) {
+            ClassInfo* parent = base->classInfo;
+            resolveClass(parent);
+            if (info->isProtocol != parent->isProtocol) {
+                error(decl->superclass, "sema.invalidBase",
+                      info->isProtocol ? "a protocol can only inherit (refine) another protocol"
+                                       : "a class can't inherit a protocol; use 'implements " + parent->name + "'");
+            }
+            else if (info->isProtocol) {
+                info->protocols.push_back(parent);
+            }
+            else {
+                info->superclass = parent;
+                parent->subclasses.push_back(info);
+                info->fields = parent->fields;
+            }
+        }
+        else if (base != types_.error()) {
+            error(decl->superclass, "sema.invalidBase", "a class can only inherit another class, not '" + typeName(base) + "'");
+        }
+    }
+    addProtocols(info, decl->protocols);
+
+    for (const Node* member : decl->members) {
+        auto group = nodeCast<FieldGroup>(member);
+        if (group == nullptr) {
+            continue;
+        }
+        if (info->isProtocol) {
+            error(group, "sema.protocolField", "protocols declare messages only; they can't have fields");
+            continue;
+        }
+        for (const Node* node : group->fields) {
+            auto field = nodeCast<FieldDecl>(node);
+            if (field == nullptr) {
+                continue;
+            }
+            if (info->field(field->name) != nullptr) {
+                error(field->nameRange, "sema.redeclared", "'" + info->name + "' already has a field '" + field->name + "'");
+                continue;
+            }
+            for (const Attribute* attribute : field->attributes) {
+                unsupported(attribute, "the field attribute '@[" + attribute->name + "]'", "phase 9");
+            }
+            const Type* type = resolveType(field->type);
+            requireValueType(field->type, type);
+            if (rejectEscapingBlock(field->type, type, "a field")) {
+                type = types_.error();
+            }
+            if (isClass(type) && field->initializer == nullptr) {
+                error(field->nameRange, "sema.uninitializedReference",
+                      "field '" + field->name + "' holds a '" + type->name + "', which can't be nil; give it an initial value (':= " +
+                          type->name + " new') or make it optional ('" + type->name + "?')");
+            }
+            FieldInfo fieldInfo;
+            fieldInfo.name = field->name;
+            fieldInfo.type = type;
+            fieldInfo.index = static_cast<uint32_t>(info->fields.size());
+            fieldInfo.decl = field;
+            fieldInfo.owner = info;
+            fieldInfo.isPublic = group->visibility == Visibility::publicScope;
+            fieldInfo.initializer = field->initializer;
+            info->fields.push_back(fieldInfo);
+        }
+    }
+    info->resolving = false;
+    info->resolved = true;
+}
+
+void Analyzer::declareParams(MessageInfo* message, const MessageDecl* decl)
+{
+    for (const Node* node : decl->params) {
+        auto param = static_cast<const MessageParam*>(node);
+        const Type* type = resolveType(param->type);
+        if (type->kind == TypeKind::blockToInfer) {
+            type = types_.pendingBlock();
+        }
+        bool mainArgs = message->isMain && type->kind == TypeKind::placeholder && type->name == "array";
+        if (!mainArgs) {
+            requireValueType(param->type, type);
+        }
+        auto local = std::make_unique<LocalInfo>();
+        local->name = param->name;
+        local->type = type;
+        local->decl = param;
+        local->isParameter = true;
+        local->readOnly = true;
+        local->index = static_cast<uint32_t>(message->locals.size());
+        message->params.push_back(local.get());
+        message->locals.push_back(local.get());
+        model_.localRefs[param->id] = local.get();
+        model_.locals.push_back(std::move(local));
+    }
+    message->returnType = decl->returnType != nullptr ? resolveType(decl->returnType) : types_.voidType();
+    if (decl->returnType != nullptr) {
+        requireValueType(decl->returnType, message->returnType);
+        if (rejectEscapingBlock(decl->returnType, message->returnType, "a message's return type")) {
+            message->returnType = types_.error();
+        }
+    }
+}
+
+MessageInfo* Analyzer::declareMethod(ClassInfo* info, const MessageDecl* decl)
+{
+    bool isStatic = hasAttribute(decl, "static");
+    auto& table = isStatic ? info->classMethods : info->methods;
+    if (table.count(decl->selector) != 0) {
+        error(decl->selectorRange, "sema.redeclared", "'" + info->name + "' already declares '" + decl->selector + "'");
+        return nullptr;
+    }
+    if (info->isProtocol && isStatic) {
+        unsupported(decl, "class-side messages in protocols", "a later phase");
+        return nullptr;
+    }
+    if (decl->body == nullptr && !info->isProtocol) {
+        error(decl->selectorRange, "sema.missingBody", "'" + decl->selector + "' needs a body; only protocols declare messages without one");
+    }
+
+    auto message = std::make_unique<MessageInfo>();
+    message->selector = decl->selector;
+    message->decl = decl;
+    message->owner = info;
+    message->isInstance = !isStatic;
+    message->isProtocolDefault = info->isProtocol && decl->body != nullptr;
+    message->isRequired = info->isProtocol && decl->body == nullptr;
+    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "static"});
+    message->symbolName = "bob." + info->name + (isStatic ? ".class." : ".") + decl->selector;
+
+    if (message->isInstance) {
+        auto self = std::make_unique<LocalInfo>();
+        self->name = "self";
+        self->type = info->type;
+        self->isParameter = true;
+        self->readOnly = true;
+        message->self = self.get();
+        message->locals.push_back(self.get());
+        model_.locals.push_back(std::move(self));
+    }
+    declareParams(message.get(), decl);
+
+    MessageInfo* raw = message.get();
+    table[raw->selector] = raw;
+    if (raw->isInstance) {
+        info->methodList.push_back(raw);
+    }
+    model_.messages.push_back(std::move(message));
+    return raw;
+}
+
+void Analyzer::declareClassMembers(ClassInfo* info, const std::vector<Node*>& members)
+{
+    for (const Node* member : members) {
+        if (auto message = nodeCast<MessageDecl>(member)) {
+            declareMethod(info, message);
+        }
+    }
+}
+
+bool Analyzer::sameSignature(const MessageInfo* a, const MessageInfo* b) const
+{
+    if (a->params.size() != b->params.size() || a->returnType != b->returnType) {
+        return false;
+    }
+    for (size_t i = 0; i < a->params.size(); ++i) {
+        if (a->params[i]->type != b->params[i]->type) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void Analyzer::completeClasses()
+{
+    for (const auto& info : model_.classes) {
+        if (info->superclass == nullptr) {
+            completeClass(info.get());
+        }
+    }
+}
+
+// Runs base classes before subclasses: checks overrides and protocol
+// conformance, adopts protocol default implementations, lays out the vtable.
+void Analyzer::completeClass(ClassInfo* info)
+{
+    if (!info->isProtocol) {
+        for (MessageInfo* message : info->methodList) {
+            const MessageInfo* inherited = info->superclass != nullptr ? info->superclass->lookup(message->selector) : nullptr;
+            if (inherited != nullptr && !sameSignature(message, inherited)) {
+                error(message->decl->selectorRange, "sema.overrideMismatch",
+                      "'" + message->selector + "' overrides '" + inherited->owner->name + " " + message->selector +
+                          "' and must have the same parameter and return types");
+            }
+        }
+
+        std::vector<ClassInfo*> pending(info->protocols.begin(), info->protocols.end());
+        std::vector<ClassInfo*> seen;
+        while (!pending.empty()) {
+            ClassInfo* protocol = pending.back();
+            pending.pop_back();
+            if (std::find(seen.begin(), seen.end(), protocol) != seen.end()) {
+                continue;
+            }
+            seen.push_back(protocol);
+            pending.insert(pending.end(), protocol->protocols.begin(), protocol->protocols.end());
+            for (const auto& [selector, declared] : protocol->methods) {
+                MessageInfo* found = info->lookup(selector);
+                if (found == nullptr || found->owner == nullptr || found->owner->isProtocol) {
+                    if (declared->isRequired) {
+                        error(info->decl->nameRange, "sema.missingRequiredMessage",
+                              "'" + info->name + "' implements '" + protocol->name + "' but doesn't define the required message '" + selector + "'");
+                    }
+                    else if (info->methods.count(selector) == 0) {
+                        info->methods[selector] = declared;
+                        info->methodList.push_back(declared);
+                    }
+                }
+                else if (!sameSignature(found, declared)) {
+                    error(found->decl->selectorRange, "sema.overrideMismatch",
+                          "'" + selector + "' must match the declaration in protocol '" + protocol->name + "'");
+                }
+            }
+        }
+
+        if (info->superclass != nullptr) {
+            info->slotSelectors = info->superclass->slotSelectors;
+        }
+        for (const MessageInfo* message : info->methodList) {
+            if (info->slotOf(message->selector) < 0) {
+                info->slotSelectors.push_back(message->selector);
+            }
+        }
+        for (const std::string& selector : info->slotSelectors) {
+            info->vtable.push_back(info->lookup(selector));
+        }
+
+        auto initializer = std::make_unique<MessageInfo>();
+        initializer->selector = "new";
+        initializer->owner = info;
+        initializer->returnType = info->type;
+        initializer->symbolName = "bob." + info->name + ".init";
+        initializer->overflow = unitOverflow_;
+        info->initializer = initializer.get();
+        model_.messages.push_back(std::move(initializer));
+    }
+    for (ClassInfo* subclass : info->subclasses) {
+        completeClass(subclass);
+    }
+}
+
+// Field initializers are checked as class-side code (no self) of the
+// declaring class; each class's generated `init` runs its own fields' ones.
+void Analyzer::checkFieldInitializers(ClassInfo* info)
+{
+    if (info->initializer == nullptr) {
+        return;
+    }
+    MessageInfo* initializer = info->initializer;
+    context_ = FunctionContext{initializer, nullptr, &initializer->locals, false, 0};
+    overflow_ = {initializer->overflow};
+    scopes_.clear();
+    pushScope();
+    for (FieldInfo& field : info->fields) {
+        if (field.owner != info || field.initializer == nullptr || field.type == types_.error()) {
+            continue;
+        }
+        const Type* type = check(field.initializer, field.type);
+        requireAssignable(field.initializer, type, field.type, "initialize");
+    }
+    popScope();
+}
+
+const FieldInfo* Analyzer::selfField(const std::string& name)
+{
+    MessageInfo* message = context_.message;
+    if (message == nullptr || !message->isInstance || message->owner == nullptr || message->owner->isProtocol) {
+        return nullptr;
+    }
+    return message->owner->field(name);
+}
+
+bool Analyzer::canAccessField(const FieldInfo* field) const
+{
+    ClassInfo* current = currentClass();
+    return current != nullptr && field->owner != nullptr && current->isKindOf(field->owner);
+}
+
+const Type* Analyzer::checkClassSideSend(const Node* send, const ClassInfo* info, const std::string& selector,
+                                         const std::vector<Node*>& arguments, SourceRange selectorRange)
+{
+    if (selector == "new" && arguments.empty()) {
+        if (info->isProtocol) {
+            error(selectorRange, "sema.newProtocol", "'" + info->name + "' is a protocol and can't be instantiated");
+            return types_.error();
+        }
+        addSend(send, SendKind::newObject, selector, nullptr, info->type);
+        model_.sends[send->id].classInfo = info;
+        return info->type;
+    }
+    auto it = info->classMethods.find(selector);
+    if (it == info->classMethods.end()) {
+        for (const Node* argument : arguments) {
+            check(argument, nullptr);
+        }
+        error(selectorRange, "sema.unknownMessage", "'" + info->name + "' has no class-side message '" + selector + "'");
+        return types_.error();
+    }
+    MessageInfo* target = it->second;
+    ensureChecked(target);
+    for (size_t i = 0; i < arguments.size(); ++i) {
+        checkArgument(arguments[i], target->params[i]->type);
+    }
+    addSend(send, SendKind::classStaticCall, selector, nullptr, target->returnType);
+    model_.sends[send->id].target = target;
+    return target->returnType;
+}
+
+// Chooses the dispatch tier for an instance send: a direct call when the closed
+// class hierarchy has one implementation, a vtable call when it's overridden,
+// bob_msgSend when the receiver's static type is a protocol.
+const Type* Analyzer::checkInstanceSend(const Node* send, const Node* receiverNode, const Type* receiver, const std::string& selector,
+                                        const std::vector<Node*>& arguments, SourceRange selectorRange)
+{
+    bool isSuper = receiverNode->kind == NodeKind::superExpr;
+    if (isSuper) {
+        ClassInfo* current = currentClass();
+        if (current == nullptr || !context_.message->isInstance || current->superclass == nullptr) {
+            error(receiverNode, "sema.invalidSuper", "'super' needs an instance message of a class with a superclass");
+            return types_.error();
+        }
+        lookupLocal("self");
+        receiver = current->superclass->type;
+        remember(receiverNode, receiver);
+    }
+    if (receiver == types_.error()) {
+        for (const Node* argument : arguments) {
+            check(argument, nullptr);
+        }
+        return types_.error();
+    }
+    if (isOptional(receiver)) {
+        for (const Node* argument : arguments) {
+            check(argument, nullptr);
+        }
+        error(selectorRange, "sema.optionalReceiver",
+              "the receiver is a '" + receiver->name + "' and may be nil; unwrap it first with 'ifNotNil: { :value | ... }'");
+        return types_.error();
+    }
+
+    ClassInfo* info = receiver->classInfo;
+    MessageInfo* target = info->lookup(selector);
+    if (target == nullptr) {
+        const FieldInfo* field = nullptr;
+        bool setter = !selector.empty() && selector.back() == ':' && arguments.size() == 1;
+        std::string fieldName = setter ? selector.substr(0, selector.size() - 1) : selector;
+        if (!info->isProtocol && (arguments.empty() || setter)) {
+            field = info->field(fieldName);
+        }
+        if (field != nullptr && (field->isPublic || canAccessField(field))) {
+            if (setter) {
+                checkArgument(arguments[0], field->type);
+            }
+            addSend(send, setter ? SendKind::fieldSet : SendKind::fieldGet, selector, receiver, setter ? types_.voidType() : field->type);
+            model_.sends[send->id].field = field;
+            return setter ? types_.voidType() : field->type;
+        }
+        for (const Node* argument : arguments) {
+            check(argument, nullptr);
+        }
+        if (field != nullptr) {
+            error(selectorRange, "sema.privateField", "'" + fieldName + "' is a private field of '" + field->owner->name + "'");
+        }
+        else {
+            error(selectorRange, "sema.unknownMessage", "'" + info->name + "' doesn't understand '" + selector + "'");
+        }
+        return types_.error();
+    }
+    if (!target->isInstance) {
+        error(selectorRange, "sema.unknownMessage", "'" + selector + "' is a class-side message; send it to '" + info->name + "'");
+        return types_.error();
+    }
+    ensureChecked(target);
+    for (size_t i = 0; i < arguments.size(); ++i) {
+        checkArgument(arguments[i], target->params[i]->type);
+    }
+
+    SendKind kind = SendKind::directMethodCall;
+    int slot = -1;
+    if (isSuper) {
+        kind = SendKind::superCall;
+        if (target->isRequired) {
+            error(selectorRange, "sema.unknownMessage", "the superclass only declares '" + selector + "'; it has no implementation");
+        }
+    }
+    else if (info->isProtocol) {
+        kind = SendKind::dynamicSend;
+        if (target->returnType->kind == TypeKind::record) {
+            unsupported(send, "a protocol message that returns a record", "a later phase");
+        }
+    }
+    else {
+        std::vector<const MessageInfo*> implementations{target};
+        std::vector<ClassInfo*> pending(info->subclasses.begin(), info->subclasses.end());
+        while (!pending.empty()) {
+            ClassInfo* subclass = pending.back();
+            pending.pop_back();
+            pending.insert(pending.end(), subclass->subclasses.begin(), subclass->subclasses.end());
+            auto own = subclass->methods.find(selector);
+            if (own != subclass->methods.end() &&
+                std::find(implementations.begin(), implementations.end(), own->second) == implementations.end()) {
+                implementations.push_back(own->second);
+            }
+        }
+        if (implementations.size() > 1) {
+            kind = SendKind::vtableCall;
+            slot = info->slotOf(selector);
+        }
+    }
+    addSend(send, kind, selector, receiver, target->returnType);
+    model_.sends[send->id].target = target;
+    model_.sends[send->id].classInfo = info;
+    model_.sends[send->id].slot = slot;
+    return target->returnType;
+}
+
+const Type* Analyzer::checkReferenceComparison(const BinarySend* send, const Type* left)
+{
+    const Type* right = check(send->argument, nullptr);
+    if (left == types_.error() || right == types_.error()) {
+        return types_.error();
+    }
+    bool compatible = canWiden(left, right) || canWiden(right, left) ||
+                      (left->kind == TypeKind::nilType && isReference(right)) || (right->kind == TypeKind::nilType && isReference(left));
+    if (!compatible || (left->kind == TypeKind::nilType && right->kind == TypeKind::nilType)) {
+        error(send, "sema.typeMismatch", "can't compare '" + typeName(left) + "' with '" + typeName(right) + "'");
+        return types_.error();
+    }
+    if ((left->kind == TypeKind::nilType && isClass(right)) || (right->kind == TypeKind::nilType && isClass(left))) {
+        error(send, "sema.typeMismatch", "a '" + typeName(isClass(left) ? left : right) + "' is never nil; only optionals can be compared with nil");
+        return types_.error();
+    }
+    addSend(send, SendKind::referenceCompare, send->selector, nullptr, types_.boolType());
+    return types_.boolType();
+}
+
+const Type* Analyzer::checkInlinedIfNil(const KeywordSend* send, const Type* receiver)
+{
+    std::vector<std::string> parts;
+    for (size_t start = 0; start < send->selector.size();) {
+        size_t colon = send->selector.find(':', start);
+        parts.push_back(send->selector.substr(start, colon - start + 1));
+        start = colon + 1;
+    }
+    for (size_t i = 0; i < parts.size(); ++i) {
+        auto literal = nodeCast<BlockLiteral>(send->arguments[i]);
+        bool notNil = parts[i] == "ifNotNil:";
+        size_t wanted = notNil ? 1 : 0;
+        if (literal == nullptr || literal->params.size() != wanted) {
+            check(send->arguments[i], nullptr);
+            error(send->arguments[i], "sema.inlinedNeedsBlock",
+                  notNil ? "'ifNotNil:' needs a block literal with one parameter, such as '{ :value | ... }'"
+                         : "'ifNil:' needs a block literal without parameters");
+            continue;
+        }
+        BlockInfo* info = newBlockInfo(literal, true);
+        pushScope();
+        if (notNil) {
+            auto param = static_cast<const BlockParam*>(literal->params[0]);
+            const Type* declared = param->type != nullptr ? resolveType(param->type) : nullptr;
+            if (declared != nullptr && declared != receiver->inner && declared != types_.error()) {
+                error(param, "sema.typeMismatch", "the unwrapped value is a '" + typeName(receiver->inner) + "'");
+            }
+            LocalInfo* local = declareLocal(param->name, receiver->inner, param, param->range);
+            local->readOnly = true;
+            info->params.push_back(local);
+            model_.localRefs[param->id] = local;
+        }
+        checkStatements(literal->statements);
+        popScope();
+        remember(literal, types_.voidType());
+    }
+    addSend(send, SendKind::inlineIfNil, send->selector, receiver, types_.voidType());
+    return types_.voidType();
 }
 
 void Analyzer::declareProgramMessages(const ExtendsDecl* decl)
@@ -404,7 +1000,20 @@ const Type* Analyzer::resolveType(const Node* node)
         if (const RecordInfo* record = model_.recordNamed(name->name)) {
             return record->type;
         }
+        if (const ClassInfo* info = model_.classNamed(name->name)) {
+            return info->type;
+        }
         error(node, "sema.unknownType", "unknown type '" + name->name + "'");
+        return types_.error();
+    }
+    if (auto optional = nodeCast<OptionalType>(node)) {
+        const Type* inner = resolveType(optional->inner);
+        if (isClass(inner)) {
+            return types_.optionalOf(inner);
+        }
+        if (inner != types_.error()) {
+            unsupported(node, "optionals of non-class types such as '" + typeName(inner) + "?'", "a later phase");
+        }
         return types_.error();
     }
     if (auto message = nodeCast<TypeMessage>(node)) {
@@ -414,9 +1023,6 @@ const Type* Analyzer::resolveType(const Node* node)
         }
     }
     switch (node->kind) {
-    case NodeKind::optionalType:
-        unsupported(node, "optional types", "phase 4");
-        break;
     case NodeKind::tupleType:
         unsupported(node, "tuple types (several return values)", "a later phase");
         break;
@@ -547,6 +1153,9 @@ void Analyzer::checkMessage(MessageInfo* message)
     context_ = FunctionContext{message, nullptr, &message->locals, true, 0};
     overflow_ = {message->overflow};
     pushScope();
+    if (message->self != nullptr) {
+        scopes_.back()["self"] = message->self;
+    }
     for (LocalInfo* param : message->params) {
         scopes_.back()[param->name] = param;
     }
@@ -647,6 +1256,10 @@ void Analyzer::checkStatement(const Node* statement)
             const Type* initType = check(decl->initializer, type);
             requireAssignable(decl->initializer, initType, type, "initialize");
         }
+        else if (isClass(type)) {
+            error(decl->nameRange, "sema.uninitializedReference",
+                  "'" + decl->name + "' is a '" + type->name + "', which can't be nil; give it a value or declare it '" + type->name + "?'");
+        }
         LocalInfo* local = declareLocal(decl->name, type, decl, decl->nameRange);
         model_.localRefs[decl->id] = local;
         break;
@@ -723,6 +1336,14 @@ void Analyzer::checkAssignment(const Assignment* assignment)
             requireAssignable(assignment->value, valueType, local->type, "assign");
             return;
         }
+        if (const FieldInfo* field = selfField(identifier->name)) {
+            lookupLocal("self");
+            model_.selfFieldRefs[identifier->id] = field;
+            remember(identifier, field->type);
+            const Type* valueType = check(assignment->value, field->type);
+            requireAssignable(assignment->value, valueType, field->type, "assign");
+            return;
+        }
         if (isTypeName(identifier->name) || (!model_.program.name.empty() && identifier->name == model_.program.name)) {
             error(identifier, "sema.assignToType", "'" + identifier->name + "' is a type and can't be assigned");
             check(assignment->value, nullptr);
@@ -745,7 +1366,9 @@ void Analyzer::checkAssignment(const Assignment* assignment)
     }
 
     const Type* targetType = check(assignment->target, nullptr);
-    if (assignment->target->kind == NodeKind::fieldAccess) {
+    auto access = nodeCast<FieldAccess>(assignment->target);
+    bool objectField = access != nullptr && isClass(model_.typeOf(access->receiver));
+    if (access != nullptr && !objectField) {
         const LocalInfo* root = rootLocal(assignment->target);
         if (root == nullptr && targetType != types_.error()) {
             error(assignment->target, "sema.notAssignable", "only fields of variables can be assigned");
@@ -963,10 +1586,13 @@ bool Analyzer::requireAssignable(const Node* node, const Type* from, const Type*
     if (isBlock(from) && from->pending && isBlock(to)) {
         return unify(from, to, node);
     }
-    if (canWiden(from, to) && isValueType(from)) {
+    if (canWiden(from, to) && (isValueType(from) || from->kind == TypeKind::nilType)) {
         return true;
     }
     std::string message = std::string("can't ") + verb + " a value of type '" + typeName(from) + "' as '" + typeName(to) + "'";
+    if (from->kind == TypeKind::nilType && isClass(to)) {
+        message += "; a '" + to->name + "' is never nil, use '" + to->name + "?' to allow it";
+    }
     if (isNumeric(from) && isNumeric(to)) {
         message += "; convert it explicitly with 'as" + capitalize(to->name) + "'";
     }
@@ -988,7 +1614,7 @@ const Type* Analyzer::check(const Node* node, const Type* expected)
         type = types_.boolType();
         break;
     case NodeKind::nilLiteral:
-        unsupported(node, "'nil' (optional types)", "phase 4");
+        type = types_.nilType();
         break;
     case NodeKind::stringLiteral:
     case NodeKind::charLiteral:
@@ -997,11 +1623,26 @@ const Type* Analyzer::check(const Node* node, const Type* expected)
     case NodeKind::identifier:
         type = checkIdentifier(static_cast<const Identifier*>(node));
         break;
-    case NodeKind::selfExpr:
-        type = model_.program.type;
+    case NodeKind::selfExpr: {
+        MessageInfo* message = context_.message;
+        if (message == nullptr || message->owner == nullptr) {
+            type = model_.program.type;
+        }
+        else if (message->isInstance) {
+            LocalInfo* self = lookupLocal("self");
+            model_.localRefs[node->id] = self;
+            type = self->type;
+        }
+        else if (message == message->owner->initializer) {
+            error(node, "sema.invalidSelf", "field initializers run before the object exists; they can't use 'self'");
+        }
+        else {
+            type = types_.metaOf(message->owner->type);
+        }
         break;
+    }
     case NodeKind::superExpr:
-        unsupported(node, "'super'", "phase 4");
+        error(node, "sema.invalidSuper", "'super' can only be the receiver of a message");
         break;
     case NodeKind::fieldAccess:
         type = checkFieldAccess(static_cast<const FieldAccess*>(node));
@@ -1094,11 +1735,19 @@ const Type* Analyzer::checkIdentifier(const Identifier* identifier)
         }
         return local->type;
     }
+    if (const FieldInfo* field = selfField(identifier->name)) {
+        lookupLocal("self");
+        model_.selfFieldRefs[identifier->id] = field;
+        return field->type;
+    }
     if (!model_.program.name.empty() && identifier->name == model_.program.name) {
         return model_.program.type;
     }
     if (const RecordInfo* record = model_.recordNamed(identifier->name)) {
         return types_.metaOf(record->type);
+    }
+    if (const ClassInfo* info = model_.classNamed(identifier->name)) {
+        return types_.metaOf(info->type);
     }
     if (const Type* builtin = types_.builtin(identifier->name)) {
         return types_.metaOf(builtin);
@@ -1112,6 +1761,21 @@ const Type* Analyzer::checkFieldAccess(const FieldAccess* access)
     const Type* receiver = check(access->receiver, nullptr);
     if (receiver == types_.error()) {
         return types_.error();
+    }
+    if (isClass(receiver) && !receiver->classInfo->isProtocol) {
+        const FieldInfo* field = receiver->classInfo->field(access->field);
+        if (field == nullptr) {
+            error(access->fieldRange, "sema.unknownField", "'" + receiver->name + "' has no field '" + access->field + "'");
+            return types_.error();
+        }
+        if (!canAccessField(field)) {
+            error(access->fieldRange, "sema.privateField",
+                  "fields of '" + field->owner->name + "' can only be reached with '.' inside the class" +
+                      std::string(field->isPublic ? "; use the accessor '" + access->field + "' instead" : ""));
+            return types_.error();
+        }
+        model_.fieldRefs[access->id] = field;
+        return field->type;
     }
     if (receiver->kind != TypeKind::record) {
         error(access->fieldRange, "sema.notARecord", "'." + access->field + "' needs a record, but this is a '" + typeName(receiver) + "'");
@@ -1128,11 +1792,20 @@ const Type* Analyzer::checkFieldAccess(const FieldAccess* access)
 
 const Type* Analyzer::checkUnary(const UnarySend* send, const Type* expected)
 {
+    if (send->receiver->kind == NodeKind::superExpr) {
+        return checkInstanceSend(send, send->receiver, nullptr, send->selector, {}, send->selectorRange);
+    }
     const Type* receiver = check(send->receiver, nullptr);
     if (receiver == types_.error()) {
         return types_.error();
     }
     const std::string& selector = send->selector;
+    if (isClass(receiver) || isOptional(receiver)) {
+        return checkInstanceSend(send, send->receiver, receiver, selector, {}, send->selectorRange);
+    }
+    if (receiver->kind == TypeKind::meta && isClass(receiver->instance)) {
+        return checkClassSideSend(send, receiver->instance->classInfo, selector, {}, send->selectorRange);
+    }
     if (isBlock(receiver) && selector == "value") {
         return checkBlockInvoke(send, receiver, {}, expected);
     }
@@ -1254,6 +1927,23 @@ const Type* Analyzer::checkBinary(const BinarySend* send, const Type* expected)
         return value;
     }
 
+    if (send->receiver->kind == NodeKind::superExpr) {
+        return checkInstanceSend(send, send->receiver, nullptr, op, {send->argument}, send->selectorRange);
+    }
+    if (!isUntypedLiteral(send->receiver)) {
+        const Type* left = check(send->receiver, nullptr);
+        if (left == types_.error()) {
+            check(send->argument, nullptr);
+            return types_.error();
+        }
+        if ((op == "=" || op == "<>") && (isReference(left) || left->kind == TypeKind::nilType)) {
+            return checkReferenceComparison(send, left);
+        }
+        if (isClass(left) || isOptional(left)) {
+            return checkInstanceSend(send, send->receiver, left, op, {send->argument}, send->selectorRange);
+        }
+    }
+
     bool comparison = isComparisonOperator(op);
     if (!comparison && !isArithmeticOperator(op) && !isBitwiseOperator(op)) {
         check(send->receiver, nullptr);
@@ -1310,12 +2000,25 @@ const Type* Analyzer::checkKeyword(const KeywordSend* send, const Type* expected
 {
     const std::string& selector = send->selector;
     SourceRange selectorRange = send->partRanges.empty() ? send->range : send->partRanges.front();
+    if (send->receiver->kind == NodeKind::superExpr) {
+        return checkInstanceSend(send, send->receiver, nullptr, selector, send->arguments, selectorRange);
+    }
     const Type* receiver = check(send->receiver, nullptr);
     if (receiver == types_.error()) {
         for (const Node* argument : send->arguments) {
             check(argument, nullptr);
         }
         return types_.error();
+    }
+    if (isOptional(receiver) && (selector == "ifNil:" || selector == "ifNotNil:" || selector == "ifNil:ifNotNil:" ||
+                                 selector == "ifNotNil:ifNil:")) {
+        return checkInlinedIfNil(send, receiver);
+    }
+    if (isClass(receiver) || isOptional(receiver)) {
+        return checkInstanceSend(send, send->receiver, receiver, selector, send->arguments, selectorRange);
+    }
+    if (receiver->kind == TypeKind::meta && isClass(receiver->instance)) {
+        return checkClassSideSend(send, receiver->instance->classInfo, selector, send->arguments, selectorRange);
     }
 
     if (receiver == types_.boolType() &&
@@ -1737,6 +2440,7 @@ LocalInfo* Analyzer::lookupLocal(const std::string& name)
             if (std::find(block->captures.begin(), block->captures.end(), local) == block->captures.end()) {
                 block->captures.push_back(local);
             }
+            local->captured = true;
         }
         return local;
     }
@@ -1756,7 +2460,7 @@ const LocalInfo* Analyzer::rootLocal(const Node* node) const
 
 bool Analyzer::isTypeName(const std::string& name) const
 {
-    return types_.builtin(name) != nullptr || model_.recordNamed(name) != nullptr;
+    return types_.builtin(name) != nullptr || model_.recordNamed(name) != nullptr || model_.classNamed(name) != nullptr;
 }
 
 bool Analyzer::alwaysReturns(const std::vector<Node*>& statements) const

@@ -2,7 +2,10 @@ LIBRARY kernel32.dll
 EXPORTS
     ExitProcess
     GetConsoleMode
+    GetProcessHeap
     GetStdHandle
+    HeapAlloc
+    HeapFree
     MultiByteToWideChar
     WriteConsoleW
     WriteFile

@@ -85,6 +85,15 @@ void optimize(llvm::Module& module, llvm::TargetMachine& machine, int optLevel)
 
 }
 
+std::string targetDataLayout(std::string& error)
+{
+    std::unique_ptr<llvm::TargetMachine> machine = createTargetMachine(0, error);
+    if (!machine) {
+        return {};
+    }
+    return machine->createDataLayout().getStringRepresentation();
+}
+
 std::optional<std::string> prepareModule(llvm::Module& module)
 {
     std::string error;

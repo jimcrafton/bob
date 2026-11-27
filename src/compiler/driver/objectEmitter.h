@@ -20,4 +20,7 @@ std::optional<std::string> emitObjectFromIrFile(const std::string& irPath, const
 // Sets triple and data layout only (for --dump-llvm).
 std::optional<std::string> prepareModule(llvm::Module& module);
 
+// The x86-64 Windows data layout string; empty on failure with `error` set.
+std::string targetDataLayout(std::string& error);
+
 }

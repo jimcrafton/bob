@@ -1,11 +1,13 @@
 string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 
 add_library(bobrt STATIC
+    core/objects.cpp
     core/trap.cpp
     crt/crtSupport.cpp
     platform/win64/win64Console.cpp
     platform/win64/win64Entry.cpp
     platform/win64/chkstk.asm
+    platform/win64/msgSend.asm
 )
 
 target_include_directories(bobrt
