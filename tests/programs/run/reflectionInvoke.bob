@@ -1,0 +1,95 @@
+# expect-exit: 0
+program reflectionInvoke, 0.1.0
+{
+    @[protocol] class Shape {
+        msg area [int64];
+    }
+
+    @[reflect: invoke] class Rect implements Shape {
+        public { w: int64 := 2; h: int64 := 3; label: string := "r"; }
+        msg area [int64] { return w * h; }
+        msg scale: k:int64 [int64] { w := w * k; h := h * k; return self area; }
+        msg rename: s:string { label := s; }
+        msg describe: a:int64 with: b:int32 prefix: c:string [string] { return c + a printString + b printString; }
+    }
+
+    @[reflect: invoke] class Square inherits Rect {
+        msg area [int64] { return w * w; }
+    }
+
+    # Below invoke: introspectable, but not in the registry and not creatable.
+    class Plain {
+        public { n: int32 := 1; }
+    }
+
+    # A required field: no default constructor, so `new` can't make one.
+    @[reflect: invoke] class Tagged {
+        public { kind: Class; }
+    }
+
+    extends reflectionInvoke {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg main: args:array reflector: r:Reflector [int32] {
+            failures := 0;
+            rect: Rect;
+            q: Square;
+
+            # perform: through the class object, checked against the stored signature.
+            a: int64 := Rect class perform: "area" on: rect;
+            failures := failures + (self check: a = 6 id: 1);
+            k: Class := q class;
+            b: int64 := k perform: "area" on: q;
+            failures := failures + (self check: b = 4 id: 2);
+            # The object's own class decides which implementation runs.
+            c: int64 := Rect class perform: "area" on: q;
+            failures := failures + (self check: c = 4 id: 3);
+
+            # Arguments take their types from the expressions (or, on a named class, from the message).
+            dynamic: Class := rect class;
+            scaled: int64 := dynamic perform: "scale:" on: rect with: 2i64;
+            failures := failures + (self check: scaled = 24 and rect w = 4 id: 4);
+            dynamic perform: "rename:" on: rect with: "renamed";
+            failures := failures + (self check: rect label = "renamed" id: 5);
+            text: string := dynamic perform: "describe:with:prefix:" on: rect with: 7i64 with: 8 with: "n=";
+            failures := failures + (self check: text = "n=78" id: 6);
+            statically := Rect class perform: "scale:" on: rect with: 1;
+            failures := failures + (self check: statically = 24 id: 7);
+
+            # set:of:to: writes a public field.
+            dynamic set: "w" of: rect to: 10i64;
+            failures := failures + (self check: rect w = 10 id: 8);
+            Rect class set: "h" of: rect to: 7;
+            failures := failures + (self check: rect h = 7 id: 9);
+            dynamic set: "label" of: rect to: "set";
+            failures := failures + (self check: rect label = "set" id: 10);
+
+            # new: a default-constructed object of the class, typed by context.
+            made: Rect := Rect class new;
+            failures := failures + (self check: made area = 6 id: 11);
+            s: Shape := k new;
+            failures := failures + (self check: s area = 4 and s class = Square class id: 12);
+
+            # Class named: by qualified name, or a bare name only one class has.
+            failures := failures + (self check: ((Class named: "reflectionInvoke.Square") ifNil: { false } ifNotNil: { :f | f = Square class }) id: 13);
+            failures := failures + (self check: ((Class named: "Rect") ifNil: { false } ifNotNil: { :f | f = Rect class }) id: 14);
+            failures := failures + (self check: (Class named: "Nope") = nil id: 15);
+            failures := failures + (self check: (Class named: "Plain") = nil id: 16);
+            failures := failures + (self check: q class qualifiedName = "reflectionInvoke.Square" id: 17);
+            failures := failures + (self check: Plain class qualifiedName = "reflectionInvoke.Plain" id: 18);
+
+            # A name read at runtime, all the way to a new object and a call.
+            name := "reflectionInvoke." + "Rect";
+            area: int64 := 0;
+            (Class named: name) ifNotNil: { :found |
+                shape: Shape := found new;
+                area := found perform: "area" on: shape;
+            };
+            failures := failures + (self check: area = 6 id: 19);
+
+            return failures;
+        }
+    }
+}

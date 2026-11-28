@@ -1,0 +1,18 @@
+# expect-exit: 101
+# expect-stderr: bob: runtime trap: reflection mismatch
+program trapReflectNew, 0.1.0
+{
+    # introspect (the default): enough to read, not to create
+    class Plain {
+        public { n: int32 := 1; }
+    }
+
+    extends trapReflectNew {
+        @[static] msg main: args:array reflector: r:Reflector [int32] {
+            p: Plain;
+            k: Class := p class;
+            made: Plain := k new;
+            return made n;
+        }
+    }
+}

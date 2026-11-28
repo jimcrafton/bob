@@ -1,0 +1,147 @@
+# expect-exit: 0
+program reflection, 0.1.0
+{
+    @[protocol] class Shape {
+        msg area [int64];
+    }
+
+    class Rect implements Shape {
+        public { w: int64 := 2; h: int64 := 3; }
+        msg area [int64] { return w * h; }
+    }
+
+    class Square inherits Rect {
+        msg side [int64] { return w; }
+    }
+
+    @[reflect: none] class Secret {
+        public { code: int32 := 7; }
+        msg reveal [int32] { return code; }
+    }
+
+    @[reflect: identity] class Tag {
+        msg label [string] { return "tag"; }
+    }
+
+    class Holder {
+        public { kind: Class; }
+    }
+
+    class Panel {
+        public { title: string := "main"; owner: Rect?; }
+        private { secret: int32 := 9; }
+        msg resize: w:int64 by: h:int32 [bool] { return w > 0; }
+        msg reset { secret := 0; }
+    }
+
+    extends reflection {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg nameOf: s:Shape [string] {
+            return s class name;
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+            r: Rect;
+            q: Square;
+
+            failures := failures + (self check: r class name = "Rect" id: 1);
+            failures := failures + (self check: r class = Rect class id: 2);
+            failures := failures + (self check: q class <> Rect class id: 3);
+            failures := failures + (self check: (q class isKindOf: Rect class) id: 4);
+            failures := failures + (self check: (r class isKindOf: Square class) not id: 5);
+
+            # superclass is optional: Rect has none, Square's is Rect.
+            failures := failures + (self check: r class superclass = nil id: 6);
+            failures := failures + (self check: (q class superclass ifNil: { "" } ifNotNil: { :c | c name }) = "Rect" id: 7);
+
+            # respondsTo: counts inherited messages; the name can be built at runtime.
+            failures := failures + (self check: (q class respondsTo: "area") id: 8);
+            failures := failures + (self check: (q class respondsTo: "side") id: 9);
+            failures := failures + (self check: (r class respondsTo: "side") not id: 10);
+            failures := failures + (self check: (r class respondsTo: "ar" + "ea") id: 11);
+
+            # Through a protocol: the dynamic class.
+            failures := failures + (self check: (self nameOf: q) = "Square" id: 12);
+
+            # `none` emits no name and no selectors; `identity` both.
+            s: Secret;
+            failures := failures + (self check: s class name = "" id: 13);
+            failures := failures + (self check: (s class respondsTo: "reveal") not id: 14);
+            failures := failures + (self check: s reveal = 7 id: 15);
+            t: Tag;
+            failures := failures + (self check: t class name = "Tag" id: 16);
+            failures := failures + (self check: (t class respondsTo: "label") id: 17);
+
+            # A Class is a plain value: stored in fields, compared, passed around.
+            h := Holder kind: Square class;
+            failures := failures + (self check: h kind = q class id: 18);
+            c: Class? := nil;
+            failures := failures + (self check: c = nil id: 19);
+            c := r class;
+            failures := failures + (self check: (c ifNil: { "" } ifNotNil: { :k | k name }) = "Rect" id: 20);
+
+            # Escape analysis kept these objects on the stack; asking doesn't move them.
+            failures := failures + (self check: r isOnStack id: 21);
+            heap := Holder kind: Rect class;
+            keep: array of: Holder;
+            keep add: heap;
+            failures := failures + (self check: heap isOnStack not id: 22);
+
+            # Introspection: public fields superclass first, with their types and offsets.
+            names := "";
+            for f in q class fields {
+                names := names + f name + ":" + f typeName + "@" + f offset printString + "/" + f size printString + ";";
+            }
+            failures := failures + (self check: names = "w:int64@16/8;h:int64@24/8;" id: 23);
+            p: Panel;
+            names := "";
+            for f in p class fields {
+                names := names + f name + ":" + f typeName + ";";
+            }
+            failures := failures + (self check: names = "title:string;owner:Rect?;" id: 24);
+
+            # Runtime and compile-time field metadata agree.
+            atRuntime: int64 := 0;
+            for f in Rect class fields { atRuntime := atRuntime + f offset; }
+            atCompileTime: int64 := 0;
+            for f in Rect meta fields { atCompileTime := atCompileTime + f offset; }
+            failures := failures + (self check: atRuntime = atCompileTime id: 25);
+
+            # Messages with their signatures, inherited ones first; `init` is never listed.
+            names := "";
+            for m in q class messages {
+                names := names + m selector + "[" + m resultType + "];";
+            }
+            failures := failures + (self check: names = "area[int64];side[int64];" id: 26);
+            names := "";
+            for m in p class messages {
+                names := names + m selector + "(" + (", " join: m argumentTypes) + ")" + m resultType + ";";
+            }
+            failures := failures + (self check: names = "resize:by:(int64, int32)bool;reset()void;" id: 27);
+            failures := failures + (self check: (", " join: q class protocols) = "Shape" id: 28);
+
+            # Below introspect there's no metadata.
+            failures := failures + (self check: s class fields count = 0 and t class fields count = 0 id: 29);
+            failures := failures + (self check: t class messages count = 0 and s class protocols count = 0 id: 30);
+
+            # get:of: reads a public field, typed by context; checked at compile time here ...
+            w: int64 := Rect class get: "w" of: r;
+            failures := failures + (self check: w = 2 id: 31);
+            # ... and at runtime through a dynamic class, including inherited fields.
+            k: Class := q class;
+            hh: int64 := k get: "h" of: q;
+            failures := failures + (self check: hh = 3 id: 32);
+            field := "ti" + "tle";
+            title: string := p class get: field of: p;
+            failures := failures + (self check: title = "main" id: 33);
+            owner: Rect? := p class get: "owner" of: p;
+            failures := failures + (self check: owner = nil id: 34);
+
+            return failures;
+        }
+    }
+}

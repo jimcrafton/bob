@@ -1,0 +1,19 @@
+# expect-exit: 101
+# expect-stderr: bob: runtime trap: reflection mismatch
+program trapPerform, 0.1.0
+{
+    @[reflect: invoke] class Rect {
+        public { w: int64 := 2; }
+        msg scale: k:int64 [int64] { return w * k; }
+    }
+
+    extends trapPerform {
+        @[static] msg main: args:array reflector: r:Reflector [int32] {
+            rect: Rect;
+            k: Class := rect class;
+            # scale: takes an int64; the untyped literal is an int32, so the signatures differ
+            n: int64 := k perform: "scale:" on: rect with: 3;
+            return n asInt32;
+        }
+    }
+}

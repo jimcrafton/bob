@@ -1,0 +1,18 @@
+# expect-exit: 101
+# expect-stderr: bob: runtime trap: reflection mismatch
+program trapReflection, 0.1.0
+{
+    class Rect {
+        public { w: int64 := 2; }
+    }
+
+    extends trapReflection {
+        @[static] msg main: args:array [int32] {
+            r: Rect;
+            k: Class := r class;
+            # w is an int64; asking for an int32 is checked against the stored type
+            w: int32 := k get: "w" of: r;
+            return w;
+        }
+    }
+}

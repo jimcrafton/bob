@@ -1,0 +1,75 @@
+# expect-exit: 0
+program blockContainers, 0.1.0
+{
+    class Counter {
+        public { handlers: array of: { int32 [int32] }; }
+        msg on: h:{ int32 [int32] } { handlers add: h; }
+        msg fire: v:int32 [int32] {
+            s := 0;
+            for h in handlers { s := s + (h value: v); }
+            return s;
+        }
+    }
+
+    extends blockContainers {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg adder: k:int32 [{ int32 [int32] }] {
+            return { :x | x + k };
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+            k := 10;
+
+            # Block literals take their parameter types from the element type.
+            ops: array of: { int32 [int32] };
+            ops add: { :x | x + k };
+            ops add: { :x | x * 2 };
+            ops add: (self adder: 100);
+            total := 0;
+            for op in ops { total := total + (op value: 1); }
+            failures := failures + (self check: total = 114 id: 1);
+
+            # Captures are by reference, also once the block sits in a container.
+            k := 20;
+            failures := failures + (self check: ((ops at: 0) value: 0) = 20 id: 2);
+
+            # Dictionary and hashtable values; at: gives an optional block.
+            table: dictionary of: { int32 [int32] };
+            table at: "inc" put: { :x | x + 1 };
+            n := 0;
+            (table at: "inc") ifNotNil: { :f | n := f value: 1; };
+            failures := failures + (self check: n = 2 and (table at: "dec") = nil id: 3);
+            byCode: hashtable keys: int32 values: { int32 [int32] };
+            byCode at: 7 put: { :x | x - 7 };
+            same: { int32 [int32] } := { :x | x };
+            fallback := byCode at: 8 ifAbsent: { same };
+            failures := failures + (self check: (fallback value: 3) = 3 id: 4);
+
+            # Literals, copies (copy on write), removeLast, first.
+            lit: array of: { int32 [int32] } := [{ :x | x - 1 }, { :x | x }];
+            failures := failures + (self check: ((lit at: 0) value: 5) = 4 id: 5);
+            copy := ops;
+            copy add: { :x | 0 };
+            failures := failures + (self check: ops count = 3 and copy count = 4 id: 6);
+            last := copy removeLast;
+            failures := failures + (self check: (last value: 9) = 0 and (copy first value: 1) = 21 id: 7);
+
+            # The element type can be inferred from the first block stored.
+            inferred: array;
+            inferred add: { :x: int32 | x + 1 };
+            failures := failures + (self check: (inferred first value: 1) = 2 id: 8);
+
+            # In a field, filled through messages.
+            c: Counter;
+            c on: { :x | x * 3 };
+            c on: { :x | x + k };
+            failures := failures + (self check: (c fire: 2) = 28 id: 9);
+
+            return failures;
+        }
+    }
+}
