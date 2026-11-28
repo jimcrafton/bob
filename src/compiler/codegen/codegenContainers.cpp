@@ -507,6 +507,18 @@ void Generator::emitCollectionLoop(const Node* collection, const Type* type, con
         bind(locals[0], loadOwned(address, type->inner), type->inner);
         advance = [&] { builder_.CreateStore(builder_.CreateAdd(builder_.CreateLoad(i64, position), builder_.getInt64(1)), position); };
     }
+    else if (type->kind == TypeKind::slice) {
+        llvm::Value* base = builder_.CreateExtractValue(source, {0}, "slice.base");
+        limit = builder_.CreateExtractValue(source, {1}, "slice.count");
+        builder_.CreateStore(builder_.getInt64(0), position);
+        builder_.CreateBr(condition);
+        builder_.SetInsertPoint(condition);
+        builder_.CreateCondBr(builder_.CreateICmpULT(builder_.CreateLoad(i64, position), limit), bodyBlock, exit);
+        builder_.SetInsertPoint(bodyBlock);
+        llvm::Value* address = builder_.CreateInBoundsGEP(llvmType(type->inner), base, {builder_.CreateLoad(i64, position)});
+        bind(locals[0], builder_.CreateLoad(llvmType(type->inner), address), type->inner);
+        advance = [&] { builder_.CreateStore(builder_.CreateAdd(builder_.CreateLoad(i64, position), builder_.getInt64(1)), position); };
+    }
     else {
         // Tables: visit occupied entries in storage order.
         llvm::Function* next = runtimeFunction("bobTableNext", i64, {ptr, i64});

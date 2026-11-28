@@ -49,7 +49,7 @@ program strings, 0.1.0
             for b in "AB" bytes {
                 sum := sum + b asInt32;
             }
-            "AB" codepoints do: { :c | sum := sum + c value asInt32; };
+            "AB" codepoints do: { [c] sum := sum + c value asInt32; };
             failures := failures + (self check: sum = 262 id: 13);
 
             c := 'é';
@@ -65,7 +65,7 @@ program strings, 0.1.0
 
             bytes := "hé" toUtf8;
             failures := failures + (self check: bytes count = 3 id: 20);
-            (string fromUtf8: bytes) ifNil: { failures := failures + 21; } ifNotNil: { :back |
+            (string fromUtf8: bytes) ifNil: { failures := failures + 21; } ifNotNil: { [back]
                 failures := failures + (self check: back = "hé" id: 21);
             };
             bad := [104u8, 255u8];

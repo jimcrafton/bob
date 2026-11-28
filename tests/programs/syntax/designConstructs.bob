@@ -49,7 +49,7 @@ import core.collections, 2.0.0;
 
         msg sum: nums:[array of: int32] [int64] {
             total := 0;
-            nums do: { :n | total := total + n; };
+            nums do: { [n] total := total + n; };
             return total;
         }
 
@@ -195,9 +195,9 @@ import core.collections, 2.0.0;
 
             # blocks as values and block messages
             mx := (a > b) ifTrue: { a } ifFalse: { b };
-            1 to: 10 do: { :i | z := z + i; };
-            items do: { :each | io out println: each; };
-            sq := { :i: int32 | i * i };
+            1 to: 10 do: { [i] z := z + i; };
+            items do: { [each] io out println: each; };
+            sq := { [i: int32] i * i };
 
             # 4.1 overflow attributes
             hh := @[overflow: wrap] (a * 31 + b);
@@ -231,8 +231,8 @@ import core.collections, 2.0.0;
                 x := 2;
             }
             case v of {
-                int32:  { :n | z := z + n; }
-                string: { :s | io out println: s; }
+                int32:  { [n] z := z + n; }
+                string: { [s] io out println: s; }
             }
 
             # 8.3 meta

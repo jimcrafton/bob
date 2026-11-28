@@ -27,6 +27,26 @@ using sema::SendKind;
 using sema::Type;
 using sema::TypeKind;
 
+// How one value crosses the C ABI (Windows x64, design §6.6).
+struct CPassing {
+    enum class Kind : uint8_t {
+        direct,    // in its own LLVM type
+        asInteger, // a record of 1, 2, 4 or 8 bytes, as an integer of that size
+        indirect,  // any other record: a pointer to a copy (for a result: a hidden sret pointer)
+    };
+    Kind kind = Kind::direct;
+    llvm::Type* type = nullptr;
+};
+
+struct CSignature {
+    llvm::FunctionType* type = nullptr;
+    std::vector<CPassing> params;
+    CPassing result;
+    bool sret = false;
+    std::vector<const sema::Type*> paramTypes;
+    const sema::Type* resultType = nullptr;
+};
+
 class Generator {
 public:
     Generator(const sema::SemanticModel& model, llvm::LLVMContext& context, std::string dataLayout)
@@ -49,6 +69,8 @@ public:
 private:
     llvm::Type* llvmType(const Type* type);
     llvm::StructType* structType(const sema::RecordInfo* record);
+    // The LLVM element of record field `index` (`@[align:]` markers shift them).
+    unsigned recordSlot(const sema::RecordInfo* record, size_t index);
     void declareMessage(const sema::MessageInfo* message);
     void emitMessage(const sema::MessageInfo* message);
     void emitEntryPoint();
@@ -218,6 +240,31 @@ private:
     llvm::Value* emitReflectionSend(const Node* node, const sema::SendInfo& send);
     // The class's BobClassMeta, or null below the `introspect` level.
     llvm::Constant* emitClassMeta(const sema::ClassInfo* info);
+    // ---- C functions (codegenExtern.cpp) ----
+    CPassing cPassing(const Type* type);
+    CSignature cSignature(const std::vector<const Type*>& params, const Type* result);
+    void applyCAttributes(llvm::Function* function, const CSignature& signature);
+    void applyCAttributes(llvm::CallInst* call, const CSignature& signature);
+    llvm::Value* toC(llvm::Value* value, const Type* type, const CPassing& passing);
+    llvm::Value* fromC(llvm::Value* value, const Type* type, const CPassing& passing);
+    // Calls `callee` (a C function pointer) with bob values; returns a bob value or null.
+    llvm::Value* emitCCall(llvm::Value* callee, const CSignature& signature, const std::vector<llvm::Value*>& args);
+    // A function with the C signature that calls `target` (bob ABI; `withEnvironment`: a null block environment first).
+    llvm::Function* emitCThunk(const std::string& name, llvm::GlobalValue::LinkageTypes linkage, const CSignature& signature,
+                               llvm::Function* target, bool withEnvironment);
+    // A definition named `name`, taking over any declaration of that name already in the module.
+    llvm::Function* cDefinition(const std::string& name, llvm::FunctionType* type, llvm::GlobalValue::LinkageTypes linkage);
+    llvm::Function* cDeclaration(const std::string& name, const CSignature& signature);
+    void emitExternImport(const sema::MessageInfo* message);
+    void emitExport(const sema::MessageInfo* message);
+    llvm::Value* emitCFunctionBlock(const sema::BlockInfo* info);
+    llvm::Value* emitCFunctionInvoke(const Node* node, const sema::SendInfo& send);
+
+    // Pointer and slice sends (codegenPointers.cpp); null if not one.
+    llvm::Value* emitPointerSend(const Node* node, const sema::SendInfo& send);
+    // Whether a field place (`p.x`, `r.a.b`) is reached through a volatilePointer; `align` is its alignment.
+    bool placeAccess(const Node* place, llvm::Align& align) const;
+    bool throughPointer(const Node* place) const;
     llvm::Function* fieldOffsetFunction();
     llvm::Value* emitContainerSend(const Node* node, const sema::SendInfo& send);
     llvm::Value* emitArrayLiteral(const ArrayLiteral* literal, const sema::SendInfo& send);
@@ -263,6 +310,7 @@ private:
     llvm::Value* environment_ = nullptr;
     std::unordered_map<const sema::MessageInfo*, llvm::Function*> functions_;
     std::unordered_map<const sema::RecordInfo*, llvm::StructType*> structs_;
+    std::unordered_map<const sema::RecordInfo*, std::vector<unsigned>> recordSlots_;
     std::unordered_map<const sema::LocalInfo*, llvm::AllocaInst*> slots_;
     struct StackSlot {
         llvm::AllocaInst* object;

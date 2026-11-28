@@ -212,7 +212,7 @@ TEST(Semantic, UnsupportedFeaturesNameTheirPhase)
 
 TEST(Semantic, BareBlockParameterIsInferredFromTheBody)
 {
-    auto a = analyzeMain("return self apply: { :n | n * 2 } to: 21;", "@[static] msg apply: f:block to: x:int32 [int32] { return f value: x; }");
+    auto a = analyzeMain("return self apply: { [n] n * 2 } to: 21;", "@[static] msg apply: f:block to: x:int32 [int32] { return f value: x; }");
     EXPECT_EQ(a->diagnostics.errorCount(), 0u) << a->text();
     const bob::sema::LocalInfo* f = localNamed(*a, "f");
     ASSERT_NE(f, nullptr);
@@ -230,7 +230,7 @@ TEST(Semantic, UnusedBareBlockParameterNeedsAnAnnotation)
 
 TEST(Semantic, BlockParameterTypeNeedsContextOrAnnotation)
 {
-    auto a = analyzeMain("sq := { :i | i * i };\nreturn 0;");
+    auto a = analyzeMain("sq := { [i] i * i };\nreturn 0;");
     EXPECT_TRUE(a->hasCode("sema.cannotInferBlock")) << a->text();
 }
 
@@ -251,7 +251,7 @@ TEST(Semantic, BreakDoesNotCrossABlockFunction)
 TEST(Semantic, BlockTypesInFieldsAndResults)
 {
     auto a = analyzeMain("e: { } := { };\nreturn 0;",
-                         "@[static] msg make [{ int32 [int32] }] { return { :x | x }; }\n"
+                         "@[static] msg make [{ int32 [int32] }] { return { [x] x }; }\n"
                          "@[static] msg bare [block] { return { 1 }; }\n"
                          "@[static] msg old: f:[block takes: [int32]] { }",
                          "record Holder { f: { [int32] }; }\n"
@@ -297,7 +297,7 @@ bool isBoxed(const Analyzed& analyzed, const std::string& name)
 
 TEST(Semantic, NamedBlockTypesNameTheShape)
 {
-    auto a = analyzeMain("f: Transform := { :x: int32 | x * 2 };\ng: { int32 [int32] } := f;\nh: Handler := nil;\nreturn f value: 1;", "",
+    auto a = analyzeMain("f: Transform := { [x: int32] x * 2 };\ng: { int32 [int32] } := f;\nh: Handler := nil;\nreturn f value: 1;", "",
                          "type Transform := { int32 [int32] };\n"
                          "type Handler := { [int32] }?;\n"
                          "type Bare := block;");
@@ -316,7 +316,7 @@ TEST(Semantic, EscapingBlocksBecomeHeapClosures)
                          "return 0;",
                          "@[static] msg make [{ [int32] }] { n := 0; return { n := n + 1; n }; }\n"
                          "@[static] msg keep: f:{ [int32] } [{ [int32] }] { return f; }\n"
-                         "@[static] msg adder: p:int32 [{ int32 [int32] }] { return { :x: int32 | x + p }; }");
+                         "@[static] msg adder: p:int32 [{ int32 [int32] }] { return { [x: int32] x + p }; }");
     EXPECT_EQ(a->diagnostics.errorCount(), 0u) << a->text();
     EXPECT_TRUE(isStackBlock(*a, "k"));
     EXPECT_FALSE(isBoxed(*a, "k"));
@@ -368,7 +368,7 @@ TEST(Semantic, CapturedObjectsLeaveTheStack)
 
 TEST(Semantic, BlockArityMismatch)
 {
-    auto a = analyzeMain("return self apply: { :a :b | a } to: 1;", "@[static] msg apply: f:{ int32 [int32] } to: x:int32 [int32] { return f value: x; }");
+    auto a = analyzeMain("return self apply: { [a, b] a } to: 1;", "@[static] msg apply: f:{ int32 [int32] } to: x:int32 [int32] { return f value: x; }");
     EXPECT_TRUE(a->hasCode("sema.blockArity")) << a->text();
 }
 
@@ -381,7 +381,7 @@ TEST(Semantic, InlinedMessagesNeedBlockLiterals)
 
 TEST(Semantic, CapturesAreRecorded)
 {
-    auto a = analyzeMain("total := 0;\nlimit := 3;\nf := { :x: int32 | total := total + x + limit; };\nf value: 1;\nreturn total;");
+    auto a = analyzeMain("total := 0;\nlimit := 3;\nf := { [x: int32] total := total + x + limit; };\nf value: 1;\nreturn total;");
     EXPECT_EQ(a->diagnostics.errorCount(), 0u) << a->text();
     const bob::sema::BlockInfo* block = nullptr;
     for (const auto& info : a->model.blockInfos) {
@@ -650,7 +650,7 @@ TEST(Semantic, StackPlacementCanBeRequiredOrRefused)
 TEST(Semantic, LocalsHoldingOnlyStackObjectsAreKnown)
 {
     auto a = analyzeMain("pt := Node value: 1;\nq := pt;\nmaybe: Node? := nil;\nmaybe := q;\n"
-                         "maybe ifNotNil: { :m | m value; };\nheld: Node;\nother: Node? := held;\nholder: Node;\nholder next: held;\n"
+                         "maybe ifNotNil: { [m] m value; };\nheld: Node;\nother: Node? := held;\nholder: Node;\nholder next: held;\n"
                          "mixed := Node value: 2;\nmixed := self make;\nreturn 0;",
                          "@[static] msg make [Node] { n := Node value: 3; return n; }", escapeClasses);
     EXPECT_EQ(a->diagnostics.errorCount(), 0u) << a->text();
@@ -828,11 +828,11 @@ TEST(Semantic, InvokeLevelReflectionIsCheckedOnANamedClass)
 
 TEST(Semantic, ContainersOfBlocks)
 {
-    auto a = analyzeMain("f := { :x: int32 | x };\nops: array of: { int32 [int32] };\nops add: { :x | x + 1 };\nops add: f;\n"
+    auto a = analyzeMain("f := { [x: int32] x };\nops: array of: { int32 [int32] };\nops add: { [x] x + 1 };\nops add: f;\n"
                          "same: array of: { int32 [int32] } := ops;\n"
                          "table: dictionary of: { int32 [int32] };\nhit := table at: \"a\";\n"
                          "bad := ops includes: f;\n"
-                         "later: array;\nlater add: { :x | x };\n"
+                         "later: array;\nlater add: { [x] x };\n"
                          "fixed: array of: { int32 [int32] } by: Slot;\n"
                          "keyed: hashtable keys: { int32 [int32] } values: int32;\n"
                          "loose: array of: block;\nreturn 0;",
@@ -844,6 +844,118 @@ TEST(Semantic, ContainersOfBlocks)
     EXPECT_NE(a->text().find("a block has no default"), std::string::npos) << a->text();
     EXPECT_NE(a->text().find("can't be a key"), std::string::npos) << a->text();
     EXPECT_NE(a->text().find("'block' can't be an array element"), std::string::npos) << a->text();
+}
+
+TEST(Semantic, PointerRules)
+{
+    auto a = analyzeMain("x: int32 := 1;\nunguarded := x address;\nb: Box;\n"
+                         "@[unsafe] {\n"
+                         "  ok := x address;\n  t: Tight;\n  tb := t.b address;\n  s: string := \"a\";\n  sp := s address;\n"
+                         "  needs: pointer to: int32;\n  nope := 5 asPointer;\n"
+                         "  v: volatilePointer to: int32 := ok asPointer;\n  back: pointer to: int32 := v asPointer;\n  sl := v slice: 2;\n"
+                         "  never := ok = nil;\n"
+                         "}\nreturn 0;",
+                         "@[static] @[unsafe] msg param: n:int32 [int32] { p := n address; return 0; }",
+                         "@[packed] record Tight { a: uint8; b: uint32; }\nrecord Holds { p: pointer to: uint32; }\n"
+                         "record Fine { p: [pointer to: uint32]?; }\nclass Box { public { n: int32 := 1; } }\n"
+                         "class Strings { public { p: [pointer to: string]?; } }");
+    auto has = [&](const char* text) { return a->text().find(text) != std::string::npos; };
+    EXPECT_TRUE(has("'address' works with raw memory, so it needs an unsafe region")) << a->text();
+    EXPECT_TRUE(has("a record's pointer field must be optional")) << a->text();
+    EXPECT_TRUE(has("'n' is read-only, so it has no address")) << a->text();
+    EXPECT_TRUE(has("may be unaligned, so it has no address")) << a->text();
+    EXPECT_TRUE(has("a 'string' (reference counted or without a fixed layout) has no address")) << a->text();
+    EXPECT_TRUE(has("'needs' is a pointer, which is never null")) << a->text();
+    EXPECT_TRUE(has("'asPointer' takes its pointer type from context")) << a->text();
+    EXPECT_TRUE(has("a volatilePointer can't become a plain pointer")) << a->text();
+    EXPECT_TRUE(has("can't be made from a volatilePointer")) << a->text();
+    EXPECT_TRUE(has("is never nil")) << a->text();
+    EXPECT_TRUE(has("a pointer or slice points at plain data")) << a->text(); // pointer to: string
+    EXPECT_TRUE(a->hasCode("sema.unsafeRequired")) << a->text();
+}
+
+TEST(Semantic, PointersToLocalsCantOutliveTheFrame)
+{
+    auto a = analyzeMain("return self fine - 4;",
+                         "@[static] @[unsafe] msg leak [pointer to: int32] { x: int32 := 1; return x address; }\n"
+                         "@[static] @[unsafe] msg stash: b:Box { x: int32 := 1; b keep: x address; }\n"
+                         "@[static] @[unsafe] msg derived [pointer to: int32] { x: int32 := 1; px := x address; return px advancedBy: 0; }\n"
+                         "@[static] @[unsafe] msg keeper: p:[pointer to: int32] { all: array of: [pointer to: int32]; all add: p; }\n"
+                         "@[static] @[unsafe] msg passes { x: int32 := 1; self keeper: x address; }\n"
+                         "@[static] @[unsafe] msg capture [{ [int32] }] { x: int32 := 1; px := x address; return { px contents }; }\n"
+                         "@[static] @[unsafe] msg reader: p:[pointer to: int32] [int32] { return p contents; }\n"
+                         "@[static] @[unsafe] msg fine [int32] { x: int32 := 4; return self reader: x address; }\n"
+                         "@[static] @[unsafe] msg fromMemory: m:[pointer to: [pointer to: int32]] [pointer to: int32] { return m contents; }",
+                         "class Box { public { keep: [pointer to: int32]?; } }");
+    auto count = [&](const char* text) {
+        size_t n = 0;
+        for (size_t at = a->text().find(text); at != std::string::npos; at = a->text().find(text, at + 1)) {
+            ++n;
+        }
+        return n;
+    };
+    EXPECT_EQ(count("[sema.pointerEscapes]"), 5u) << a->text(); // leak, stash, derived, passes, capture
+    EXPECT_EQ(count("but it does: returned"), 2u) << a->text();
+    EXPECT_EQ(count("but it does: stored into a field"), 1u) << a->text();
+    EXPECT_EQ(count("but it does: passed to a message that keeps it"), 1u) << a->text();
+    EXPECT_EQ(count("but it does: captured by a block that outlives its frame"), 1u) << a->text();
+    EXPECT_EQ(a->diagnostics.errorCount(), 5u) << a->text(); // fine and fromMemory are accepted
+}
+
+TEST(Semantic, AlignmentRules)
+{
+    auto a = analyzeMain("lines: array of: Line;\ntable: dictionary of: Line;\nok: array of: Sixteen;\n@[align: 4096] page: array of: uint8 by: [0 to: 9];\n"
+                         "@[align: 8] text: string := \"x\";\nreturn 0;",
+                         "",
+                         "@[align: 64] record Line { a: uint8; }\n@[align: 16] record Sixteen { a: uint8; }\n"
+                         "@[align: 3] record Odd { a: uint8; }\n@[align: 8192] record Huge { a: uint8; }\n"
+                         "@[packed] @[align: 8] record Both { a: uint8; }\n@[packed] record Inner { a: uint8; @[align: 4] b: uint32; }\n"
+                         "class Holder { public { line: Line; } }\nclass Fine { public { s: Sixteen; } }");
+    auto has = [&](const char* text) { return a->text().find(text) != std::string::npos; };
+    EXPECT_TRUE(has("'Line' needs 64-byte alignment, but a container's buffer is only 16-byte aligned")) << a->text();
+    EXPECT_TRUE(has("'Line' needs 64-byte alignment, but an object is only 16-byte aligned")) << a->text();
+    EXPECT_TRUE(has("takes a power of two from 1 to 4096")) << a->text();
+    EXPECT_TRUE(has("'@[align:]' together with '@[packed]' isn't supported yet")) << a->text();
+    EXPECT_TRUE(has("'@[align:]' on a field of a @[packed] record isn't supported yet")) << a->text();
+    EXPECT_TRUE(has("'@[align:]' places plain data")) << a->text();
+    EXPECT_EQ(a->diagnostics.errorCount(), 8u) << a->text(); // two containers, the object, Odd, Huge, Both, Inner, the string
+    EXPECT_EQ(localNamed(*a, "page")->align, 4096u);
+
+    // A variable a heap closure keeps a copy of can't need more than 16 bytes.
+    auto captured = analyzeMain("return 0;", "@[static] msg keep [{ [uint8] }] { line: Line; return { line.a }; }", "@[align: 64] record Line { a: uint8; }");
+    EXPECT_TRUE(captured->hasCode("sema.alignTooLarge")) << captured->text();
+}
+
+TEST(Semantic, ExternCRules)
+{
+    auto a = analyzeMain("n := 3;\nt := self tick;\nf: Op := { [x] x + n };\ng: Op := { [x] x * 2 };\nr := g value: 1;\nmissing: Op;\n"
+                         "@[unsafe] { ok := (self tick) asInt32 + (g value: 2); }\nreturn 0;",
+                         "@[extern: \"C\", symbol: \"GetTickCount\"] msg tick [uint32];\n"
+                         "@[extern: \"C\"] msg takesString: s:string;\n"
+                         "@[extern: \"C\"] msg takesSlice: s:[slice of: uint8];\n"
+                         "@[extern: \"C\"] msg exported: x:int32 [int32] { return x; }\n"
+                         "@[extern: \"Pascal\"] msg wrong;\n"
+                         "@[symbol: \"lonely\"] @[static] msg alone { }",
+                         "type Op := cFunction { int32 [int32] };\nrecord Table { f: Op; }\nrecord Fine { f: Op?; }\n"
+                         "type Bad := cFunction { string };");
+    auto has = [&](const char* text) { return a->text().find(text) != std::string::npos; };
+    EXPECT_TRUE(has("'GetTickCount' is a C function the compiler can't check")) << a->text();
+    EXPECT_TRUE(has("can't use 'n' from the code around it")) << a->text();
+    EXPECT_TRUE(has("a C function pointer may point anywhere, so calling it needs an unsafe region")) << a->text();
+    EXPECT_TRUE(has("'missing' is a C function, which is never null")) << a->text();
+    EXPECT_TRUE(has("a record's C function field must be optional")) << a->text();
+    EXPECT_TRUE(has("'s' crosses to C, so it needs a C type, not 'string'; reference-counted values can't cross to C")) << a->text();
+    EXPECT_TRUE(has("pass the slice's pointer and count separately")) << a->text();
+    EXPECT_TRUE(has("a C function takes C types, not 'string'")) << a->text();
+    EXPECT_TRUE(has("takes the calling convention \"C\"")) << a->text();
+    EXPECT_TRUE(has("goes with '@[extern: \"C\"]'")) << a->text();
+    EXPECT_EQ(a->diagnostics.errorCount(), 10u) << a->text();
+    const bob::sema::MessageInfo* exported = a->model.program.bySelector.at("exported:");
+    EXPECT_TRUE(exported->externC);
+    EXPECT_FALSE(exported->externImport);
+    EXPECT_EQ(exported->cSymbol, "exported");
+    EXPECT_EQ(a->model.program.bySelector.at("tick")->cSymbol, "GetTickCount");
+    EXPECT_EQ(localNamed(*a, "g")->type->name, "cFunction { int32 [int32] }");
 }
 
 TEST(Semantic, ReflectionLevelDefaultsAndTheBuildCap)

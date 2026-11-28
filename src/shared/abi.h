@@ -37,6 +37,8 @@ enum class TrapReason : int32_t {
     // phase 8
     unownedDestroyed = 13, // reading an unowned reference whose object is gone
     reflectionMismatch = 14, // `get:of:` on a missing field, the wrong type or an object of another class
+    // phase 9
+    invalidPointer = 15, // `asPointer` of address 0 (to a non-optional pointer) or of a misaligned address
 };
 
 }

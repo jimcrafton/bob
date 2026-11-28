@@ -113,6 +113,10 @@ private:
             return "hashtable keys: " + spell(type->key, true) + " values: " + spell(type->inner, true);
         case TypeKind::set:
             return "set of: " + spell(type->inner, true);
+        case TypeKind::pointer:
+            return std::string(type->isVolatile ? "volatilePointer" : "pointer") + " to: " + spell(type->inner, true);
+        case TypeKind::slice:
+            return "slice of: " + spell(type->inner, true);
         case TypeKind::subrange:
             if (isEnum(type->inner)) {
                 std::string enumName = spell(type->inner, false);
@@ -121,8 +125,9 @@ private:
                        info->members[static_cast<size_t>(type->high)].name;
             }
             return std::to_string(type->low) + " to: " + std::to_string(type->high);
-        case TypeKind::block: {
-            std::string text = "{";
+        case TypeKind::block:
+        case TypeKind::cFunction: {
+            std::string text = type->kind == TypeKind::cFunction ? "cFunction {" : "{";
             for (size_t i = 0; i < type->params.size(); ++i) {
                 text += (i == 0 ? " " : ", ") + spell(type->params[i], false);
             }
@@ -251,6 +256,11 @@ private:
         if (message.isProtocolDefault) {
             attributes.push_back("default");
         }
+        // An export is an ordinary message to importers; only an import needs the C ABI.
+        if (message.externImport) {
+            attributes.push_back("extern: \"C\"");
+            attributes.push_back("symbol: " + quote(message.cSymbol));
+        }
         std::string keeps;
         if (message.selfEscapes) {
             keeps = "self";
@@ -293,9 +303,11 @@ private:
 
     void writeRecord(const RecordInfo& record)
     {
-        out_ << "    " << (record.packed ? "@[packed] " : "") << "record " << record.name << " {";
+        out_ << "    " << (record.packed ? "@[packed] " : "") << (record.align != 0 ? "@[align: " + std::to_string(record.align) + "] " : "")
+             << "record " << record.name << " {";
         for (const FieldInfo& field : record.fields) {
-            out_ << " " << field.name << ": " << spell(field.type, false) << ";";
+            out_ << " " << (field.align != 0 ? "@[align: " + std::to_string(field.align) + "] " : "") << field.name << ": " << spell(field.type, false)
+                 << ";";
         }
         out_ << " }\n";
     }

@@ -168,7 +168,7 @@ TEST(Parser, ReturnWithSeveralValues)
 
 TEST(Parser, BlockWithTypedParameter)
 {
-    EXPECT_EQ(expectClean("sq := { :i: int32 :j | i * j };"),
+    EXPECT_EQ(expectClean("sq := { [i: int32, j] i * j };"),
               "Assign\n"
               "  target: Ident name=sq\n"
               "  value: Block\n"
@@ -183,7 +183,7 @@ TEST(Parser, BlockWithTypedParameter)
 
 TEST(Parser, BlockParametersWithoutTypes)
 {
-    EXPECT_EQ(expectClean("f := { :a :b | a };"),
+    EXPECT_EQ(expectClean("f := { [a, b] a };"),
               "Assign\n"
               "  target: Ident name=f\n"
               "  value: Block\n"
@@ -191,6 +191,23 @@ TEST(Parser, BlockParametersWithoutTypes)
               "    param: BlockParam name=b\n"
               "    statement: ExprStmt\n"
               "      expression: Ident name=a\n");
+}
+
+TEST(Parser, BlockParameterTypesMayBeTypeMessages)
+{
+    std::string dump = expectClean("f := { [xs: array of: int32, n] n };");
+    EXPECT_NE(dump.find("param: BlockParam name=xs\n"), std::string::npos) << dump;
+    EXPECT_NE(dump.find("param: BlockParam name=n\n"), std::string::npos) << dump;
+}
+
+TEST(Parser, OldBlockParameterSyntaxIsRejected)
+{
+    std::string diagnostics;
+    dumpFirstItem("f := { :a :b | a };", &diagnostics);
+    EXPECT_NE(diagnostics.find("parse.oldBlockParameters"), std::string::npos) << diagnostics;
+    diagnostics.clear();
+    dumpFirstItem("f := { [] 1 };", &diagnostics);
+    EXPECT_NE(diagnostics.find("parse.emptyBlockParameters"), std::string::npos) << diagnostics;
 }
 
 TEST(Parser, BlockReceiverOnSameLine)
@@ -243,7 +260,7 @@ TEST(Parser, AttributedExpression)
 
 TEST(Parser, CaseStatementWithPascalLabels)
 {
-    EXPECT_EQ(expectClean("case c of {\n Color red, Color green: { self go; }\n (1 to: 9): { }\n int32: { :n | n }\n} else {\n x := 1;\n}"),
+    EXPECT_EQ(expectClean("case c of {\n Color red, Color green: { self go; }\n (1 to: 9): { }\n int32: { [n] n }\n} else {\n x := 1;\n}"),
               "Case\n"
               "  subject: Ident name=c\n"
               "  entry: CaseEntry\n"
@@ -369,9 +386,9 @@ TEST(Parser, ControlBodiesNeedBraces)
 TEST(Parser, BlockInConditionMustBeParenthesised)
 {
     std::string diagnostics;
-    dumpFirstItem("if items detect: { :e | e } {\n}", &diagnostics);
+    dumpFirstItem("if items detect: { [e] e } {\n}", &diagnostics);
     EXPECT_NE(diagnostics.find("parse.blockInCondition"), std::string::npos) << diagnostics;
-    EXPECT_EQ(expectClean("if (items anySatisfy: { :e | e }) {\n}").substr(0, 3), "If\n");
+    EXPECT_EQ(expectClean("if (items anySatisfy: { [e] e }) {\n}").substr(0, 3), "If\n");
 }
 
 TEST(Parser, ControlWordsAreReserved)

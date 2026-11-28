@@ -45,6 +45,8 @@ const char* reasonText(int32_t reason)
         return "unowned reference to a destroyed object";
     case bob::abi::TrapReason::reflectionMismatch:
         return "reflection mismatch";
+    case bob::abi::TrapReason::invalidPointer:
+        return "invalid pointer (null or misaligned)";
     }
     return "unknown trap";
 }

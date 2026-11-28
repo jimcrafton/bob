@@ -32,13 +32,18 @@ struct Aggregate {
     uint64_t total() const { return roundUp(size, alignment); }
 };
 
+// `@[packed]` drops the fields' natural alignment; `@[align: n]` on a field or
+// the record raises it (and applies inside a packed record too).
 Aggregate recordLayout(const RecordInfo* record, size_t upTo, uint64_t* offset)
 {
     Aggregate layout;
     for (size_t i = 0; i < record->fields.size(); ++i) {
-        const Type* field = record->fields[i].type;
-        layout.add(sizeOf(field), record->packed ? 1 : alignmentOf(field), record->packed, i == upTo ? offset : nullptr);
+        const FieldInfo& field = record->fields[i];
+        uint64_t natural = record->packed ? 1 : alignmentOf(field.type);
+        uint64_t alignment = std::max(natural, field.align);
+        layout.add(sizeOf(field.type), alignment, alignment == 1, i == upTo ? offset : nullptr);
     }
+    layout.alignment = std::max(layout.alignment, record->align);
     return layout;
 }
 
@@ -76,7 +81,7 @@ uint64_t sizeOf(const Type* type)
     case TypeKind::fixedArray:
         return type->count * sizeOf(type->inner);
     case TypeKind::optional:
-        if (isReference(type)) {
+        if (isWordOptional(type)) {
             return 8;
         }
         {
@@ -86,9 +91,10 @@ uint64_t sizeOf(const Type* type)
             return layout.total();
         }
     case TypeKind::block:
+    case TypeKind::slice:
         return 16;
     default:
-        return 8; // references, strings and containers are one pointer
+        return 8; // references, pointers, strings and containers are one pointer
     }
 }
 
@@ -107,11 +113,11 @@ uint64_t alignmentOf(const Type* type)
     case TypeKind::set:
         return isBitSet(type) ? type->bits / 8 : 8;
     case TypeKind::record:
-        return type->record->packed ? 1 : recordLayout(type->record, SIZE_MAX, nullptr).alignment;
+        return recordLayout(type->record, SIZE_MAX, nullptr).alignment;
     case TypeKind::fixedArray:
         return alignmentOf(type->inner);
     case TypeKind::optional:
-        return isReference(type) ? 8 : alignmentOf(type->inner);
+        return isWordOptional(type) ? 8 : alignmentOf(type->inner);
     default:
         return 8;
     }

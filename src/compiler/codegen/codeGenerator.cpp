@@ -44,7 +44,7 @@ std::unique_ptr<llvm::Module> Generator::run(const Unit* unit)
     }
     for (const auto& message : model_.messages) {
         bool imported = message->imported || (message->owner != nullptr && message->owner->origin.module != nullptr);
-        if (functions_.count(message.get()) != 0 && !imported) {
+        if (functions_.count(message.get()) != 0 && (!imported || message->externImport)) {
             emitMessage(message.get());
         }
     }
@@ -681,9 +681,13 @@ llvm::Type* Generator::llvmType(const Type* type)
             return llvm::StructType::get(context_, {builder_.getInt1Ty(), llvmType(type->inner)});
         }
         return builder_.getPtrTy();
+    case TypeKind::slice:
+        return llvm::StructType::get(context_, {builder_.getPtrTy(), builder_.getInt64Ty()});
     case TypeKind::classType:
     case TypeKind::classObject:
     case TypeKind::reflector:
+    case TypeKind::pointer:
+    case TypeKind::cFunction:
     case TypeKind::nilType:
     case TypeKind::blockToInfer:
     case TypeKind::placeholder:
@@ -702,12 +706,31 @@ llvm::StructType* Generator::structType(const sema::RecordInfo* record)
     }
     llvm::StructType* type = llvm::StructType::create(context_, "record." + record->name);
     structs_[record] = type;
+    // `@[align: n]` becomes a zero-size `[0 x <n x i8>]` member (LLVM aligns a
+    // vector to its size): before a field to align its offset, at the end to
+    // align the record. The layout then follows C rules, as sema computes it.
+    auto marker = [&](uint64_t align) { return llvm::ArrayType::get(llvm::FixedVectorType::get(builder_.getInt8Ty(), static_cast<unsigned>(align)), 0); };
     std::vector<llvm::Type*> fields;
+    std::vector<unsigned> slots;
     for (const sema::FieldInfo& field : record->fields) {
+        if (field.align > 1) {
+            fields.push_back(marker(field.align));
+        }
+        slots.push_back(static_cast<unsigned>(fields.size()));
         fields.push_back(llvmType(field.type));
     }
+    if (record->align > 1) {
+        fields.push_back(marker(record->align));
+    }
     type->setBody(fields, record->packed);
+    recordSlots_[record] = std::move(slots);
     return type;
+}
+
+unsigned Generator::recordSlot(const sema::RecordInfo* record, size_t index)
+{
+    structType(record);
+    return recordSlots_.at(record)[index];
 }
 
 void Generator::declareMessage(const sema::MessageInfo* message)
@@ -715,6 +738,10 @@ void Generator::declareMessage(const sema::MessageInfo* message)
     bool imported = message->imported || (message->owner != nullptr && message->owner->origin.module != nullptr);
     bool exported = message->origin.exported || (message->owner != nullptr && message->owner->origin.exported);
     auto linkage = imported || exported ? llvm::GlobalValue::ExternalLinkage : llvm::GlobalValue::InternalLinkage;
+    if (message->externImport) {
+        // Every unit that sees a C import makes its own wrapper (codegenExtern.cpp).
+        linkage = llvm::GlobalValue::InternalLinkage;
+    }
     llvm::Function* function = llvm::Function::Create(methodType(message), linkage, message->symbolName, module_.get());
     unsigned offset = message->isInstance ? 1 : 0;
     if (message->isInstance) {
@@ -730,6 +757,10 @@ void Generator::emitMessage(const sema::MessageInfo* message)
 {
     if (message->isCopy) {
         emitCopy(message);
+        return;
+    }
+    if (message->externImport) {
+        emitExternImport(message);
         return;
     }
     beginFunction(functions_.at(message), message, message->locals);
@@ -756,6 +787,9 @@ void Generator::emitMessage(const sema::MessageInfo* message)
         else {
             builder_.CreateUnreachable();
         }
+    }
+    if (message->externC) {
+        emitExport(message);
     }
 }
 
@@ -878,7 +912,15 @@ void Generator::emitStatement(const Node* statement)
             const Type* type = model_.typeOf(assignment->target);
             llvm::Value* value = emitOwnedAs(assignment->value, type);
             const sema::FieldInfo* field = assignedField(assignment->target);
-            storeHeld(emitAddress(assignment->target), value, type, field != nullptr ? field->ownership : sema::Ownership::strong);
+            if (throughPointer(assignment->target)) {
+                // Through a pointer: plain data, so no ARC; volatile when the pointer is.
+                llvm::Align align;
+                bool isVolatile = placeAccess(assignment->target, align);
+                builder_.CreateAlignedStore(value, emitAddress(assignment->target), align, isVolatile);
+            }
+            else {
+                storeHeld(emitAddress(assignment->target), value, type, field != nullptr ? field->ownership : sema::Ownership::strong);
+            }
         }
         break;
     }
@@ -1013,7 +1055,7 @@ void Generator::emitFor(const ForStmt* statement)
     emitCountingLoop(model_.localOf(statement), interval->receiver, interval->arguments[0], body->statements);
 }
 
-// Visits low..high inclusive (`for i in a to: b`, `a to: b do: { :i | }`). The
+// Visits low..high inclusive (`for i in a to: b`, `a to: b do: { [i] }`). The
 // exit test happens before the increment, so `high` may be the type's maximum.
 void Generator::emitCountingLoop(const sema::LocalInfo* local, const Node* lowNode, const Node* highNode, const std::vector<Node*>& statements)
 {
@@ -1147,12 +1189,16 @@ llvm::Value* Generator::emitAddress(const Node* expression)
         if (sema::isClass(model_.typeOf(access->receiver))) {
             return fieldAddress(emitAs(access->receiver, nullptr), model_.fieldOf(access));
         }
+        if (const Type* pointer = sema::canonical(model_.typeOf(access->receiver)); sema::isPointer(pointer)) {
+            return builder_.CreateStructGEP(structType(pointer->inner->record), emitAs(access->receiver, nullptr),
+                                            recordSlot(pointer->inner->record, model_.fieldOf(access)->index), access->field);
+        }
         llvm::Value* base = emitAddress(access->receiver);
         if (base == nullptr) {
             return nullptr;
         }
         const Type* recordType = model_.typeOf(access->receiver);
-        return builder_.CreateStructGEP(structType(recordType->record), base, model_.fieldOf(access)->index, access->field);
+        return builder_.CreateStructGEP(structType(recordType->record), base, recordSlot(recordType->record, model_.fieldOf(access)->index), access->field);
     }
     return nullptr;
 }
@@ -1238,13 +1284,16 @@ llvm::Value* Generator::emit(const Node* expression)
             if (field != nullptr && field->ownership != sema::Ownership::strong) {
                 return loadHeld(address, type, field->ownership, access->field);
             }
-            llvm::Value* value = builder_.CreateLoad(llvmType(type), address, access->field);
+            llvm::Align align;
+            bool isVolatile = placeAccess(access, align);
+            llvm::Value* value = builder_.CreateAlignedLoad(llvmType(type), address, align, isVolatile, access->field);
             if (sema::needsCleanup(type)) {
                 retainValue(value, type);
             }
             return value;
         }
-        return builder_.CreateExtractValue(emit(access->receiver), {model_.fieldOf(access)->index}, access->field);
+        const sema::RecordInfo* record = sema::canonical(model_.typeOf(access->receiver))->record;
+        return builder_.CreateExtractValue(emit(access->receiver), {recordSlot(record, model_.fieldOf(access)->index)}, access->field);
     }
     case NodeKind::attributedExpr:
         if (auto item = model_.compileTimeNodes.find(expression->id); item != model_.compileTimeNodes.end()) {
@@ -1376,7 +1425,7 @@ llvm::Value* Generator::emitSend(const Node* node, const sema::SendInfo& send)
         auto keyword = static_cast<const KeywordSend*>(node);
         llvm::Value* value = llvm::UndefValue::get(structType(send.record));
         for (size_t i = 0; i < keyword->arguments.size(); ++i) {
-            value = builder_.CreateInsertValue(value, emitAs(keyword->arguments[i], send.record->fields[i].type), {static_cast<unsigned>(i)});
+            value = builder_.CreateInsertValue(value, emitAs(keyword->arguments[i], send.record->fields[i].type), {recordSlot(send.record, i)});
         }
         return value;
     }
@@ -1492,6 +1541,8 @@ llvm::Value* Generator::emitSend(const Node* node, const sema::SendInfo& send)
         return emitOptionalCompare(static_cast<const BinarySend*>(node), send);
     case SendKind::inlineIfNil:
         return emitInlinedIfNil(static_cast<const KeywordSend*>(node), send);
+    case SendKind::cFunctionInvoke:
+        return emitCFunctionInvoke(node, send);
     default:
         if (llvm::Value* value = emitEnumSend(node, send)) {
             return value;
@@ -1503,6 +1554,9 @@ llvm::Value* Generator::emitSend(const Node* node, const sema::SendInfo& send)
             return value;
         }
         if (llvm::Value* value = emitReflectionSend(node, send)) {
+            return value;
+        }
+        if (llvm::Value* value = emitPointerSend(node, send)) {
             return value;
         }
         return emitContainerSend(node, send);

@@ -387,9 +387,11 @@ struct TypeMessage : NodeOf<NodeKind::typeMessage> {
 
 // A block type: `{ int32, int32 [bool] }`, `{ int32 }` (no result), `{ [int32] }`
 // (no parameters), `{ }` (neither). `result` is null when there's no `[T]`.
+// `cFunction { … }` is the same shape as a plain C function pointer.
 struct BlockType : NodeOf<NodeKind::blockType> {
     std::vector<Node*> params;
     Node* result = nullptr;
+    bool cFunction = false;
 };
 
 // Placeholder for source the parser couldn't make sense of; spans the skipped text.

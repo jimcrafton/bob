@@ -26,7 +26,7 @@ program collections, 0.1.0
 
         @[static] msg sum: nums:[array of: int32] [int32] {
             total := 0;
-            nums do: { :n | total := total + n; };
+            nums do: { [n] total := total + n; };
             return total;
         }
 
@@ -76,10 +76,10 @@ program collections, 0.1.0
             ages at: "bob" put: 42;
             ages at: "ann" put: 32;
             failures := failures + (self check: ages count = 2 and (ages includesKey: "bob") id: 8);
-            (ages at: "ann") ifNil: { failures := failures + 9; } ifNotNil: { :v | failures := failures + (self check: v = 32 id: 9); };
+            (ages at: "ann") ifNil: { failures := failures + 9; } ifNotNil: { [v] failures := failures + (self check: v = 32 id: 9); };
             failures := failures + (self check: (ages at: "zed") = nil and (ages at: "zed" ifAbsent: { -1 }) = -1 id: 10);
             older := 0;
-            ages keysAndValuesDo: { :k :v | older := older + v; };
+            ages keysAndValuesDo: { [k, v] older := older + v; };
             failures := failures + (self check: older = 74 and ages keys count = 2 id: 11);
             ages removeKey: "ann";
             failures := failures + (self check: ages count = 1 id: 12);

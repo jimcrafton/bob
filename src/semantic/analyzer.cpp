@@ -1,4 +1,5 @@
 #include "analyzerInternal.h"
+#include "layout.h"
 
 #include <algorithm>
 #include <string_view>
@@ -157,6 +158,7 @@ void Analyzer::run(const Unit* unit)
     checkReflector(unit);
     if (diagnostics_.errorCount() == 0) {
         analyzeEscapes(model_, diagnostics_);
+        checkCapturedAlignment();
     }
 
     if (unit->unitKind == UnitKind::program && model_.program.main == nullptr) {
@@ -255,8 +257,11 @@ void Analyzer::declareRecord(const RecordDecl* decl)
         if (attribute->name == "packed" && attribute->value == nullptr) {
             record->packed = true;
         }
+        else if (attribute->name == "align") {
+            alignAttribute(attribute, record->align);
+        }
         else {
-            unsupported(attribute, "the record attribute '@[" + attribute->name + "]'", "phase 9");
+            unsupported(attribute, "the record attribute '@[" + attribute->name + "]'", "a later phase");
         }
     }
     record->type = types_.addRecord(record.get());
@@ -293,8 +298,13 @@ void Analyzer::resolveRecord(RecordInfo* record)
             error(field->nameRange, "sema.redeclared", "record '" + record->name + "' already has a field '" + field->name + "'");
             continue;
         }
+        uint64_t fieldAlign = 0;
         for (const Attribute* attribute : field->attributes) {
-            unsupported(attribute, "the field attribute '@[" + attribute->name + "]'", "phase 9");
+            if (attribute->name == "align") {
+                alignAttribute(attribute, fieldAlign);
+                continue;
+            }
+            unsupported(attribute, "the field attribute '@[" + attribute->name + "]'", "a later phase");
         }
         if (field->initializer != nullptr) {
             unsupported(field->initializer, "default values for record fields", "a later phase");
@@ -318,6 +328,12 @@ void Analyzer::resolveRecord(RecordInfo* record)
             error(field->type, "sema.invalidElementType", "a Class has no default, so it can't be a record field; use a class instead");
             type = types_.error();
         }
+        if (isNonNullWord(type)) {
+            error(field->type, "sema.invalidElementType",
+                  std::string("records start zero-filled and a ") + (isPointer(type) ? "pointer" : "C function") + " is never null, so a record's " +
+                      (isPointer(type) ? "pointer" : "C function") + " field must be optional: '[" + typeName(type) + "]?'");
+            type = types_.error();
+        }
         if (type->kind == TypeKind::record) {
             resolveRecord(type->record);
         }
@@ -326,10 +342,70 @@ void Analyzer::resolveRecord(RecordInfo* record)
         info.type = type;
         info.index = static_cast<uint32_t>(record->fields.size());
         info.decl = field;
+        info.align = fieldAlign;
+        if (record->packed && fieldAlign != 0) {
+            error(field->nameRange, "sema.invalidAttribute", "'@[align:]' on a field of a @[packed] record isn't supported yet");
+            info.align = 0;
+        }
         record->fields.push_back(info);
+    }
+    if (record->packed && record->align != 0) {
+        error(decl->nameRange, "sema.invalidAttribute", "'@[align:]' together with '@[packed]' isn't supported yet");
+        record->align = 0;
     }
     record->resolving = false;
     record->resolved = true;
+}
+
+// A boxed variable lives in a heap box, and a heap closure keeps copies of what
+// it captures: neither can hold a value that needs more than 16-byte alignment.
+void Analyzer::checkCapturedAlignment()
+{
+    auto alignment = [](const LocalInfo* local) { return std::max<uint64_t>(local->align, alignmentOf(local->type)); };
+    for (const auto& local : model_.locals) {
+        if (local->decl != nullptr && model_.boxedLocals.count(local.get()) != 0 && alignment(local.get()) > 16) {
+            error(local->decl, "sema.alignTooLarge",
+                  "'" + local->name + "' needs " + std::to_string(alignment(local.get())) +
+                      "-byte alignment, but a block that outlives this frame shares it through a 16-byte-aligned heap box");
+        }
+    }
+    for (const auto& block : model_.blockInfos) {
+        if (block->inlined || model_.stackBlocks.count(block.get()) != 0) {
+            continue;
+        }
+        for (const LocalInfo* captured : block->captures) {
+            if (alignment(captured) > 16) {
+                error(block->node, "sema.alignTooLarge",
+                      "this block outlives its frame and keeps '" + captured->name + "' in a 16-byte-aligned heap closure, but it needs " +
+                          std::to_string(alignment(captured)) + "-byte alignment");
+            }
+        }
+    }
+}
+
+bool Analyzer::fitsHeapAlignment(const Node* site, const Type* type, const std::string& what)
+{
+    uint64_t alignment = alignmentOf(type);
+    if (alignment <= 16) {
+        return true;
+    }
+    error(site, "sema.alignTooLarge",
+          "'" + typeName(type) + "' needs " + std::to_string(alignment) + "-byte alignment, but " + what +
+              " is only 16-byte aligned; keep it in a variable, a record field or a fixed array");
+    return false;
+}
+
+// `@[align: n]`: a power of two from 1 to 4096 (a page); false (with an error) otherwise.
+bool Analyzer::alignAttribute(const Attribute* attribute, uint64_t& align)
+{
+    auto value = nodeCast<IntegerLiteral>(attribute->value);
+    uint64_t n = value != nullptr && !value->negative ? value->value : 0;
+    if (n == 0 || n > 4096 || (n & (n - 1)) != 0) {
+        error(attribute, "sema.invalidAttribute", "'@[align: n]' takes a power of two from 1 to 4096, such as '@[align: 64]'");
+        return false;
+    }
+    align = n;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -472,10 +548,13 @@ void Analyzer::resolveClass(ClassInfo* info)
                 if (isOwnershipAttribute(attribute)) {
                     continue;
                 }
-                unsupported(attribute, "the field attribute '@[" + attribute->name + "]'", "phase 9");
+                unsupported(attribute, "the field attribute '@[" + attribute->name + "]'", "a later phase");
             }
             const Type* type = resolveType(field->type);
             requireValueType(field->type, type);
+            if (type != types_.error() && !fitsHeapAlignment(field->type, type, "an object")) {
+                type = types_.error();
+            }
             if (rejectBareBlock(field->type, type, "the type of a field")) {
                 type = types_.error();
             }
@@ -540,7 +619,7 @@ void Analyzer::declareParams(MessageInfo* message, const MessageDecl* decl)
 
 MessageInfo* Analyzer::declareMethod(ClassInfo* info, const MessageDecl* decl)
 {
-    bool isStatic = hasAttribute(decl, "static");
+    bool isStatic = hasAttribute(decl, "static") || hasAttribute(decl, "extern");
     // `init:`-style selectors too, so an init with arguments gets the explanation.
     if (decl->selector == "init" || decl->selector.rfind("init:", 0) == 0) {
         return declareInit(info, decl, isStatic);
@@ -558,8 +637,9 @@ MessageInfo* Analyzer::declareMethod(ClassInfo* info, const MessageDecl* decl)
         unsupported(decl, "class-side messages in protocols", "a later phase");
         return nullptr;
     }
-    if (decl->body == nullptr && !info->isProtocol && !importing()) {
-        error(decl->selectorRange, "sema.missingBody", "'" + decl->selector + "' needs a body; only protocols declare messages without one");
+    if (decl->body == nullptr && !info->isProtocol && !importing() && !hasAttribute(decl, "extern")) {
+        error(decl->selectorRange, "sema.missingBody",
+              "'" + decl->selector + "' needs a body; only protocols and C functions (@[extern: \"C\"]) declare messages without one");
     }
 
     auto message = std::make_unique<MessageInfo>();
@@ -571,7 +651,7 @@ MessageInfo* Analyzer::declareMethod(ClassInfo* info, const MessageDecl* decl)
     bool hasBody = decl->body != nullptr || (importing() && hasAttribute(decl, "default"));
     message->isProtocolDefault = info->isProtocol && hasBody;
     message->isRequired = info->isProtocol && !hasBody;
-    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "static", "compiletime", "keeps", "default"});
+    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "static", "compiletime", "keeps", "default", "unsafe", "extern", "symbol"});
     message->compileTimeOnly = hasAttribute(decl, "compiletime");
     message->symbolName = "bob." + info->unitName + "." + info->name + (isStatic ? ".class." : ".") + decl->selector;
     message->origin = info->origin;
@@ -587,6 +667,7 @@ MessageInfo* Analyzer::declareMethod(ClassInfo* info, const MessageDecl* decl)
         model_.locals.push_back(std::move(self));
     }
     declareParams(message.get(), decl);
+    applyExtern(message.get(), decl);
     if (importing()) {
         applyInterfaceAttributes(message.get(), decl);
     }
@@ -793,7 +874,7 @@ const Type* Analyzer::checkInstanceSend(const Node* send, const Node* receiverNo
             check(argument, nullptr);
         }
         error(selectorRange, "sema.optionalReceiver",
-              "the receiver is a '" + receiver->name + "' and may be nil; unwrap it first with 'ifNotNil: { :value | ... }'");
+              "the receiver is a '" + receiver->name + "' and may be nil; unwrap it first with 'ifNotNil: { [value] ... }'");
         return types_.error();
     }
 
@@ -889,13 +970,14 @@ const Type* Analyzer::checkReferenceComparison(const BinarySend* send, const Typ
         error(send, "sema.typeMismatch", "a '" + typeName(other) + "' is never nil; only optionals can be compared with nil");
         return types_.error();
     }
-    // Only references compare by identity; other optionals are compared with nil.
-    bool identity = (isReference(left) || leftNil) && (isReference(right) || rightNil);
+    // Only references and pointers compare by identity; other optionals are compared with nil.
+    auto byIdentity = [](const Type* type) { return isReference(type) || isNonNullWord(type) || isWordOptional(type); };
+    bool identity = (byIdentity(left) || leftNil) && (byIdentity(right) || rightNil);
     bool compatible = canWiden(left, right) || canWiden(right, left) || leftNil || rightNil;
     if (!compatible || (!identity && !leftNil && !rightNil)) {
         error(send, "sema.typeMismatch",
               identity || !compatible ? "can't compare '" + typeName(left) + "' with '" + typeName(right) + "'"
-                                      : "an optional can only be compared with nil; unwrap it with 'ifNotNil: { :value | ... }' first");
+                                      : "an optional can only be compared with nil; unwrap it with 'ifNotNil: { [value] ... }' first");
         return types_.error();
     }
     bool valueOptional = isValueOptional(left) || isValueOptional(right);
@@ -904,9 +986,9 @@ const Type* Analyzer::checkReferenceComparison(const BinarySend* send, const Typ
     return types_.boolType();
 }
 
-// `x ifNotNil: { :v | ... }`, `ifNil:`, and the two-branch forms, inlined. The
+// `x ifNotNil: { [v] ... }`, `ifNil:`, and the two-branch forms, inlined. The
 // two-branch forms produce a value when both blocks end in expressions of a
-// common type: `n := (d at: "k") ifNil: { 0 } ifNotNil: { :v | v }`.
+// common type: `n := (d at: "k") ifNil: { 0 } ifNotNil: { [v] v }`.
 const Type* Analyzer::checkInlinedIfNil(const KeywordSend* send, const Type* receiver, const Type* expected)
 {
     std::vector<std::string> parts = selectorParts(send->selector);
@@ -918,7 +1000,7 @@ const Type* Analyzer::checkInlinedIfNil(const KeywordSend* send, const Type* rec
         if (literal == nullptr || literal->params.size() != wanted) {
             check(send->arguments[i], nullptr);
             error(send->arguments[i], "sema.inlinedNeedsBlock",
-                  notNil ? "'ifNotNil:' needs a block literal with one parameter, such as '{ :value | ... }'"
+                  notNil ? "'ifNotNil:' needs a block literal with one parameter, such as '{ [value] ... }'"
                          : "'ifNil:' needs a block literal without parameters");
             values.push_back(types_.error());
             continue;
@@ -959,7 +1041,7 @@ bool Analyzer::checkInlinedEach(const Node* argument, const char* selector, cons
     auto literal = nodeCast<BlockLiteral>(argument);
     if (literal == nullptr || literal->params.size() != 1) {
         check(argument, nullptr);
-        error(argument, "sema.inlinedNeedsBlock", std::string("'") + selector + "' needs a block literal with one parameter, such as '{ :each | ... }'");
+        error(argument, "sema.inlinedNeedsBlock", std::string("'") + selector + "' needs a block literal with one parameter, such as '{ [each] ... }'");
         return false;
     }
     auto param = static_cast<const BlockParam*>(literal->params[0]);
@@ -998,12 +1080,14 @@ void Analyzer::declareProgramMessages(const ExtendsDecl* decl)
 
 void Analyzer::declareMessage(const MessageDecl* decl)
 {
-    if (!hasAttribute(decl, "static")) {
+    bool isExtern = hasAttribute(decl, "extern");
+    if (!hasAttribute(decl, "static") && !isExtern) {
         error(decl->selectorRange, "sema.programMessageNotStatic",
               "messages on the program are class-side; mark '" + decl->selector + "' with @[static]");
     }
-    if (decl->body == nullptr && !importing()) {
-        error(decl->selectorRange, "sema.missingBody", "'" + decl->selector + "' needs a body; only protocols declare messages without one");
+    if (decl->body == nullptr && !importing() && !isExtern) {
+        error(decl->selectorRange, "sema.missingBody",
+              "'" + decl->selector + "' needs a body; only protocols and C functions (@[extern: \"C\"]) declare messages without one");
     }
     if (unitProgram_->bySelector.count(decl->selector) != 0) {
         error(decl->selectorRange, "sema.redeclared", "'" + decl->selector + "' is already declared on '" + unitProgram_->name + "'");
@@ -1014,7 +1098,7 @@ void Analyzer::declareMessage(const MessageDecl* decl)
     message->selector = decl->selector;
     message->decl = decl;
     message->symbolName = "bob." + unitProgram_->name + "." + decl->selector;
-    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "static", "compiletime", "keeps"});
+    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "static", "compiletime", "keeps", "unsafe", "extern", "symbol"});
     message->compileTimeOnly = hasAttribute(decl, "compiletime");
     message->isMain = !importing() && (decl->selector == "main" || decl->selector == "main:" || decl->selector == "main:reflector:");
     message->origin = currentOrigin();
@@ -1062,6 +1146,10 @@ void Analyzer::declareMessage(const MessageDecl* decl)
         }
     }
 
+    applyExtern(message.get(), decl);
+    if (message->isMain && message->externC) {
+        error(decl->selectorRange, "sema.invalidExtern", "'main' is called by the runtime, not from C; export another message instead");
+    }
     if (message->isMain) {
         if (message->returnType != types_.int32()) {
             error(decl->selectorRange, "sema.invalidMain", "'main' must return [int32], the process exit code");
@@ -1179,7 +1267,104 @@ const Type* Analyzer::resolveBlockType(const BlockType* block)
     if (result == types_.error()) {
         return types_.error();
     }
+    if (block->cFunction) {
+        for (size_t i = 0; i < params.size(); ++i) {
+            if (!isCType(params[i])) {
+                error(block->params[i], "sema.notCType", "a C function takes C types, not '" + typeName(params[i]) + "'" + cTypeHint(params[i]));
+                return types_.error();
+            }
+        }
+        if (result->kind != TypeKind::voidType && !isCType(result)) {
+            error(block->result, "sema.notCType", "a C function returns a C type, not '" + typeName(result) + "'" + cTypeHint(result));
+            return types_.error();
+        }
+        return types_.cFunction(std::move(params), result);
+    }
     return types_.block(std::move(params), result);
+}
+
+std::string Analyzer::cTypeHint(const Type* type) const
+{
+    type = canonical(type);
+    if (isSlice(type)) {
+        return "; pass the slice's pointer and count separately";
+    }
+    if (isString(type) || isDynamicContainer(type) || isReference(type) || isBlock(type)) {
+        return "; reference-counted values can't cross to C";
+    }
+    if (isOptional(type)) {
+        return "; only pointers and C functions can be optional at a C boundary (nil is 0)";
+    }
+    return "";
+}
+
+// `@[extern: "C"]` (design §6.6): a message without a body imports the C
+// function named by its first keyword (or `@[symbol: "…"]`); one with a body
+// is also exported under that name. Either way it's class-side and only C
+// types cross. Returns false when the declaration was rejected.
+bool Analyzer::applyExtern(MessageInfo* message, const MessageDecl* decl)
+{
+    const Attribute* externAttribute = nullptr;
+    const Attribute* symbolAttribute = nullptr;
+    for (const Attribute* attribute : decl->attributes) {
+        if (attribute->name == "extern") {
+            externAttribute = attribute;
+        }
+        else if (attribute->name == "symbol") {
+            symbolAttribute = attribute;
+        }
+    }
+    if (externAttribute == nullptr) {
+        if (symbolAttribute != nullptr) {
+            error(symbolAttribute, "sema.invalidAttribute", "'@[symbol: …]' names a C function, so it goes with '@[extern: \"C\"]'");
+        }
+        return true;
+    }
+    auto convention = nodeCast<StringLiteral>(externAttribute->value);
+    if (convention == nullptr || convention->value != "C") {
+        error(externAttribute, "sema.invalidAttribute", "'@[extern: …]' takes the calling convention \"C\"");
+        return false;
+    }
+    std::string symbol = decl->selector.substr(0, decl->selector.find(':'));
+    if (symbolAttribute != nullptr) {
+        auto name = nodeCast<StringLiteral>(symbolAttribute->value);
+        if (name == nullptr || name->value.empty()) {
+            error(symbolAttribute, "sema.invalidAttribute", "'@[symbol: …]' takes the C name as a string, as in '@[symbol: \"GetTickCount64\"]'");
+            return false;
+        }
+        symbol = name->value;
+    }
+    if (decl->messageKind == MessageKind::binary) {
+        error(decl->selectorRange, "sema.invalidExtern", "a C function is named by a word, not an operator");
+        return false;
+    }
+    if (message->owner != nullptr && message->owner->isProtocol) {
+        error(decl->selectorRange, "sema.invalidExtern", "a protocol can't declare C functions; declare them in a class or on the program");
+        return false;
+    }
+    if (message->compileTimeOnly) {
+        error(decl->selectorRange, "sema.invalidExtern", "compile-time code can't call C functions");
+        return false;
+    }
+    bool valid = true;
+    for (size_t i = 0; i < message->params.size(); ++i) {
+        const Type* type = message->params[i]->type;
+        if (type != types_.error() && !isCType(type)) {
+            error(static_cast<const MessageParam*>(decl->params[i])->type, "sema.notCType",
+                  "'" + message->params[i]->name + "' crosses to C, so it needs a C type, not '" + typeName(type) + "'" + cTypeHint(type));
+            valid = false;
+        }
+    }
+    const Type* result = message->returnType;
+    if (result != types_.error() && result->kind != TypeKind::voidType && !isCType(result)) {
+        error(decl->returnType, "sema.notCType", "a C function returns a C type, not '" + typeName(result) + "'" + cTypeHint(result));
+        valid = false;
+    }
+    message->externC = true;
+    message->cSymbol = symbol;
+    message->externImport = decl->body == nullptr;
+    message->isInstance = false;
+    return valid;
 }
 
 bool Analyzer::requireValueType(const Node* node, const Type* type)
@@ -1285,14 +1470,17 @@ void Analyzer::ensureChecked(MessageInfo* message)
     FunctionContext savedContext = context_;
     auto savedScopes = std::move(scopes_);
     auto savedOverflow = std::move(overflow_);
+    int savedUnsafe = unsafeDepth_;
     scopes_.clear();
     overflow_.clear();
+    unsafeDepth_ = message->decl != nullptr && hasAttribute(message->decl, "unsafe") ? 1 : 0;
 
     checkMessage(message);
 
     context_ = savedContext;
     scopes_ = std::move(savedScopes);
     overflow_ = std::move(savedOverflow);
+    unsafeDepth_ = savedUnsafe;
     state = 2;
 }
 
@@ -1359,11 +1547,25 @@ void Analyzer::checkGroup(const Node* node)
     if (group == nullptr) {
         return;
     }
-    overflow_.push_back(overflowFrom(group, overflow(), {"overflow"}));
+    overflow_.push_back(overflowFrom(group, overflow(), {"overflow", "unsafe"}));
+    bool unsafe = hasAttribute(group, "unsafe");
+    unsafeDepth_ += unsafe ? 1 : 0;
     pushScope();
     checkStatements(group->statements);
     popScope();
+    unsafeDepth_ -= unsafe ? 1 : 0;
     overflow_.pop_back();
+}
+
+bool Analyzer::requireUnsafe(const Node* site, const std::string& what)
+{
+    if (unsafeDepth_ > 0) {
+        return true;
+    }
+    error(site, "sema.unsafeRequired",
+          what + " works with raw memory, so it needs an unsafe region: mark the message, a '{ }' block or a parenthesised "
+                 "expression '@[unsafe]'");
+    return false;
 }
 
 void Analyzer::checkCondition(const Node* condition, const char* statement)
@@ -1377,12 +1579,27 @@ void Analyzer::checkCondition(const Node* condition, const char* statement)
 
 void Analyzer::checkStatement(const Node* statement)
 {
+    if (statement->kind != NodeKind::statementGroup && unsafeStatement_ != statement && hasAttribute(statement, "unsafe")) {
+        const Node* saved = unsafeStatement_;
+        unsafeStatement_ = statement;
+        ++unsafeDepth_;
+        checkStatement(statement);
+        --unsafeDepth_;
+        unsafeStatement_ = saved;
+        return;
+    }
     if (statement->kind != NodeKind::statementGroup) {
         for (const Attribute* attribute : statement->attributes) {
+            if (attribute->name == "unsafe" && attribute->value == nullptr) {
+                continue;
+            }
             bool placement = (attribute->name == "stack" || attribute->name == "heap") && attribute->value == nullptr;
             bool declaration = statement->kind == NodeKind::variableDecl ||
                                (statement->kind == NodeKind::assignment && nodeCast<Identifier>(static_cast<const Assignment*>(statement)->target) != nullptr);
             if (isOwnershipAttribute(attribute) && declaration) {
+                continue;
+            }
+            if (attribute->name == "align" && statement->kind == NodeKind::variableDecl) {
                 continue;
             }
             if (!placement) {
@@ -1416,6 +1633,11 @@ void Analyzer::checkStatement(const Node* statement)
         else if (isClass(type) && !hasAttribute(statement, "unowned")) {
             checkDefaultObject(decl, type);
         }
+        else if (isNonNullWord(type)) {
+            error(decl->nameRange, "sema.uninitializedReference",
+                  "'" + decl->name + "' is a " + (isPointer(type) ? "pointer" : "C function") + ", which is never null, so it needs a value; declare it '[" +
+                      typeName(type) + "]?' to start it as nil");
+        }
         else if (canonical(type)->kind == TypeKind::classObject) {
             error(decl->nameRange, "sema.uninitializedReference",
                   "'" + decl->name + "' is a Class and has no default; give it one ('" + decl->name + " := obj class') or declare it 'Class?'");
@@ -1428,6 +1650,12 @@ void Analyzer::checkStatement(const Node* statement)
         LocalInfo* local = declareLocal(decl->name, type, decl, decl->nameRange);
         local->ownership = ownership;
         model_.localRefs[decl->id] = local;
+        for (const Attribute* attribute : statement->attributes) {
+            if (attribute->name == "align" && alignAttribute(attribute, local->align) && !isPointee(type)) {
+                error(attribute, "sema.invalidAttribute",
+                      "'@[align:]' places plain data (numbers, records, fixed arrays …), not a '" + typeName(type) + "'");
+            }
+        }
         checkPlacementAttributes(statement);
         break;
     }
@@ -1558,7 +1786,7 @@ void Analyzer::checkAssignment(const Assignment* assignment)
     const Type* targetType = check(assignment->target, nullptr);
     auto access = nodeCast<FieldAccess>(assignment->target);
     bool objectField = access != nullptr && isClass(model_.typeOf(access->receiver));
-    if (access != nullptr && !objectField) {
+    if (access != nullptr && !objectField && !reachesThroughPointer(assignment->target)) {
         const LocalInfo* root = rootLocal(assignment->target);
         if (root == nullptr && targetType != types_.error()) {
             error(assignment->target, "sema.notAssignable", "only fields of variables can be assigned");
@@ -1898,16 +2126,29 @@ const Type* Analyzer::check(const Node* node, const Type* expected)
         type = checkArrayLiteral(static_cast<const ArrayLiteral*>(node), expected);
         break;
     case NodeKind::blockLiteral:
+    {
+        const Type* target = expected != nullptr ? canonical(expected) : nullptr;
+        if (target != nullptr && isOptional(target) && isCFunction(target->inner)) {
+            target = canonical(target->inner);
+        }
+        if (isCFunction(target)) {
+            type = checkCFunctionLiteral(static_cast<const BlockLiteral*>(node), target);
+            break;
+        }
         type = checkBlockLiteral(static_cast<const BlockLiteral*>(node), isBlock(expected) && !expected->pending ? expected : nullptr);
         break;
+    }
     case NodeKind::attributedExpr: {
         auto attributed = static_cast<const AttributedExpr*>(node);
         if (hasAttribute(attributed, "compiletime")) {
             type = checkCompileTimeExpression(attributed, expected);
             break;
         }
-        overflow_.push_back(overflowFrom(attributed, overflow(), {"overflow"}));
+        overflow_.push_back(overflowFrom(attributed, overflow(), {"overflow", "unsafe"}));
+        bool unsafe = hasAttribute(attributed, "unsafe");
+        unsafeDepth_ += unsafe ? 1 : 0;
         type = check(attributed->expression, expected);
+        unsafeDepth_ -= unsafe ? 1 : 0;
         overflow_.pop_back();
         break;
     }
@@ -2079,6 +2320,19 @@ const Type* Analyzer::checkFieldAccess(const FieldAccess* access)
         model_.fieldRefs[access->id] = field;
         return field->type;
     }
+    // `p.x`: the field of the record a pointer points at, reached without loading the rest.
+    if (isPointer(receiver)) {
+        const Type* pointee = canonical(receiver)->inner;
+        if (pointee->kind != TypeKind::record) {
+            error(access->fieldRange, "sema.notARecord",
+                  "'." + access->field + "' through a pointer needs a pointer to a record, but this points at a '" + typeName(pointee) + "'");
+            return types_.error();
+        }
+        if (!requireUnsafe(access, "'." + access->field + "' through a pointer")) {
+            return types_.error();
+        }
+        receiver = pointee;
+    }
     if (receiver->kind != TypeKind::record) {
         error(access->fieldRange, "sema.notARecord", "'." + access->field + "' needs a record, but this is a '" + typeName(receiver) + "'");
         return types_.error();
@@ -2097,7 +2351,9 @@ const Type* Analyzer::checkUnary(const UnarySend* send, const Type* expected)
     if (send->receiver->kind == NodeKind::superExpr) {
         return checkInstanceSend(send, send->receiver, nullptr, send->selector, {}, send->selectorRange);
     }
-    const Type* receiver = check(send->receiver, nullptr);
+    // An address literal is a uintptr: `0xFEE00000 asPointer`.
+    bool address = send->selector == "asPointer" && send->receiver->kind == NodeKind::integerLiteral;
+    const Type* receiver = check(send->receiver, address ? types_.integer(64, false) : nullptr);
     if (receiver == types_.error()) {
         return types_.error();
     }
@@ -2111,6 +2367,9 @@ const Type* Analyzer::checkUnary(const UnarySend* send, const Type* expected)
     if (const Type* result = checkReflectionUnary(send, receiver, expected)) {
         return result;
     }
+    if (const Type* result = checkPointerUnary(send, receiver, expected)) {
+        return result;
+    }
     if (isClass(receiver) || isOptional(receiver)) {
         return checkInstanceSend(send, send->receiver, receiver, selector, {}, send->selectorRange);
     }
@@ -2119,6 +2378,9 @@ const Type* Analyzer::checkUnary(const UnarySend* send, const Type* expected)
     }
     if (isBlock(receiver) && selector == "value") {
         return checkBlockInvoke(send, receiver, {}, expected);
+    }
+    if (isCFunction(receiver) && selector == "value") {
+        return checkCFunctionInvoke(send, canonical(receiver), {});
     }
     if (receiver->kind == TypeKind::meta && receiver->program != nullptr) {
         auto it = receiver->program->bySelector.find(selector);
@@ -2278,7 +2540,7 @@ const Type* Analyzer::checkBinary(const BinarySend* send, const Type* expected)
             check(send->argument, nullptr);
             return types_.error();
         }
-        if ((op == "=" || op == "<>") && (isReference(left) || isOptional(left) || left->kind == TypeKind::nilType)) {
+        if ((op == "=" || op == "<>") && (isReference(left) || isNonNullWord(left) || isOptional(left) || left->kind == TypeKind::nilType)) {
             return checkReferenceComparison(send, left);
         }
         if (canonical(left)->kind == TypeKind::classObject) {
@@ -2365,6 +2627,9 @@ const Type* Analyzer::checkKeyword(const KeywordSend* send, const Type* expected
     if (receiver->kind == TypeKind::compilerObject) {
         return checkCompilerSend(send);
     }
+    if (const Type* result = checkPointerKeyword(send, receiver)) {
+        return result;
+    }
     if (receiver->kind == TypeKind::meta && receiver->instance != nullptr && receiver->instance->kind == TypeKind::classObject) {
         return checkClassNamed(send);
     }
@@ -2417,6 +2682,9 @@ const Type* Analyzer::checkKeyword(const KeywordSend* send, const Type* expected
     }
     if (isBlock(receiver) && valueSelectorArity(selector) > 0) {
         return checkBlockInvoke(send, receiver, send->arguments, expected);
+    }
+    if (isCFunction(receiver) && valueSelectorArity(selector) > 0) {
+        return checkCFunctionInvoke(send, canonical(receiver), send->arguments);
     }
 
     if (receiver->kind == TypeKind::meta && receiver->program != nullptr) {
@@ -2597,7 +2865,7 @@ const Type* Analyzer::checkBlockLiteral(const BlockLiteral* block, const Type* e
         }
         if (type == nullptr) {
             error(param, "sema.cannotInferBlock",
-                  "the type of block parameter '" + param->name + "' can't be inferred here; write it as ':" + param->name + ": int32'");
+                  "the type of block parameter '" + param->name + "' can't be inferred here; write it as '[" + param->name + ": int32]'");
             type = types_.error();
         }
         paramsOk = paramsOk && type != types_.error();
@@ -2621,6 +2889,49 @@ const Type* Analyzer::checkBlockLiteral(const BlockLiteral* block, const Type* e
     }
     info->type = expected != nullptr ? expected : types_.block(std::move(params), result);
     return info->type;
+}
+
+// Checked as a block of the same shape; it must capture nothing, since a C
+// function pointer has no environment. Code is never freed, so C may keep it.
+const Type* Analyzer::checkCFunctionLiteral(const BlockLiteral* block, const Type* cFunction)
+{
+    const Type* type = checkBlockLiteral(block, types_.block(cFunction->params, cFunction->result));
+    if (type == types_.error()) {
+        return type;
+    }
+    auto info = const_cast<BlockInfo*>(model_.blockOf(block));
+    if (!info->captures.empty()) {
+        const std::string& name = info->captures.front()->name;
+        error(block, "sema.cFunctionCaptures",
+              "a C function is plain code with no environment, so this block can't use '" + name +
+                  "' from the code around it; pass what it needs through its parameters (C APIs usually offer a context pointer)");
+        return types_.error();
+    }
+    info->type = cFunction;
+    model_.cFunctionBlocks.insert(info);
+    return cFunction;
+}
+
+const Type* Analyzer::checkCFunctionInvoke(const Node* send, const Type* cFunction, const std::vector<Node*>& arguments)
+{
+    if (cFunction->params.size() != arguments.size()) {
+        error(send, "sema.blockArity",
+              "this C function takes " + std::to_string(cFunction->params.size()) + " argument(s), not " + std::to_string(arguments.size()));
+        for (const Node* argument : arguments) {
+            check(argument, nullptr);
+        }
+        return types_.error();
+    }
+    for (size_t i = 0; i < arguments.size(); ++i) {
+        checkArgument(arguments[i], cFunction->params[i]);
+    }
+    if (unsafeDepth_ == 0) {
+        error(send, "sema.unsafeRequired",
+              "a C function pointer may point anywhere, so calling it needs an unsafe region: mark the message, a '{ }' block or a "
+              "parenthesised expression '@[unsafe]'");
+    }
+    addSend(send, SendKind::cFunctionInvoke, "value", cFunction, cFunction->result);
+    return cFunction->result;
 }
 
 // Fills a bare `block` parameter's shape from a concrete block type it meets.
@@ -2738,7 +3049,7 @@ const Type* Analyzer::checkInlinedToDo(const KeywordSend* send)
     if (literal == nullptr || literal->params.size() != 1) {
         check(send->arguments[0], nullptr);
         check(send->arguments[1], nullptr);
-        error(send->arguments[1], "sema.inlinedNeedsBlock", "'to:do:' needs a block literal with one parameter, such as '{ :i | ... }'");
+        error(send->arguments[1], "sema.inlinedNeedsBlock", "'to:do:' needs a block literal with one parameter, such as '{ [i] ... }'");
         return types_.error();
     }
     auto param = static_cast<const BlockParam*>(literal->params[0]);

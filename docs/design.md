@@ -71,7 +71,7 @@ A unit has a header, `import`s, then a `{ ... }` body with namespaces, classes, 
 ### 3.2 Lexical
 - Comments: `# to end of line`, `#{ ... }#` block.
 - Statement terminator: `;`. (Smalltalk uses `.`, but bob uses `.` for qualification `core.io.out` and field access `p.x`.)
-- Assignment: `:=`. Equality: `=`. **[Decided]** Not equal is Pascal's `<>`. Shifts are Pascal's word operators `shl` and `shr` (`x shl 2`), reserved words that bind like `*`. **[Decided 2026-11-27]** Bitwise operations are Pascal's words too: `and`, `or` and `xor` are logical on `bool` and bitwise on integers (`(flags and 0xFF) = 0`, `a xor b`). There are no `&`, `|`, `^`, `<<`, `>>`, `==`, `~=` or `??` operators; `|` only separates a block literal's parameters from its body.
+- Assignment: `:=`. Equality: `=`. **[Decided]** Not equal is Pascal's `<>`. Shifts are Pascal's word operators `shl` and `shr` (`x shl 2`), reserved words that bind like `*`. **[Decided 2026-11-27]** Bitwise operations are Pascal's words too: `and`, `or` and `xor` are logical on `bool` and bitwise on integers (`(flags and 0xFF) = 0`, `a xor b`). There are no `&`, `|`, `^`, `<<`, `>>`, `==`, `~=` or `??` operators, and `|` isn't used anywhere in the language (block parameters are bracketed, §3.5).
 - Literals: `123`, `0x7F`, `0b1010`, `1_000_000`, `3.25`, `1e-9`, `"utf-8 string"`, `'é'` (unicode scalar / `char`), `true`, `false`, `nil`, array `[1, 2, 3]`.
 - Suffix-typed literals **[Proposed]**: `10u8`, `3.0r32`. Otherwise literals are polymorphic and take their type from context, defaulting to `int32`/`real64`.
 
@@ -160,15 +160,16 @@ case c of {                    # Pascal case, see 4.6
 }
 ```
 - **Braces are always required**, even for a single statement, for every `if`/`else`/`while`/`for`/`loop` body and every `case` entry. There are no one-line forms. `else if` chains are allowed, and each branch has its own braces.
-- Conditions are ordinary expressions with no surrounding parentheses (like Swift, Go and Rust). A block literal can't appear unparenthesised in a condition, because its `{` would be ambiguous with the body: write `if (items anySatisfy: { :e | e }) { … }`.
+- Conditions are ordinary expressions with no surrounding parentheses (like Swift, Go and Rust). A block literal can't appear unparenthesised in a condition, because its `{` would be ambiguous with the body: write `if (items anySatisfy: { [e] e }) { … }`.
 - `break` and `continue` apply to the innermost `while`/`for`/`loop`. Labelled breaks may come later.
 - `for x in e` works on anything iterable (arrays, sets, dictionaries, strings' views, intervals `a to: b`, enum and subrange types) and compiles to a direct loop.
 - Reserved words: `if else while for in loop break continue case`. `of` is recognised only after a `case` subject, so `array of: Part` still works.
 - `return` inside a control statement returns from the enclosing message, as you'd expect.
 
 **What stays as messages.**
-- **Blocks as values**: `{ :p1 :p2 | statements }`, with parameter types inferred from the expected block type or written explicitly (`{ :i: int32 | … }`).
-- **Block-taking library messages**: `items do: { :e | … }`, `collect:`, `select:`, `1 to: 10 do: { … }`. These are ordinary messages any class can implement. For built-in collections with a literal block, the compiler inlines them.
+- **Blocks as values**: `{ [p1, p2] statements }`, with parameter types inferred from the expected block type or written explicitly (`{ [i: int32] … }`).
+  **[Decided 2026-11-27]** Block parameters are a bracketed, comma-separated list at the start of the literal, written like a named tuple (`[count: int32, name: string]`) and a message's `name:Type` parameters. This replaces Smalltalk's `{ :p1 :p2 | … }`: `|` carries C's bitwise-or history, and with bitwise operators now words (§3.2) the separator was its last use, so `|` is gone from the language. A block without parameters has no brackets (`{ x := 1; }`), and `{ [] … }` is an error. The old form is `parse.oldBlockParameters` with the new spelling. Trade-off accepted: in a block *type* `[R]` is the result (`{ int32 [int32] }`), as in a message declaration, while in a block *literal* the leading brackets are the parameters. The parser always knows which it's reading; a block literal whose first statement is an array literal parenthesises it. Rejected: `in` (Swift), a new word such as `do`, nested braces `{ {e} … }` (ambiguous with a statement group holding `e`), and a separate parameter block `{ e } { … }` (looks like two blocks).
+- **Block-taking library messages**: `items do: { [e] … }`, `collect:`, `select:`, `1 to: 10 do: { … }`. These are ordinary messages any class can implement. For built-in collections with a literal block, the compiler inlines them.
 - **Value-producing conditionals**: `m := (a > b) ifTrue: { a } ifFalse: { b };` is an ordinary message on `bool`.
 - **User-defined control abstractions**: error blocks (`onError:`), thread blocks (`fork`) and the like (§5.6).
 - `whileTrue:` and `caseOf:` are no longer part of the language. `while` and `case` replace them.
@@ -221,7 +222,7 @@ extends Point {
 - `#p.x := 100;` from the plan becomes `p.x := 100;`. Records allow direct field access. Classes only allow it from inside the class (outside, you go through accessor messages, which the compiler synthesises and inlines).
 
 ### 3.7 Attributes
-`@[flag, flag: value]` before a declaration, as in scratch-lang. Initial set: `static`, `compiletime`, `constant`, `inline`, `final`, `protocol`, `alias`, `escaping`, `volatile`, `packed`, `align: n`, `reflect: level`, `overflow: mode`, `extern: "C"`, `unsafe`.
+`@[flag, flag: value]` before a declaration, as in scratch-lang. Initial set: `static`, `compiletime`, `constant`, `inline`, `final`, `protocol`, `alias`, `escaping`, `volatile`, `packed`, `align: n`, `reflect: level`, `overflow: mode`, `extern: "C"`, `symbol: "name"` (§6.6), `unsafe`.
 Attributes can attach to declarations (module, class, record, message, field, variable), to a `{ }` statement block, or to a parenthesised expression `@[...] ( expr )`. Where several apply, the innermost wins.
 
 ### 3.8 Example program
@@ -299,7 +300,7 @@ import core.io;
 ### 4.3 Classes (reference types)
 - Objects with a header (§6.2): on the heap by default, on the stack when they provably don't escape (§4.3a). Single inheritance (`inherits`), plus any number of `@[protocol]` classes (`implements`).
 - **[Decided]** A concrete class can only be subclassed inside its own module. That gives the compiler complete class-hierarchy knowledge, which is what makes most sends static (§5). Extension across modules goes through protocols (§4.4). See §5.4 for the full rationale.
-- Non-optional class references are never `nil`. Optional: `Foo?`. `nil` is only assignable to optionals. Unwrap with messages: `x ifNotNil: { :v | ... }`, `x ifNil: { ... }`, `x ifNil: default`.
+- Non-optional class references are never `nil`. Optional: `Foo?`. `nil` is only assignable to optionals. Unwrap with messages: `x ifNotNil: { [v] ... }`, `x ifNil: { ... }`, `x ifNil: default`.
 
 ### 4.3a Creating objects **[Decided and built 2026-11-27, replaces `Name new`]**
 There is no `new` message. Objects are created by declaring them or by naming fields:
@@ -364,7 +365,7 @@ b add: "hi";                 #   → string
 
 msg sum: nums:array [int64] {           # parameter: the message is specialised per element
     total := 0;                          # type used at its call sites (checked per use)
-    nums do: { :n | total := total + n; };
+    nums do: { [n] total := total + n; };
     return total;
 }
 
@@ -445,7 +446,7 @@ k: PciClass := PciClass network;
 | Position | `c ordinal` | 0 … `count - 1`. Differs from `value` when explicit values are sparse |
 | Next / previous | `c succ`, `c pred` | Stepping past `last`/`first` traps (consistent with overflow, §4.1) |
 | Bounds | `Color first`, `Color last`, `Color count` | Compile-time constants |
-| Iteration | `for c in Color { ... }`, `for c in Color red to: Color blue { ... }`; also `Color do: { :c \| ... };` | Direct loop |
+| Iteration | `for c in Color { ... }`, `for c in Color red to: Color blue { ... }`; also `Color do: { [c] ... };` | Direct loop |
 | Sets | `s: set of: Color := [Color red, Color blue];` | See below |
 | Enum-indexed arrays | `names: array of: string by: Color;`, `names at: Color red` | See below |
 | Branching | `case x of { ... } else { ... }` with Pascal-style labels | See below |
@@ -609,12 +610,12 @@ Captured ideas, not yet decisions. The guiding idea: **a block is anything in `{
 2. **Message objects (closures).** *(Non-escaping closures built in phase 3, see §5.5.)* A block is a first-class value: a lambda, closure or function pointer. It can be stored, passed and returned ("message blocks can be passed around"). Non-escaping blocks are free. Escaping ones are ARC closure objects (§5.5). To design:
    - the block type syntax (with no angle brackets, so probably inferred like containers);
    - whether a block can be taken from an existing message (`obj messageFor: "add:"` → block bound to `obj`);
-   - whether a block with no captures is guaranteed to be a plain C function pointer, which matters for callbacks and interrupt vectors.
+   - whether a block with no captures is guaranteed to be a plain C function pointer, which matters for callbacks and interrupt vectors. **[Decided, §6.6]** yes, where a `cFunction` is expected.
 3. **Pre- and post-condition blocks.** Optional per message, design-by-contract style. Sketch only:
    ```
    msg pop [int32]
        pre  { items isEmpty not }
-       post { :result | items count = (old items count) - 1 }
+       post { [result] items count = (old items count) - 1 }
    {
        return items removeLast;
    }
@@ -630,7 +631,7 @@ Captured ideas, not yet decisions. The guiding idea: **a block is anything in `{
    - An error block traps them:
      ```
      { f := File open: path; data := f readAll; }
-         onError: { :e | log warn: e message; };
+         onError: { [e] log warn: e message; };
      ```
    - The compiler knows which messages can fail, so a send that can fail outside a handling block is a compile error unless it's explicitly propagated.
    - Open: how propagation is written; the error value type (a protocol? a union of error records?); and how hardware traps (overflow, bounds, divide-by-zero) relate. They're fatal by default, but a kernel may want to trap them in a block, for example to isolate a faulty driver.
@@ -638,7 +639,7 @@ Captured ideas, not yet decisions. The guiding idea: **a block is anything in `{
    ```
    t := { self crunch: chunk } fork;            # runs on another thread
    r := t join;                                 # result, or the error it trapped
-   { ... } forkAll: workers onError: { :e | ... };
+   { ... } forkAll: workers onError: { [e] ... };
    ```
    To explore:
    - structured concurrency (threads started in a block must finish before the block exits);
@@ -690,8 +691,132 @@ Allocator: start on `HeapAlloc` (as scratch-lang does), then replace it with a s
 - Uninitialised reads are impossible (definite-initialisation analysis, or zero init).
 
 ### 6.4 Systems / OS profile
-- `unsafe` gives typed pointers (`p: pointer to: uint32;`, same annotation style as `array of:`), `address`, reinterpret, `@[volatile]` loads/stores, inline asm (via LLVM inline asm), `@[packed]`/`@[align:]` records, `@[extern: "C"]` and `@[callconv: interrupt]`.
+- `unsafe` gives typed pointers (`p: pointer to: uint32;`, same annotation style as `array of:`; see §6.5), `address`, reinterpret, volatile access through `volatilePointer to: T`, inline asm (via LLVM inline asm), `@[packed]`/`@[align:]` records, `@[extern: "C"]` and `@[callconv: interrupt]`.
 - **Freestanding profile** (`bobc --profile=freestanding`): no OS layer. The program supplies the page allocator and output hooks. The runtime core (ARC, containers, strings, msgSend) still works.
+
+### 6.5 Pointers **[Decided 2026-11-27, built in phase 9a]**
+The guiding requirement was **reliability first, then understandability**. The design came out of a survey of how other systems languages handle raw pointers (the comparison and sources are below).
+
+```
+@[unsafe] msg acknowledgeInterrupt {
+    apic: volatilePointer to: ApicRegs := 0xFEE00000 asPointer;  # traps if null or misaligned
+    apic.eoi := 0;                       # exactly one 32-bit volatile store
+}
+
+@[unsafe] msg firstEntry: table:[pointer to: Table]? [uint32] {
+    table ifNil: { return 0; };
+    return table.entries contents;       # non-null inside, checked once
+}
+
+msg sum: frame:Frame [uint32] {
+    raw: pointer to: uint8 := @[unsafe] (frame address asPointer);
+    bytes := @[unsafe] (raw slice: frame meta size);
+    total: uint32 := 0;
+    for b in bytes { total := total + b; }   # bounds-checked, outside unsafe
+    return total;
+}
+```
+
+**Decisions**
+1. **Non-null by default.** `pointer to: T` is never null. A nullable pointer is the optional `[pointer to: T]?` (same size, nil is address 0), unwrapped with `ifNotNil:` like any optional. Firmware and C interfaces are full of nullable pointers, so the checks happen once, at the boundary.
+2. **One item vs. a buffer.** `pointer to: T` points at one `T`. It has no indexing, and its only arithmetic is the explicit `p advancedBy: n` (in elements). A buffer is a `slice of: T`: a pointer and a count, made once in unsafe code (`p slice: n`). Its `at:`/`at:put:`/`for` are bounds-checked and work in safe code.
+3. **Volatile is part of the pointer type: `volatilePointer to: T`.** Every access through it is exactly one volatile load or store of the accessed field's width: never merged, split, repeated or elided. Field access through it (`apic.eoi`) touches only that field. There's no `@[volatile]` on ordinary variables, and volatile is never a synchronisation tool (atomics are separate).
+4. **A pointer to a local can't outlive its frame.** The escape analysis that places objects on the stack rejects a pointer made by `x address` (or derived from one) that is returned, stored in a field, container or through a pointer, captured by a block, or passed to a parameter its message keeps (`sema.pointerEscapes`).
+   - Class instances and their fields have no `address`, since ARC could free them.
+   - Fields of `@[packed]` records have no `address`, since the pointer would be unaligned.
+5. **Checked conversions.** `n asPointer` (integer to pointer) and `p asPointer` (reinterpret) take the target type from context, or from `asPointer: T`. They trap (`invalid pointer`) on address 0 or on misalignment for the target type. Converting to an optional pointer gives nil for 0. `p asUIntPtr` gives the address.
+6. **Small, visible unsafe regions.** `@[unsafe]` marks a message, a `{ }` block, a single statement or a parenthesised expression, never a whole module. Pointer values can be held and passed in ordinary code. Making one (`address`, `asPointer`, `slice:`) and using one (`contents`, `contents:`, `p.x`, `advancedBy:`) needs `unsafe`.
+7. **Names that read well.** Load and store are `p contents` / `p contents: v`, because `value` already means "run this block". Field access goes through the pointer, so it's `p.x`, not `(p contents).x`.
+8. **Records hold optional pointers.** Records start zero-filled, so a pointer field in a record (or a fixed-array element) must be `[pointer to: T]?`, as with `Class`. Class fields and locals can hold non-null pointers.
+
+Left out for now: pointers that may legitimately hold address 0 (Zig's `allowzero`), const pointers, and pointers into strings or arrays (they belong with the C interface, 9c).
+
+**What other languages do**
+
+| | Null | One item vs. buffer | Volatile | Arithmetic |
+|---|---|---|---|---|
+| C | always nullable | same type | type qualifier | `p + n` anywhere |
+| Zig | non-null; nullable is `?*T` | `*T`, `[*]T`, bounds-checked `[]T` | in the pointer type (`*volatile u8`) | many-item pointers only |
+| Rust | raw pointers nullable; `NonNull<T>` and references not | slices | per access (`read_volatile`) | explicit `add`/`offset` |
+| Swift | non-null; nullable is `UnsafePointer<T>?` (changed on purpose) | buffer pointers | none | `advanced(by:)` |
+| Go | nullable | one `unsafe.Pointer` | none | `unsafe.Add`, strict rules |
+| Ada / Oberon | nullable | address type separate from pointers | object aspect / `SYSTEM.GET`/`PUT` | on addresses only |
+
+**Findings behind the decisions**
+- **Null.** Null references are the "billion-dollar mistake" (Hoare). Swift deliberately made its pointer types non-nullable, with an optional for the nullable case, so C's `_Nullable` annotations carry over. Its integer-to-pointer conversion is failable for the same reason. Zig's `*T` is non-null too, with `?*T` for nullable.
+- **Bounds.** Out-of-bounds access is the main memory-bug class. Zig keeps single-item pointers (no indexing) separate from many-item pointers and from bounds-checked slices. Clang's `-fbounds-safety` and Checked C retrofit the same idea onto C.
+- **Volatile.** The Linux kernel accesses MMIO through accessor functions. Its "volatile considered harmful" note is about volatile on ordinary shared data, and it keeps volatile for device memory such as DMA rings. The Rust embedded community found that ordinary references to MMIO are unsound, because the compiler may add reads, and an extra read can clear an interrupt status or pop a FIFO byte. Field projection must not go through an intermediate reference (`&raw`). Zig puts volatile on the pointer type so it can't be forgotten on one access.
+- **Provenance and integer casts.** Pointers carry provenance: Rust's strict-provenance APIs, C++ P3744, CHERI capabilities. On CHERI, a pointer round-tripped through a plain integer can't be dereferenced. So integer-to-pointer conversion stays explicit and rare, and goes through `uintptr`.
+- **Unsafe regions.** Google reports that Android's Rust code has about 1000× fewer memory-safety vulnerabilities per line than its C/C++. Small, auditable `unsafe` regions are part of why. Go's `unsafe.Pointer` rules show how subtle pointer/integer round trips get when they're allowed freely.
+- **Taking addresses.** Rust's `addr_of!` exists so that taking an address doesn't create an intermediate reference. Swift scopes addresses of variables to a closure (`withUnsafeMutablePointer`). bob instead uses its escape analysis to keep a local's pointer inside its frame.
+
+**Sources**
+- Zig: [language reference (pointers)](https://ziglang.org/documentation/0.12.1/), [pointer types comparison](https://slicker.me/zig/pointers.html), [C pointers](https://zig.guide/working-with-c/c-pointers), [docs mirror](https://www.mintlify.com/ziglang/zig/language/pointers), [optional C pointers](https://ziggit.dev/t/invalid-use-of-optional-c-pointer/4965)
+- Rust: [`std::ptr` (provenance, `addr_of!`, volatile)](https://doc.rust-lang.org/std/ptr/index.html), [`NonNull`](https://doc.rust-lang.org/nightly/std/boxed/../ptr/struct.NonNull.html), [Comprehensive Rust: volatile MMIO](https://google.github.io/comprehensive-rust/bare-metal/aps/mmio.html), [Patina: MMIO](https://opendevicepartnership.github.io/patina/dev/hardware_access/mmio.html), [why references are unsound for volatile MMIO](https://vineelkovvuri.github.io/blog/2026-04-11-rust-references-and-volatile-mmio), [safe-mmio](https://docs.rs/crate/safe-mmio/0.3.0), [UCG issue on VolatileCell](https://github.com/rust-lang/unsafe-code-guidelines/issues/411)
+- Linux: [volatile considered harmful](https://docs.kernel.org/6.16/process/volatile-considered-harmful.html)
+- Swift: [making pointer nullability explicit](https://forums.swift.org/t/making-pointer-nullability-explicit-using-optional/1859), [why `UnsafePointer(bitPattern:)` is failable](https://forums.swift.org/t/why-is-unsafepointer-bitpattern-failable/11038), [UnsafePointer source](https://fuchsia.googlesource.com/third_party/swift/+/141f61f3c887a81aa5d7a66e843f5e5e9a31ca02/stdlib/public/core/UnsafePointer.swift)
+- Go: [`unsafe` package](https://golang.google.cn/pkg/unsafe/), [`unsafe.Add` proposal](https://docs.google.com/document/d/1yyCMzE4YPfsXvnZNjhszaYNqavxHhvbY-OWPqdzZK30/pub)
+- Ada and Oberon: [`Address_To_Access_Conversions`](https://ada-rapporteur-group.github.io/ARM/Ada_2022/RM-13-7-2.html), [GNAT address clauses](https://gcc.gnu.org/onlinedocs/gnat_rm/Address-Clauses.html), [Oberon SYSTEM module](https://www.mathematik.uni-ulm.de/oberon/0.5/lib/man/SYSTEM), [SYSTEM.GET/PUT pitfalls](https://blackboxframework.org/archive/2000/0580.html)
+- Provenance and CHERI: [adapting C to CHERI](https://www.cl.cam.ac.uk/~pffm2/sosp2023_cheri_tutorial/exercises/6_adapt-c/answers.html), [Explicit Provenance APIs (P3744R0)](https://isocpp.org/files/papers/P3744R0.html), [porting CRuby to CHERI](https://arxiv.org/pdf/2603.05645)
+- Bounds safety: [Clang `-fbounds-safety`](https://rocm.docs.amd.com/projects/llvm-project/en/docs-7.2.2/LLVM/clang/html/BoundsSafety.html)
+- Null: [Hoare, "Null References: The Billion Dollar Mistake"](https://www.infoq.com/presentations/Null-References-The-Billion-Dollar-Mistake-Tony-Hoare/)
+- Unsafe regions in practice: [Google, "Rust in Android: move fast and fix things"](https://blog.google/security/rust-in-android-move-fast-fix-things/?hl=fr)
+
+### 6.6 C functions and C function pointers **[Decided 2026-11-27, built in phase 9c]**
+```
+type CompareFn := cFunction { [pointer to: int32], [pointer to: int32] [int32] };
+
+class Kernel {
+    @[extern: "C"] msg GetStdHandle: which:uint32 [uintptr];               # import: no body
+    @[extern: "C", symbol: "qsort"] msg sort: base:[pointer to: int32] count:uintptr size:uintptr by:CompareFn;
+}
+
+@[unsafe] {
+    h := Kernel GetStdHandle: 4294967284u32;
+    Kernel sort: buf count: n size: 4 by: { [a, b] a contents - b contents };   # captures nothing: a plain C function
+}
+
+extends hello {
+    @[extern: "C"] msg efi_main: image:uintptr table:[pointer to: SystemTable] [uintptr] { … }   # export: has a body
+}
+```
+
+**Decisions**
+1. **Imports are message declarations without a body**, like a protocol's required messages, so there's no new syntax. `@[extern: "C"]` makes the message class-side (a C function has no `self`). The C symbol is the first keyword; later keywords are bob labels only, and arguments are passed in order. `@[symbol: "…"]` names the symbol instead. Linking stays as §11.2 decided (import libraries, `.def` files), nothing in the source.
+2. **Exports are the same declaration with a body**: the message is also defined under its C name with the C ABI (UEFI's `efi_main` in 9f). bob code calls it like any message.
+3. **Every call to an imported C function needs `@[unsafe]`**, because the compiler can't check the declaration against the real function, and a mismatch is silent memory corruption. Safe APIs are bob wrappers.
+4. **Only C types cross** (`sema.notCType`): integers, reals, `bool` (C `_Bool`), `char`, enums, records of plain data (C layout), pointers, C functions, and optional pointers and C functions (nil is 0). Not classes, strings, containers, blocks, slices or other optionals; a slice is passed as `s pointer` and `s count`.
+5. **`cFunction { T… [R] }` is a C function pointer**: the block-type shape behind a word, so it can't be mistaken for an ARC closure. It's never null; `[cFunction { … }]?` is the nullable one. A record field or fixed-array element must be the optional one. A named cFunction type is an alias, like a named block type. It's called with `value:` inside `unsafe`.
+6. **A block literal that captures nothing becomes a cFunction** where one is expected (Swift's `@convention(c)`). Using a local, a parameter or `self` from around it is `sema.cFunctionCaptures`; it may use constants and send class-side messages. Code is never freed, so a callback C keeps can't dangle. Per-call state goes through the C API's context pointer. This answers §5.6's question about capture-free blocks.
+7. **Nothing unwinds across the boundary**: bob has no exceptions and traps end the process, so Rust's `C-unwind` problem (RFC 2945) doesn't arise.
+8. **Pointers passed to C are assumed not kept**: passing `x address` to a C parameter is allowed (the escape analysis treats C parameters as not keeping it). Keeping it would be the C side's obligation, which the `unsafe` call accepts.
+
+**As built (Windows x64 C ABI).** A record of 1, 2, 4 or 8 bytes crosses as an integer of that size; any other record by reference to a copy, and a returned one through a hidden pointer. `bool` crosses zero-extended. An import compiles to a small internal wrapper around the C call, so bob call sites stay static calls; an export gets a C-named thunk around the bob function. A module's interface keeps its imports (`@[extern: "C", symbol: …]`); exports appear as ordinary messages. Not yet: `void*` (opaque pointers), strings and arrays passed to C, variadic functions, conventions other than the platform's C one (`@[callconv: interrupt]` is 9e), and linking DLLs beyond the runtime's `kernel32.def` (`--import-def`).
+
+**What other languages do**
+
+| | Import declaration | Function-pointer type | Nullable | Capturing closures | Call safety |
+|---|---|---|---|---|---|
+| Zig | `extern fn` | `*const fn(..) callconv(.c) R` | `?*const fn` | n/a | ordinary |
+| Rust | `unsafe extern "C" { }` block | `extern "C" fn(..) -> R` | `Option<extern "C" fn>`, same ABI | rejected | unsafe unless declared `safe` |
+| Swift | imported from headers | `@convention(c)` | `Optional` | rejected ("cannot be formed from a closure that captures context") | ordinary |
+| C# | `extern` + DllImport | `delegate* unmanaged[Cdecl]` | null | `[UnmanagedCallersOnly]` static methods only | unsafe |
+| Ada | `pragma Import (C, …)` | access-to-subprogram + `Convention (C)` | null | n/a | ordinary |
+| Odin / Delphi | `foreign` block / `external` | `proc "c"` / procedural type + `cdecl` | nil | method pointers can't be passed | unchecked |
+
+**Findings behind the decisions**
+- Every language surveyed puts the C convention in the function-pointer type, and a mismatch is a compile error (C# CS8786, Ada's convention rule).
+- Non-null by default with an optional for null (Zig, Rust) matches §6.5.
+- Swift, C# and Delphi all refuse capturing closures as C callbacks and fall back on the C API's `void*` context parameter.
+- None of them checks imports against the real C headers; Odin's own guides warn that a wrong declaration is accepted silently. Hence calls are unsafe.
+
+**Sources**
+- Zig: [nullable C callbacks](https://ziggit.dev/t/how-to-check-if-non-null-pointer-is-not-null/13834), [unwrapping optional function pointers](https://ziggit.dev/t/c-function-pointers-cast-error/3280), [Zig interop guide](https://jkingston.github.io/zig_guide/ch12_interoperability.html), [ABI compatibility](https://tamnd.github.io/brain/write/book/zig/17/8.md)
+- Rust: [`Option<extern "C" fn>` PR](https://github.com/rust-lang/rust/pull/34258/files), [function-pointer layout (UCG)](https://rust-lang.github.io/unsafe-code-guidelines/layout/function-pointers.html), [function references discussion](https://internals.rust-lang.org/t/maybe-rust-should-have-function-references-too/21612/55), [external blocks](https://doc.rust-lang.org/reference/items/external-blocks.html), [RFC 3484 unsafe extern](https://rust-lang.github.io/rfcs/3484-unsafe-extern-blocks.html), [2024 edition guide](https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-extern.html), [RFC 2945 C-unwind](https://rust-lang.github.io/rfcs/2945-c-unwind-abi.html), [panic=abort fix #96959](https://github.com/rust-lang/rust/pull/96959)
+- Swift: [capturing closures as C function pointers](https://forums.swift.org/t/a-c-function-pointer-cannot-be-formed-from-a-local-function-that-captures-context/67311), [wrapping C callbacks](https://forums.swift.org/t/wrapping-c-callbacks-in-swift-closures/29047), [SILGen tests](https://sources.debian.org/src/swiftlang/6.0.3-2/swift/test/SILGen/c_function_pointers.swift), [context-pointer workaround](https://developer.apple.com/forums/thread/112276), [`@closureContext` pitch](https://forums.swift.org/t/add-api-that-makes-it-easier-to-interoperate-with-c-callbacks/62718)
+- C#: [function pointers proposal](https://learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-9.0/function-pointers), [UnmanagedCallersOnly](https://learn.microsoft.com/dotnet/api/system.runtime.interopservices.unmanagedcallersonlyattribute), [calling conventions](https://learn.microsoft.com/dotnet/standard/native-interop/calling-conventions), [CS8786 example](https://gist.github.com/tannergooding/9d763b4320c3ceeabee3a2d1a722ba01)
+- Ada: [ARM B.1](https://docs.adacore.com/live/wave/arm05/html/arm05/RM-B-1.html), [GNAT calling conventions](https://gcc.gnu.org/onlinedocs/gnat_ugn/Calling-Conventions.html), [comp.lang.ada callback thread](https://groups.google.com/g/comp.lang.ada/c/8J5VAcy5uBQ)
+- Odin and Delphi: [Odin binding to C](https://odin-lang.org/news/binding-to-c/), [Odin wiki](https://github.kxpsado.workers.dev/odin-lang/Odin/wiki/Binding-to-C/597dd16f18e80e3121c934676f07890454af6cb4), [Odin foreign lessons](https://odin-lessons.pages.dev/15-foreign-and-bindings.html), [Delphi procedures and functions](https://docwiki.embarcadero.com/RADStudio/Athens/en/Procedures_and_Functions), [Delphi callbacks](https://www.oreilly.com/library/view/borland-delphitm-6/0672321157/0672321157_ch06lev1sec11.html)
 
 ---
 
@@ -722,7 +847,7 @@ s := string fromUtf8: bytes;          # [string?] or result type, fails on inval
 s := string fromUtf8Lossy: bytes;     # replaces invalid sequences with U+FFFD
 b := s toUtf8;                        # copies to an array of uint8
 s := string fromUtf16: wideBuffer;    # Win32 interop
-s withCString: { :p | ... };          # unsafe, NUL-terminated temporary
+s withCString: { [p] ... };          # unsafe, NUL-terminated temporary
 ```
 There are no implicit conversions between `string` and byte arrays or raw pointers. The runtime's Win32 layer converts command line and console IO between UTF-16 and UTF-8 (`GetCommandLineW`, `WriteConsoleW`/`WriteFile`).
 
@@ -763,7 +888,7 @@ Rules:
 - **Compile-time iteration and splicing** (the C++26 `template for` / `[: r :]` equivalent). A `@[compiletime]` loop over meta info is unrolled. A field or message info used as a send argument resolves statically, so derive-style code costs nothing:
   ```
   msg printOn: s:Stream {
-      @[compiletime] (self meta type fields) do: { :f |
+      @[compiletime] (self meta type fields) do: { [f]
           s print: f name; s print: " = "; s print: (self fieldAt: f) printString;
       };
   }
@@ -963,13 +1088,13 @@ Runtime unit tests: gtest needs the CRT, so `bobTests` compiles the runtime sour
 | 6 ✅ | Compile-time execution via ORC; `compiler` object; `meta`; static asserts; constant tables. Revisit type-returning compile-time messages under the §4.5 leash rules | Compile-time CRC table and layout asserts work; decision made on `RingBuffer of: T`. **Done 2026-11-27:** unit-level constants (always compile-time, dependency-ordered, embedded as read-only data), `@[compiletime]` messages, expressions and blocks, the `compiler` object (`error:`/`warning:`/`note:` at the sending line), `meta` (size, alignment, typeName, name, type, count, members, elementType, fields), compile-time code JIT compiled with ORC against the hosted runtime (`bobrtHosted`), traps and endless loops reported as compile errors, layout rules shared by `meta` and checked against LLVM. A CRC-32 table generated at compile time checks `"123456789"`, and record layout asserts fail compilation at the asserting line. `RingBuffer of: T`: leash rules confirmed, built as a separate step after this phase. Not yet: compile-time unrolling and splicing over `meta fields`, `compiler target`/`readFile:`, synthesising messages and classes |
 | 7 ✅ | Modules/libraries: interface files, imports, separate compilation, versioning | Multi-module program with a static lib. **Done 2026-11-27:** the Object Pascal unit model (§11.5): `interface { }` / `implementation { }` sections, `bobc` builds a module or lib into a `.lib` (or `-c` `.obj`) plus a generated `.bobi` interface (bob syntax, no bodies, types and constants written out, escape summaries), imports found next to the source or on `--module-path=`, transitive, with semver checks and Pascal-style interface fingerprints (`recompile X`), unqualified names with module qualification on a clash, cross-module direct, vtable and protocol dispatch, stack placement and compile-time code through imported code. A program built from a module and a static lib passes; implementation-only changes keep the fingerprint. Not yet: `extends` on imported classes, dictionary constants in interfaces, dynamic libraries |
 | 8 ✅ | Reflection levels + Reflector capability; escaping closures; `weak`/`unowned`; a runtime query for whether an object is on the stack or the heap (a separate header flag bit, since string literals are immortal too) | Reflection tests per level, including denied access. **Done 2026-11-27, part 1:** escaping closures (inferred escape, stack environments vs ARC heap closures, shared boxes for mutable captures, block fields/results/optionals; block types later rewritten as `{ T [R] }`), `@[weak]`/`@[unowned]` fields and variables (zeroing weak, trapping unowned, weak counts in the header), the header's stack flag and `bobObjectIsOnStack`, all across modules; 195/195 tests in Debug and Release. **Part 2:** itable dispatch for protocol sends (`docs/proposals.md` §2, Stage 1): read-only witness tables per class and protocol, protocol messages may return records, `bob_msgSend` kept for reflection only, reaching messages through selector-dropping thunks (§2 Stage 2: instance messages take `(self, args…)`); as fast as a vtable send with one receiver, a tie with `bob_msgSend` when polymorphic; 200/200 tests. **Part 3 (8a):** reflection levels (`none`, `identity`, `introspect` default, `invoke`) per class, per unit and capped by `--reflect-max`; `Class` values (`obj class`, `Button class`, `name`, `superclass`, `isKindOf:`, `respondsTo:`, `=`); `obj isOnStack`; method-table thunks only at `invoke`; 204/204 tests. **Part 4 (8b):** per-class introspection tables (`BobClassMeta`) from `introspect`; `c fields` (the same `FieldMeta` as `T meta fields`, which now also works outside compile-time code), `c messages` (`MessageMeta` with signatures), `c protocols`, `c get:of:` typed by context and checked at compile time or at runtime (trap `reflection mismatch`); 207/207 tests. **Part 5 (8c):** `perform:on:with:…` (signature-checked, dispatched from the object's own class through the `.msgSend` thunks), `set:of:to:`, `c new`, `Class named:` (qualified or unique bare names; a program-wide registry built by the linker from the `.bobcls$m` COFF section), `c qualifiedName`, the `Reflector` on `main` (`sema.reflectorRequired`; modules record `reflector: "needed"` in their interface); 216/216 tests. **Part 6:** containers of blocks (array elements, dictionary/hashtable values; parameter types from the element type; one element type per block shape; not keys, set elements or fixed-array elements); 220/220 tests. Phase 8's planned work is complete |
-| 9 | Systems profile: `unsafe`, pointers, volatile, packed/align, inline asm, freestanding target | Boots a UEFI "hello" or a minimal kernel under QEMU |
+| 9 (in progress) | Systems profile: `unsafe`, pointers, volatile, packed/align, inline asm, freestanding target | Boots a UEFI "hello" or a minimal kernel under QEMU. **Part 1 (9a), 2026-11-27:** pointers per §6.5: non-null `pointer to: T`, `volatilePointer to: T`, optional `[pointer to: T]?`, bounds-checked `slice of: T`, `@[unsafe]` regions, `address`/`contents`/`p.x`/`advancedBy:`/`asPointer`/`slice:`, checked conversions (trap `invalid pointer`), frame-bound pointers checked by the escape analysis (`sema.pointerEscapes`); 229/229 tests. **Part 2 (9b):** `@[align: n]` (powers of two up to 4096) on records, record fields and variables; C layout, checked against LLVM; more than 16 bytes rejected where storage is heap (`sema.alignTooLarge`); not combined with `@[packed]` yet; 233/233 tests. **Bracketed block parameters** `{ [a, b] … }` replace `{ :a :b | … }` (§3.5); 235 tests. **Part 3 (9c):** `@[extern: "C"]` imports (bodiless messages, calls need `unsafe`) and exports, `@[symbol:]`, C types only, `cFunction { T [R] }` from capture-free block literals, Windows x64 C ABI for records (§6.6); 239/239 tests. Next: 9d inline asm and port I/O, 9e `@[callconv: interrupt]`, 9f freestanding/UEFI |
 | 10 | Python bindings over the semantic model | Script enumerates classes/sends in a module |
 
 ---
 
 ## 13. Open questions (summary)
-Decided: `x := 4;` implicit declaration with inference (§3.3); phase 4 choices (confirm or change): object creation without `new` (§4.3a: `p: Point;`, constructor messages from public fields, required fields must be passed, automatic per-class `init`, `copy`, stack placement by escape analysis and checked `@[stack]`, records stay values), outside code reaches public fields through synthesized accessors `p x`/`p x: v`, `=`/`<>` on references compare identity, records can't hold references, every instance message gets a vtable slot, protocol messages can't return records yet (docs/semantics.md); `<>` for not equal and `shl`/`shr` word operators, no `<< >> == ~= ??` (§3.2); parameters and `for` variables are read-only, `and`/`or` short-circuit, runtime traps exit with code 101, program messages must be `@[static]` (docs/semantics.md); no `@` on keyword parts (§3.4); conventional operator precedence (§3.4); no symbol literals (§9); `@[protocol] class` replaces a `protocol` keyword (§4.4); concrete classes are closed to their module and there's no `@[open]` (§4.3, §5.4); unary binds tightest, no `->` (§3.4); no cascades (§3.4); compact message declarations with optional rename (§3.6); records allow both layout-prefix inheritance and embedding (§4.2); overflow traps by default, `@[overflow:]` at any level (§4.1); byte-wise string equality (§7.2); reflection access by capabilities, header declarations later (§9); generated import libs with SDK fallback (§11.2); inferred container element types, mixed contents only through a shared class or protocol (inferred unions removed 2026-11-27), `array of: T` annotation (§4.5); compile-time reflection via `meta` (§8.3); records can't implement protocols (§4.4); no generic syntax; type-returning compile-time messages, tightly restricted, are the planned answer for user containers, revisited in phase 6 (§4.5); enums `enum Name : type { a := 1; }`, no implicit integer conversion, Pascal ordinal features, `set of: Enum` bitsets instead of flags, enum-indexed arrays, `case x of { … } else { … }` statement with Pascal labels (§4.6); formal control statements `if/else if/else`, `while`, `for … in`, `loop`, `break`, `continue`, braces always required, `whileTrue:`/`caseOf:` removed (§3.5); Pascal subranges, `type Name := ...`, `[ ]`-only grouping in type positions; named types are distinct by default, with `@[alias]` (§4.7).
+Decided: `x := 4;` implicit declaration with inference (§3.3); block parameters are bracketed, `{ [a, b] … }`, and `|` is gone from the language (§3.5); phase 4 choices (confirm or change): object creation without `new` (§4.3a: `p: Point;`, constructor messages from public fields, required fields must be passed, automatic per-class `init`, `copy`, stack placement by escape analysis and checked `@[stack]`, records stay values), outside code reaches public fields through synthesized accessors `p x`/`p x: v`, `=`/`<>` on references compare identity, records can't hold references, every instance message gets a vtable slot, protocol messages can't return records yet (docs/semantics.md); `<>` for not equal and `shl`/`shr` word operators, no `<< >> == ~= ??` (§3.2); parameters and `for` variables are read-only, `and`/`or` short-circuit, runtime traps exit with code 101, program messages must be `@[static]` (docs/semantics.md); no `@` on keyword parts (§3.4); conventional operator precedence (§3.4); no symbol literals (§9); `@[protocol] class` replaces a `protocol` keyword (§4.4); concrete classes are closed to their module and there's no `@[open]` (§4.3, §5.4); unary binds tightest, no `->` (§3.4); no cascades (§3.4); compact message declarations with optional rename (§3.6); records allow both layout-prefix inheritance and embedding (§4.2); overflow traps by default, `@[overflow:]` at any level (§4.1); byte-wise string equality (§7.2); reflection access by capabilities, header declarations later (§9); generated import libs with SDK fallback (§11.2); inferred container element types, mixed contents only through a shared class or protocol (inferred unions removed 2026-11-27), `array of: T` annotation (§4.5); compile-time reflection via `meta` (§8.3); records can't implement protocols (§4.4); no generic syntax; type-returning compile-time messages, tightly restricted, are the planned answer for user containers, revisited in phase 6 (§4.5); enums `enum Name : type { a := 1; }`, no implicit integer conversion, Pascal ordinal features, `set of: Enum` bitsets instead of flags, enum-indexed arrays, `case x of { … } else { … }` statement with Pascal labels (§4.6); formal control statements `if/else if/else`, `while`, `for … in`, `loop`, `break`, `continue`, braces always required, `whileTrue:`/`caseOf:` removed (§3.5); Pascal subranges, `type Name := ...`, `[ ]`-only grouping in type positions; named types are distinct by default, with `@[alias]` (§4.7).
 
 Phase 8 choices (confirm or change): escape of blocks is inferred, no `@[escaping]`; capture is by reference everywhere (mutable captures of heap closures are boxed, read-only ones copied), and each loop pass declares a new variable; a block field with no initializer is required; a bare `block` is only inferred for parameters and initialized locals; `@[weak]`/`@[unowned]` are attributes, weak needs an optional type (inferred for `@[weak] x := …`), unowned fields are required; objects held weakly go on the heap; a destroyed object's memory lingers until its weak references are gone; `ifNotNil:` bindings are released when their block ends.
 

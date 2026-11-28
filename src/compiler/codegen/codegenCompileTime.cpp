@@ -66,15 +66,20 @@ llvm::Constant* Generator::constantOf(const sema::ConstValue& value, const Type*
     case TypeKind::string:
         return stringLiteral(value.text);
     case TypeKind::record: {
+        // `@[align:]` markers are zero-size members; they stay zero.
+        auto structure = llvm::cast<llvm::StructType>(llvm);
         std::vector<llvm::Constant*> fields;
+        for (llvm::Type* element : structure->elements()) {
+            fields.push_back(llvm::Constant::getNullValue(element));
+        }
         for (size_t i = 0; i < type->record->fields.size(); ++i) {
             llvm::Constant* field = constantOf(value.elements[i], type->record->fields[i].type);
             if (field == nullptr) {
                 return nullptr;
             }
-            fields.push_back(field);
+            fields[recordSlot(type->record, i)] = field;
         }
-        return llvm::ConstantStruct::get(llvm::cast<llvm::StructType>(llvm), fields);
+        return llvm::ConstantStruct::get(structure, fields);
     }
     case TypeKind::fixedArray: {
         std::vector<llvm::Constant*> elements;

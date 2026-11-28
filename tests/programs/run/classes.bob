@@ -14,7 +14,7 @@ program classes, 0.1.0
             }
         }
         msg sumWithBlock: n:int32 [int64] {
-            self each: n do: { :i | count := count + i asInt64; };
+            self each: n do: { [i] count := count + i asInt64; };
             return count;
         }
     }
@@ -74,7 +74,7 @@ program classes, 0.1.0
             current := head;
             loop {
                 found := false;
-                current ifNotNil: { :node |
+                current ifNotNil: { [node]
                     total := total + node value;
                     current := node next;
                     found := true;

@@ -13,7 +13,7 @@ This is the grammar the `bobSyntax` parser accepts (phase 1). `docs/design.md` �
 | version | three or more dot-separated integers: `1.4.11` | only meaningful in unit headers and imports |
 | string | `"…"` | escapes `\n \t \r \0 \\ \" \' \u{1F600}`. Must be valid UTF-8, no raw newlines |
 | char | `'…'` | exactly one Unicode scalar value after escapes |
-| binaryOperator | `<=` `>=` `<>`, or one of `+ - * / % & \| ^ < > = ?` | maximal munch over that set. There are no `<< >> == ~= ??` operators: `<<` lexes as two `<`, and `~` is an invalid character. `&`, `^` and `\|` lex, but as binary operators they're `parse.unexpectedOperator` ("bitwise operations are words"); `\|` only separates block parameters. `and`, `or`, `xor`, `shl` and `shr` are reserved words that act as binary operators |
+| binaryOperator | `<=` `>=` `<>`, or one of `+ - * / % & \| ^ < > = ?` | maximal munch over that set. There are no `<< >> == ~= ??` operators: `<<` lexes as two `<`, and `~` is an invalid character. `&`, `^` and `\|` lex, but they're `parse.unexpectedOperator` ("bitwise operations are words"); none of them has any use in the language. `and`, `or`, `xor`, `shl` and `shr` are reserved words that act as binary operators |
 | punctuation | `:=` `:` `;` `,` `.` `(` `)` `{` `}` `[` `]` `@[` | |
 | comments | `# …` to end of line, `#{ … }#` block (not nested) | trivia |
 
@@ -87,9 +87,9 @@ condition      = expression                   # no unparenthesised block literal
 body           = '{' statementList '}'        # braces are mandatory: no one-line bodies
 ```
 - **Braces are mandatory** for every control-statement body and every case entry. A missing `{` is `parse.expectedBraces`.
-- **Conditions** are ordinary expressions without surrounding parentheses. A block literal in operand position inside a condition is `parse.blockInCondition`, because its `{` would be ambiguous with the body. Parenthesise that part: `if (items anySatisfy: { :e | e }) { … }`.
+- **Conditions** are ordinary expressions without surrounding parentheses. A block literal in operand position inside a condition is `parse.blockInCondition`, because its `{` would be ambiguous with the body. Parenthesise that part: `if (items anySatisfy: { [e] e }) { … }`.
 - **`of`** is not reserved (`array of: Part` must keep working). After a `case` subject, the identifier `of` followed by `{` ends the subject instead of being read as a unary send.
-- **Case labels** are members, constants or parenthesised ranges: `Color red, Color green: { … }`, `0: { … }`, `(1 to: 9): { … }`. The entry body parses as a block literal, so `{ :n | … }` parses, but the analyzer rejects a binding (`sema.invalidCaseBinding`). The lexer turns `green:` into a keyword token, and inside the entries the parser splits it back into the label and the colon.
+- **Case labels** are members, constants or parenthesised ranges: `Color red, Color green: { … }`, `0: { … }`, `(1 to: 9): { … }`. The entry body parses as a block literal, so `{ [n] … }` parses, but the analyzer rejects a binding (`sema.invalidCaseBinding`). The lexer turns `green:` into a keyword token, and inside the entries the parser splits it back into the label and the colon.
 - `x := 4;` is an assignment syntactically. Whether it declares `x` (implicit declaration, design §3.3) is decided in semantic analysis.
 - **Group or block?** A `{ … }` at the start of a statement is a block *receiver* only if a message (identifier, keyword, operator) follows **on the same line** as its closing `}`. Otherwise it's a statement group and the next line starts a new statement. That way `@[overflow: wrap] { … }` followed by `x: int32;` on the next line isn't read as a keyword send. (Control statements aren't affected: their bodies are always statement lists.)
 - **Forgotten `;`.** An identifier followed by `:=` is never consumed as a unary selector, so `x := 1` followed by `y := 2;` reports the missing `;` and continues.
@@ -102,10 +102,11 @@ unaryExpr   = postfix { identifier }                                 # unary sen
 postfix     = primary { '.' identifier }                             # field access / qualification
 primary     = literal | identifier | 'self' | 'super' | 'nil' | 'true' | 'false'
             | '-' number | '(' expression ')' | block | array | attributes '(' expression ')'
-block       = '{' [ {':' blockParam} '|' ] statementList '}'
-blockParam  = identifier | keywordSelector typeTerm                   # :i   :i: int32   (`:a :b` is two parameters)
+block       = '{' [ '[' blockParam {',' blockParam} ']' ] statementList '}'
+blockParam  = identifier | keywordPart type                           # [i]   [i: int32]   [a, b]   [xs: array of: int32, n]
 array       = '[' [expression {',' expression} [',']] ']'
 ```
+- **Block parameters** are the bracketed list right after the block's `{`, written like a named tuple element (`name: Type`, the type optional). A `[` there always starts the parameter list, so a block whose first statement is an array literal parenthesises it: `{ ([1, 2]) count; }`. `{ [] … }` is `parse.emptyBlockParameters` (a block without parameters has no brackets), and Smalltalk's `{ :a :b | … }` is `parse.oldBlockParameters`.
 | Precedence (high → low) | Operators |
 |---|---|
 | 5 | `*` `/` `%` `shl` `shr` |
@@ -124,6 +125,7 @@ As in Pascal, `shl` and `shr` bind like multiplication: `1 + x shl 2` is `1 + (x
 type        = typeTerm [ keywordSelector typeTerm { keywordSelector typeTerm } ]   # type message
 typeTerm    = '[' typeList ']' ['?']
             | '{' [type {',' type}] ['[' type ']'] '}' ['?']          # block type
+            | 'cFunction' '{' [type {',' type}] ['[' type ']'] '}' ['?']   # C function pointer (contextual word)
             | qualifiedName ['?']                                   # type name
             | qualifiedName identifier {identifier}                 # constant: Day mon
             | number | char | '-' number                            # constant: 0, 'a'
@@ -131,7 +133,9 @@ typeList    = [ [keywordPart] type { ',' [keywordPart] type } ]
 ```
 - One unnamed element in brackets is just grouping (`[array of: int32]`). Several elements, or a named one, make a tuple (`[int32, string]`, `[count: int32, name: string]`). Parentheses aren't allowed in types.
 - A block type is written in braces: the parameter types, comma-separated, then optionally the result type in brackets: `{ int32, int32 [bool] }`, `{ int32 }`, `{ [int32] }`, `{ }`. Each part is a full `type`, so `{ array of: int32 [set of: Perm] }` works. It's a `BlockType` node.
-- Type messages: `array of: Part`, `array of: uint8 by: [0 to: 511]`, `hashtable keys: K values: V`, `set of: Perm`, `pointer to: uint32`, subranges `0 to: 100` and `Day mon to: Day fri`.
+- `cFunction { int32 [int32] }` is a block type with `cFunction` in front: a `BlockType` node with the `cFunction` property set. `cFunction` is only special directly before `{` in a type position.
+- A message declared with `@[extern: "C"]` may end with `;` instead of a body (a C import). The parser accepts `;` on any message; the analyzer decides where it's allowed.
+- Type messages: `array of: Part`, `array of: uint8 by: [0 to: 511]`, `hashtable keys: K values: V`, `set of: Perm`, `pointer to: uint32`, `volatilePointer to: Regs`, `slice of: uint8`, subranges `0 to: 100` and `Day mon to: Day fri`. The parser reads them all the same way; the analyzer tells `pointer to: T` and `volatilePointer to: T` apart from a subrange by the receiver name. A nullable pointer is the optional `[pointer to: T]?`.
 - A bare constant (`x: 5;`) is `parse.expectedType`.
 
 ## Attributes

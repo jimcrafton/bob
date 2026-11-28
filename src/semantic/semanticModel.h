@@ -64,6 +64,8 @@ struct FieldInfo {
     // class allows it, otherwise `required` (a constructor message must pass it).
     bool constructsDefault = false;
     bool required = false;
+    // Record fields: `@[align: n]`, the least alignment of the field's offset (0 = its natural one).
+    uint64_t align = 0;
 };
 
 struct RecordInfo {
@@ -71,6 +73,8 @@ struct RecordInfo {
     std::string name;
     std::vector<FieldInfo> fields;
     bool packed = false;
+    // `@[align: n]` on the record: its least alignment (0 = the natural one); the size rounds up to it.
+    uint64_t align = 0;
     const ast::RecordDecl* decl = nullptr;
     Type* type = nullptr;
     bool resolved = false;
@@ -94,6 +98,8 @@ struct LocalInfo {
     const BlockInfo* owner = nullptr;
     // Some block captures it by reference (loads of references are then retained).
     bool captured = false;
+    // `@[align: n] buffer: …;`: the least alignment of the variable's storage (0 = its type's).
+    uint64_t align = 0;
 };
 
 // A block literal. Inlined blocks (literal arguments of ifTrue:, to:do:, ...)
@@ -138,6 +144,12 @@ struct MessageInfo {
     bool isCopy = false;
     // `@[compiletime] msg`: callable only from compile-time code; not in the program.
     bool compileTimeOnly = false;
+    // `@[extern: "C"]` (design §6.6): class-side, C types only, the C ABI under `cSymbol`.
+    // Without a body it imports that C function (calls need unsafe); with one it is
+    // also exported under that name.
+    bool externC = false;
+    bool externImport = false;
+    std::string cSymbol;
     // What the body uses directly, for ordering compile-time evaluation
     // (filled during checking; vtable and protocol sends list their target).
     std::vector<const MessageInfo*> calls;
@@ -331,7 +343,7 @@ enum class SendKind : uint8_t {
     enumFromValue,     // `Color fromValue: n` -> Color?
     enumName,          // `c name` -> string
     enumRange,         // the iterable of `for c in Color` / `Color red to: Color blue`
-    inlineEnumDo,      // `Color do: { :c | ... }`
+    inlineEnumDo,      // `Color do: { [c] ... }`
     distinctValue,     // `p value` on a distinct type: same bits, base type
     distinctFromValue, // `PhysAddr fromValue: n`
     subrangeFromValue, // `Percent fromValue: n` -> Percent?
@@ -407,6 +419,21 @@ enum class SendKind : uint8_t {
     classPerform,      // `c perform: "sel" on: obj with: …`; resultType from context (void without one)
     classNew,          // `c new`; resultType from context, classInfo the expected class or protocol
     classNamed,        // `Class named: "unit.Button"` -> Class?
+
+    // pointers and slices (design §6.5); operandType is the pointer or slice type
+    pointerAddress,    // `x address`: the receiver is a place; frameBound when it's a local's
+    pointerLoad,       // `p contents`
+    pointerStore,      // `p contents: v`
+    pointerAdvance,    // `p advancedBy: n` (elements)
+    pointerFromInteger,// `n asPointer` -> resultType (a pointer or optional pointer)
+    pointerCast,       // `p asPointer`, `p asPointer: T`
+    pointerToInteger,  // `p asUIntPtr`
+    pointerSlice,      // `p slice: n`
+    sliceCount,
+    sliceIsEmpty,
+    sliceAt,           // bounds-checked
+    sliceAtPut,
+    cFunctionInvoke,   // `f value: a` on a cFunction (operandType), through the C ABI
 };
 
 // How a send node is implemented. `operandType` is the type every operand is
@@ -430,6 +457,8 @@ struct SendInfo {
     const ConstValue* value = nullptr;
     // `perform:`: the type each `with:` argument is passed as.
     std::vector<const Type*> argumentTypes;
+    // `x address` of a local (or a field of one): the pointer must not outlive the frame.
+    bool frameBound = false;
 };
 
 // One case label as an inclusive range of the subject's values, stored as
@@ -510,6 +539,8 @@ public:
     // Mutable variables captured by a heap closure: they live in a heap box that
     // the frame and the closures share, so every one sees the same variable.
     std::unordered_set<const LocalInfo*> boxedLocals;
+    // Capture-free block literals that become plain C functions (design §6.6).
+    std::unordered_set<const BlockInfo*> cFunctionBlocks;
 
     const Type* typeOf(const ast::Node* node) const;
     const LocalInfo* localOf(const ast::Node* node) const;

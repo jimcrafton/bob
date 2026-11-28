@@ -1280,23 +1280,26 @@ Node* Parser::parseBlockLiteral()
     ValueRestorer<bool> caseEnded(caseLabelEnded_, false);
     BlockLiteral* block = make<BlockLiteral>(open.range.begin);
     if (at(TokenKind::colon)) {
-        while (at(TokenKind::colon)) {
-            uint32_t paramBegin = advance().range.begin;
+        fail(current().range, "parse.oldBlockParameters", "block parameters are written in brackets: '{ [a, b] a < b }', '{ [i: int32] i * i }'");
+    }
+    if (accept(TokenKind::leftBracket)) {
+        if (at(TokenKind::rightBracket)) {
+            fail(current().range, "parse.emptyBlockParameters", "a block without parameters has no brackets: '{ x := 1; }'");
+        }
+        do {
+            uint32_t paramBegin = current().range.begin;
             BlockParam* param = make<BlockParam>(paramBegin);
-            if (at(TokenKind::keywordSelector)) {
+            if (atKeywordPart()) {
                 param->name = takeKeywordPart(nullptr);
-                param->type = parseType(false);
+                param->type = parseType(true);
             }
             else {
                 param->name = std::string(expect(TokenKind::identifier, "a block parameter name").text);
             }
             param->range = rangeFrom(paramBegin);
             block->params.push_back(param);
-        }
-        if (!atOperator("|")) {
-            failExpected("'|' after the block parameters");
-        }
-        advance();
+        } while (accept(TokenKind::comma));
+        expect(TokenKind::rightBracket, "']' after the block parameters");
     }
     parseList(block->statements, [this]() { return parseStatement({}); });
     expect(TokenKind::rightBrace, "'}' to close the block");
@@ -1362,6 +1365,12 @@ Node* Parser::parseTypeTerm()
     }
     if (at(TokenKind::identifier)) {
         std::string name = parseQualifiedName(nullptr);
+        if (name == "cFunction" && at(TokenKind::leftBrace)) {
+            auto block = static_cast<BlockType*>(parseBlockType());
+            block->cFunction = true;
+            block->range = rangeFrom(begin);
+            return parseOptionalSuffix(block, begin);
+        }
         if (at(TokenKind::identifier) && !at(TokenKind::colon, 1)) {
             Identifier* identifier = make<Identifier>(begin);
             identifier->name = name;

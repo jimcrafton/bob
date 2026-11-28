@@ -44,11 +44,16 @@ TEST(Layout, MatchesTheCodeGenerator)
     @[packed] record Packed { a: uint8; b: int64; c: uint16; }
     record Nested { m: Mixed; p: Packed; e: Small; r: real32; }
     record Holder { maybe: int32?; flags: set of: Perm; grid: array of: uint16 by: [0 to: 6]; byEnum: array of: Mixed by: Small; }
+    @[align: 64] record Line { a: uint8; b: uint32; }
+    record Spaced { a: uint8; @[align: 16] b: uint32; c: uint8; @[align: 8] d: uint16; }
+    record Contains { s: uint8; line: Line; spaced: Spaced; maybe: Spaced?; }
+    @[align: 4096] record Page { bytes: array of: uint8 by: [0 to: 99]; }
+    record Pages { first: uint8; page: Page; lines: array of: Line by: [0 to: 2]; }
     class Base { public { a: uint8; b: int64; } }
     class Derived inherits Base { public { c: uint16; s: string; n: Nested; } }
     extends layout {
         @[static] msg main: args:array [int32] {
-            f := { :x: int32 | x + 1 };
+            f := { [x: int32] x + 1 };
             g: { int32 [int32] }? := f;
             o: Mixed? := nil;
             c: char := 'a';
@@ -85,4 +90,17 @@ TEST(Layout, MatchesTheCodeGenerator)
     EXPECT_EQ(bob::sema::objectSize(derived), 16u + 16 + 8 + 8 + bob::sema::sizeOf(derived->fields[4].type));
     EXPECT_EQ(bob::sema::fieldOffset(model.recordNamed("Mixed"), 2), 16u);
     EXPECT_EQ(bob::sema::fieldOffset(model.recordNamed("Packed"), 2), 9u);
+
+    // @[align: n] raises the alignment of a record or of one field's offset.
+    EXPECT_EQ(bob::sema::alignmentOf(model.recordNamed("Line")->type), 64u);
+    EXPECT_EQ(bob::sema::sizeOf(model.recordNamed("Line")->type), 64u);
+    const bob::sema::RecordInfo* spaced = model.recordNamed("Spaced");
+    EXPECT_EQ(bob::sema::fieldOffset(spaced, 1), 16u);
+    EXPECT_EQ(bob::sema::fieldOffset(spaced, 2), 20u);
+    EXPECT_EQ(bob::sema::fieldOffset(spaced, 3), 24u);
+    EXPECT_EQ(bob::sema::sizeOf(spaced->type), 32u);
+    EXPECT_EQ(bob::sema::fieldOffset(model.recordNamed("Contains"), 1), 64u);
+    EXPECT_EQ(bob::sema::sizeOf(model.recordNamed("Contains")->type), 256u);
+    EXPECT_EQ(bob::sema::fieldOffset(model.recordNamed("Pages"), 2), 8192u);
+    EXPECT_EQ(bob::sema::sizeOf(model.recordNamed("Pages")->type), 12288u);
 }

@@ -15,7 +15,7 @@ What the analyzer (`bobSemantic`, `src/semantic`) and code generator (`src/compi
 | `bool` | `true`, `false` |
 | `int8 int16 int32 int64`, `uint8 … uint64` | `byte` = `uint8`, `intptr`/`uintptr` = 64-bit |
 | `real32 real64` | IEEE |
-| records | value types, C layout in declaration order, `inherits` places the base fields first, `@[packed]` supported |
+| records | value types, C layout in declaration order, `inherits` places the base fields first, `@[packed]` and `@[align: n]` supported, see [Alignment](#alignment-phase-9b) |
 
 | blocks | closures, see [Blocks](#blocks-phase-3) |
 | classes, protocols, `C?` | references, see [Classes](#classes-protocols-and-arc-phase-4) |
@@ -64,13 +64,13 @@ An untyped literal takes its type from context: the declared type, the parameter
 - `case x of { … } else { … }` on integers and `char`. Labels are integer literals or `(lo to: hi)` ranges and must not overlap. Because an integer can't be covered completely, `else` is required (`sema.caseNotExhaustive`). A `case` over an enum or a subrange can cover every value and leave `else` out (below). Entries don't bind values (`sema.invalidCaseBinding`).
 
 ## Blocks (phase 3, escaping in phase 8)
-- **Values.** `{ :a :b | statements }` is a closure. Its value is its last statement when that's an expression, so `{ :i: int32 | i * i }` returns `i * i`. Call it with `value`, `value:`, `value:value:` and so on.
+- **Values.** `{ [a, b] statements }` is a closure. Its parameters are the bracketed list after `{` (none: no brackets). Its value is its last statement when that's an expression, so `{ [i: int32] i * i }` returns `i * i`. Call it with `value`, `value:`, `value:value:` and so on.
 - **Types** are written in braces when needed, with the result in brackets: `{ int32, int32 [bool] }`, `{ int32 }` (no result), `{ [int32] }` (no parameters), `{ }` (neither), or plain `block` (inferred, below). A message returning a block writes it inside its result brackets: `msg adder: n:int32 [{ int32 [int32] }]`. The old `[block takes: … returns: …]` form is `sema.invalidBlockType`.
 - **Named block types.** `type Transform := { int32 [int32] };` names a shape, so `msg adder: n:int32 [Transform]` reads better than nesting braces in brackets. A named block type (or optional block, `type Handler := { [int32] }?;`) is always an alias, with or without `@[alias]`: blocks match by shape, so any block of that shape is a `Transform`. `type B := block;` is `sema.cannotInferBlock`. Exported ones appear in interfaces as `@[alias] type …`.
 - **Inference.**
   - A message parameter typed plain `block` gets its type from how the body uses it. `f value: x` fixes the parameter types, and a result used as `int32` fixes the result. Passing it to another message's block parameter fixes it from there.
   - If the body doesn't pin it down (never invoked, or only in a cycle of messages), you get `sema.cannotInferBlock`, asking for the annotation.
-  - A block literal's parameter types come from the expected block type. Without one, write them, as in `{ :i: int32 | … }`.
+  - A block literal's parameter types come from the expected block type. Without one, write them, as in `{ [i: int32] … }`.
   - A local declared `b: block := …` takes its type from the initializer.
   - A bare `block` can't be a message's return type, a field type or `block?`, since nothing there can infer it (`sema.cannotInferBlock`, `sema.invalidOptional`).
 - **Capture by reference.** A block reads and writes the variables it uses from enclosing code directly, whether or not it escapes.
@@ -80,8 +80,8 @@ An untyped literal takes its type from context: the declared type, the parameter
   - A heap closure **copies** read-only captures (parameters, `self`, loop variables, `ifNotNil:` bindings) and retains them. A mutable variable it captures is **boxed**: it lives in a small heap object shared by the frame and every closure that captures it, so all of them see the same variable (`SemanticModel::boxedLocals`). A variable declared inside a loop gets a new box on each pass, so closures made in different passes don't share it.
   - Whatever a heap closure captures escapes with it: a captured object goes on the heap, a captured `self` or parameter counts as kept in the message's escape summary.
   - Blocks hold a reference, so a record can't have a block field (`sema.referenceInRecord`).
-  - **Containers of blocks.** A block can be an array element or a dictionary or hashtable value: `ops: array of: { int32 [int32] }`. A block literal stored into one takes its parameter types from the element type (`ops add: { :x | x + 1 }`), and so does each element of a literal assigned to one.
-    - A bare container can infer a block element type from the first block stored, as long as that block writes its parameter types (`later add: { :x: int32 | x }`). Otherwise it's `sema.cannotInferBlock`.
+  - **Containers of blocks.** A block can be an array element or a dictionary or hashtable value: `ops: array of: { int32 [int32] }`. A block literal stored into one takes its parameter types from the element type (`ops add: { [x] x + 1 }`), and so does each element of a literal assigned to one.
+    - A bare container can infer a block element type from the first block stored, as long as that block writes its parameter types (`later add: { [x: int32] x }`). Otherwise it's `sema.cannotInferBlock`.
     - A stored block escapes, so it's a heap closure. Its captures stay by reference.
     - The shape must be written out; bare `block` is `sema.invalidElementType`.
     - Blocks can't be keys or set elements (`sema.invalidKeyType`), can't use `includes:` (blocks have no `=`), and can't be fixed-array elements (`sema.invalidElementType`: a fixed array starts defaulted and a block has no default).
@@ -90,7 +90,7 @@ An untyped literal takes its type from context: the declared type, the parameter
 - **Values and ARC.** A block value is `{function, environment}`, and block values are reference counted like strings: copying retains the environment, dropping it releases it. A stack environment carries the immortal flag, so those calls return at once, and a block that captures nothing has a null environment.
 - **Inlined messages.** These compile to plain branches and loops, with no closure:
   - `b ifTrue: { … }`, `ifFalse:`, `ifTrue:ifFalse:`, `ifFalse:ifTrue:` with block literals. The two-branch forms produce a value when both branches end in expressions of a common type: `m := (x > 3) ifTrue: { 100 } ifFalse: { 200 };`.
-  - `a to: b do: { :i | … }` behaves like `for i in a to: b`.
+  - `a to: b do: { [i] … }` behaves like `for i in a to: b`.
   - `n timesRepeat: { … }`.
 
   Non-literal arguments are `sema.inlinedNeedsBlock`. `break`/`continue` inside `to:do:` and `timesRepeat:` apply to them, and inside the `ifTrue:` family they apply to the surrounding loop.
@@ -147,7 +147,7 @@ There's no `new` (design §4.3a).
 - A non-optional class reference is never `nil`. A local or field declared without a value is default-constructed (see **Creating**), or it's `sema.uninitializedReference` when that isn't possible. A protocol-typed local needs a value (`sema.newProtocol`).
 - `Name?` may be `nil`.
 - `x = nil` and `x <> nil` test it.
-- `x ifNotNil: { :value | … }`, `ifNil:`, `ifNil:ifNotNil:` and `ifNotNil:ifNil:` unwrap it, inlined.
+- `x ifNotNil: { [value] … }`, `ifNil:`, `ifNil:ifNotNil:` and `ifNotNil:ifNil:` unwrap it, inlined.
 - Sending other messages to an optional is `sema.optionalReceiver`.
 - Optionals of non-class types come later.
 
@@ -251,7 +251,7 @@ There's no `new` (design §4.3a).
 | `c succ`, `c pred` | next or previous member; traps past the ends (`no next or previous member`) |
 | `c name`, `c printString` | the member's name (an immortal string, nothing allocated) |
 | `Color fromValue: n` | `Color?`: nil when no member has that value |
-| `for c in Color { }`, `for c in Color red to: Color blue { }`, `Color do: { :c \| }` | loops over members in order |
+| `for c in Color { }`, `for c in Color red to: Color blue { }`, `Color do: { [c] }` | loops over members in order |
 
 - A variable of an enum type with no initializer starts as the **first member**, not 0.
 
@@ -284,7 +284,7 @@ There's no `new` (design §4.3a).
 - Any value type can be optional: `int32?`, `Color?`, `string?`, `[array of: int32]?`.
 - A class optional is still a nullable pointer. Every other optional is `{present, value}`, and an absent one holds the zero value.
 - `T` converts to `T?` implicitly, and `nil` converts to any optional. `x = nil` and `x <> nil` test it. Two optionals that aren't class references can't be compared with each other; unwrap first.
-- `ifNotNil:`, `ifNil:`, `ifNil:ifNotNil:` and `ifNotNil:ifNil:` unwrap any optional. The two-block forms produce a value when both blocks end in expressions of a common type: `n := (d at: "k") ifNil: { 0 } ifNotNil: { :v | v };`.
+- `ifNotNil:`, `ifNil:`, `ifNil:ifNotNil:` and `ifNotNil:ifNil:` unwrap any optional. The two-block forms produce a value when both blocks end in expressions of a common type: `n := (d at: "k") ifNil: { 0 } ifNotNil: { [v] v };`.
 
 ## Strings (phase 5)
 - `string` is an immutable, reference-counted UTF-8 buffer, so copying is free and there's nothing to copy on write. Its bytes are always valid UTF-8.
@@ -336,9 +336,9 @@ Element types are inferred. You write `array of: T` (or a similar type message) 
 | `count` (`int64`), `isEmpty` | all |
 | `at:`, `at:put:` | arrays and fixed arrays (index), dictionaries and hashtables (key; `at:` gives `V?`) |
 | `add:`, `includes:`, `first`, `last`, `removeLast` | arrays (`first`/`last`/`removeLast` trap when empty) |
-| `at:ifAbsent: { default }`, `includesKey:`, `removeKey:`, `keys`, `values`, `keysDo:`, `keysAndValuesDo: { :k :v \| }` | dictionaries and hashtables |
+| `at:ifAbsent: { default }`, `includesKey:`, `removeKey:`, `keys`, `values`, `keysDo:`, `keysAndValuesDo: { [k, v] }` | dictionaries and hashtables |
 | `add:`, `remove:`, `includes:` | sets |
-| `do: { :each \| }`, `for x in c { }` | arrays, fixed arrays, sets; `do:` on dictionaries and hashtables visits values |
+| `do: { [each] }`, `for x in c { }` | arrays, fixed arrays, sets; `do:` on dictionaries and hashtables visits values |
 
 - `for` over a dictionary or hashtable is `sema.notIterable`. Iterate `d keys` or `d values`, or use `keysAndValuesDo:`.
 - `main:`'s `args` is an `array of: string`: the command-line arguments after the program name, split by the Windows rules and converted to UTF-8.
@@ -381,7 +381,7 @@ Compile-time code is ordinary bob, type checked like everything else. `bobc` com
 | Query | Result |
 |---|---|
 | `x meta size`, `x meta alignment` | `int64` bytes, as laid out on the target (a class gives its object size, header included) |
-| `x meta typeName` | `string`, e.g. `"Point"`, `"array of: int32"`, `"int32 \| string"` |
+| `x meta typeName` | `string`, e.g. `"Point"`, `"array of: int32"`, `"{ int32 [bool] }"` |
 | `x meta name` | the variable's, field's or type's name |
 | `x meta type` | the same information, for the type (so `self meta type fields` works) |
 | `T meta count` | members of an enum, elements of a fixed array, values of a subrange, fields of a record |
@@ -439,12 +439,102 @@ The model is Object Pascal's units (design §11.5).
 - Symbols carry their unit (`bob.geometry.Square.area`, `class.geometry.Square`).
 - Selectors are emitted once per module and merged by the linker, so protocol sends work across modules.
 
+## Pointers and slices (phase 9a, design §6.5)
+**Types**
+- `pointer to: T` points at exactly one `T` and is never null. `volatilePointer to: T` is the same, except every access through it is volatile. `[pointer to: T]?` is the nullable pointer: one word, with nil as address 0, unwrapped with `ifNil:`/`ifNotNil:` like any optional.
+- `slice of: T` is `{pointer, count}`: a bounds-checked view of `count` `T`s. It doesn't own the memory.
+- What a pointer or slice points at must be plain data: integers, reals, `bool`, `char`, enums, subranges, records, fixed arrays of those, bitmask sets, pointers and optional pointers. Anything reference counted (objects, strings, containers, blocks, `Class`) is `sema.invalidPointee`, so nothing reached through a pointer needs ARC.
+- Pointers and slices are plain values: never retained, copied freely, held in locals, class fields, containers, parameters and results.
+- A pointer has no default:
+  - A local needs a value (`sema.uninitializedReference`).
+  - A class field without one is required.
+  - A record field, or a fixed-array element, must be the optional `[pointer to: T]?` (`sema.invalidElementType`), because records and fixed arrays start zero-filled.
+  - A slice defaults to empty.
+- Pointers compare by identity with `=`/`<>`. An optional pointer compares with nil, and a non-optional one can't (`sema.typeMismatch`: "is never nil"). A `pointer` and a `volatilePointer` don't compare with each other.
+- Interfaces spell them as written (`p:[pointer to: uint32]`, `volatilePointer to: dev.Regs`). As parameters they need the brackets, like any type message.
+
+**Unsafe regions**
+- `@[unsafe]` marks a message, a `{ }` block, a single statement or a parenthesised expression (`@[unsafe] (p contents)`). Blocks written inside one are inside it too. There's no module-level unsafe.
+- These need one (`sema.unsafeRequired`):
+  - making a pointer: `address`, `asPointer`, `asPointer:`;
+  - reaching memory through one: `contents`, `contents:`, `p.x`;
+  - pointer arithmetic: `advancedBy:`;
+  - making a slice: `slice:`.
+- Everything else works in ordinary code: holding, passing and comparing pointers, `asUIntPtr`, and every slice operation.
+
+**Messages**
+
+| Message | Result | Notes |
+|---|---|---|
+| `x address` | `pointer to: T` | `x` must be a variable, a field of a record variable (`f.hdr address`), or a place reached through a pointer (`p.x address`, which keeps the pointer's volatility). See the rules below |
+| `p contents` / `p contents: v` | `T` / — | One load or store of the whole `T`, at `T`'s alignment; volatile through a `volatilePointer` |
+| `p.x`, `p.a.b`, `p.x := v` | the field | Reaches only that field (a GEP into the record, never a load of the whole record), at the field's alignment (1 inside `@[packed]` records); volatile through a `volatilePointer` |
+| `p advancedBy: n` | same pointer type | `n` elements (`int64`), like C's `p + n` |
+| `n asPointer` | the context's pointer type | `n` is a `uintptr` (`uint64`; an integer literal is one). Traps (`invalid pointer`) when `n` is misaligned for the target, or 0 into a non-optional pointer. Into an optional pointer, 0 is nil. Without a pointer type from context: `sema.pointerNeedsType` |
+| `p asPointer` / `p asPointer: T` | context's / `pointer to: T` | Reinterpret. Traps when the target needs more alignment than `p` has. A `volatilePointer` only becomes another `volatilePointer` (`asPointer:` keeps it volatile) |
+| `p asUIntPtr` | `uint64` | The address |
+| `p slice: n` | `slice of: T` | Traps (`value out of range`) on a negative count. Not from a `volatilePointer`: a slice reads with ordinary loads |
+| `s count`, `s isEmpty` | `int64`, `bool` | |
+| `s at: i`, `s at: i put: v` | `T` / — | Bounds-checked (`index out of range`) |
+| `for x in s { }` | | Each element in order |
+
+**Rules for `address`** (all compile errors)
+- A read-only variable (a parameter, a loop variable) has no address (`sema.invalidAddress`). Copy it into a variable first.
+- An object's fields have no address, because ARC could free the object while the pointer lives (`sema.invalidAddress`).
+- A field of a `@[packed]` record has no address, because it may be unaligned (`sema.packedAddress`).
+- A pointer to a variable can't outlive the variable's frame (`sema.pointerEscapes`, found by the escape analysis):
+  - It, or anything derived from it with `advancedBy:`, `asPointer`, `asPointer:` or `slice:`, can't be returned, stored into a field, container, pointer or slice, captured by a block that outlives the frame, assigned to a variable of another function, or passed to a parameter that its message keeps.
+  - Passing it to a parameter that isn't kept is fine (`self bump: x address`).
+  - Pointers loaded from memory (`m contents`) or made from integers aren't tied to a frame.
+
+**Code generation**
+- A pointer is an LLVM `ptr`. An optional pointer is the same `ptr`, with null for nil. A slice is `{ ptr, i64 }`.
+- Volatile accesses are LLVM `load volatile` / `store volatile` of exactly the accessed type, so the optimizer never removes, merges, splits or repeats them.
+
+## Alignment (phase 9b)
+- **Forms:** `@[align: n]` takes an integer literal `n`, a power of two from 1 to 4096 (one page); anything else is `sema.invalidAttribute`. A compile-time expression (`@[align: T meta size]`) isn't accepted yet. It raises alignment and never lowers it: use `@[packed]` for that.
+  - **On a record** (`@[align: 64] record Line { … }`): the record's alignment is at least `n`, and its size rounds up to a multiple of it, so array elements stay aligned.
+  - **On a record field** (`@[align: 16] b: uint32;`): that field's offset is a multiple of `n`, and the record's alignment is at least `n`.
+  - **On a variable** (`@[align: 4096] buffer: array of: uint8 by: [0 to: 4095];`): the variable's storage is aligned to `n`. Only plain data, the kinds a pointer may point at, can be aligned this way (`sema.invalidAttribute`).
+- **Not with `@[packed]` yet:** `@[packed]` together with `@[align:]`, on the record or on a field, is `sema.invalidAttribute`.
+- **Layout:** C rules (each field at its alignment, the size rounded up to the record's), the same as `alignas` in C11. `meta size` and `meta alignment` report the result. Interfaces write the attributes back (`@[align: 64] record Line { a: uint8; @[align: 16] b: uint32; }`).
+- **Where it can be honoured:** variables, record fields, fixed arrays, parameters, results and memory reached through pointers can hold any alignment. The stack frame is realigned when needed. Heap storage is only 16-byte aligned, so a type needing more than 16 is `sema.alignTooLarge` in these places:
+  - a class field;
+  - an element of an `array`, `dictionary` or `hashtable`;
+  - a variable a heap closure keeps a copy of, or one a box shares between a frame and its closures.
+
+  Up to 16-byte alignment works everywhere.
+- **Code generation:** an aligned record's LLVM struct gets a zero-size `[0 x <n x i8>]` member. It goes before an aligned field, and at the end for the record's own alignment. LLVM aligns a vector to its size, so the LLVM layout is the C layout. `Layout.MatchesTheCodeGenerator` checks it up to 4096. Fields map to LLVM elements through `recordSlot`.
+
+## C functions (phase 9c, design §6.6)
+**Declaring**
+- `@[extern: "C"] msg name: a:T b:U [R];` (no body) imports the C function `name`, the first keyword. `@[symbol: "X"]` gives another symbol. It's class-side wherever it's declared: in a class, or on the program without `@[static]`.
+- The same declaration with a body exports it: the message keeps its bob symbol for bob callers and is also defined as `name` with the C ABI.
+- Anything but `"C"` in `@[extern:]` is `sema.invalidAttribute`, and so is `@[symbol:]` without `@[extern:]`. An extern message can't be in a protocol, be `@[compiletime]`, have an operator selector, or be `main` (`sema.invalidExtern`).
+- Parameters and the result must be C types (`sema.notCType`): integers, reals, `bool`, `char`, enums, records (all plain data), pointers, `cFunction`s, and optional pointers and `cFunction`s. The message explains what to do with a slice, a reference-counted value or another optional.
+
+**Calling**
+- A call to an import needs an unsafe region (`sema.unsafeRequired`). Compile-time code can't call one (`sema.invalidExtern`). Exports are called like any message.
+- The escape analysis treats C parameters as not keeping what they're given, so `x address` can be passed.
+
+**`cFunction { T… [R] }`**
+- A plain code pointer, one word, never null: a local needs a value, a class field without one is required, and a record field or fixed-array element must be `[cFunction { … }]?` (nil is 0). It compares with `=`/`<>` by address. A named one (`type Op := cFunction { … };`) is always an alias.
+- Its parameters and result must be C types (`sema.notCType`).
+- A block literal where a `cFunction` (or optional one) is expected is checked as a block of that shape and must capture nothing (`sema.cFunctionCaptures`): no locals, parameters or `self` from around it. Its value is the address of a C-ABI thunk around the block's function.
+- `f value: a …` calls it, inside an unsafe region (`sema.unsafeRequired`); the arity must match (`sema.blockArity`).
+
+**ABI (Windows x64)**
+- Scalars, pointers and `cFunction`s pass as themselves; `bool` is zero-extended.
+- A record of 1, 2, 4 or 8 bytes passes and returns as an integer of that size. Any other record is passed as a pointer to a caller-made copy and returned through a hidden first (sret) pointer.
+- An import is an internal always-inline wrapper with the message's bob symbol that converts and calls the C symbol, so every unit that sees the import (also through a module interface) has its own. An export is a C-named thunk that converts and calls the bob function. An import and an export of the same symbol in one unit are the same function.
+- Interfaces: imports are written `@[static, extern: "C", symbol: "…"]` without a body. Exports are written as ordinary class-side messages.
+
 ## Overflow and traps
 - `+ - *`, `negated`, `abs` and `shl` follow the overflow mode: `trap` (default), `wrap` or `saturate`. It's set with `@[overflow: …]` on the unit, a message, a statement group or a parenthesised expression, and the innermost wins.
 - Division and remainder by zero always trap. Signed `MIN / -1` traps in `trap` mode, gives `MIN` in `wrap` and `MAX` in `saturate`. `MIN % -1` is `0` in the non-trapping modes.
 - A shift amount below 0 or at least the bit width always traps.
 - `asX` conversions trap when the value doesn't fit (including NaN and out-of-range reals). Real→integer truncates toward zero.
-- A trap calls the runtime's `bobRuntimeTrap(reason)`, which prints `bob: runtime trap: <reason>` to stderr and **exits with code 101** (the code Rust uses for panics). Reasons: `integer overflow`, `division by zero`, `conversion out of range`, `shift amount out of range`, `value out of range` (into a subrange), `no next or previous member` (`succ`/`pred`), `index out of range`.
+- A trap calls the runtime's `bobRuntimeTrap(reason)`, which prints `bob: runtime trap: <reason>` to stderr and **exits with code 101** (the code Rust uses for panics). Reasons: `integer overflow`, `division by zero`, `conversion out of range`, `shift amount out of range`, `value out of range` (into a subrange), `no next or previous member` (`succ`/`pred`), `index out of range`, and `invalid pointer (null or misaligned)` (`asPointer`).
 
 ## For tools
 `sema::SemanticModel` keeps every result keyed by AST node id:

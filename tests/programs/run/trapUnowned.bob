@@ -14,10 +14,10 @@ program trapUnowned, 0.1.0
         @[static] msg main: args:array [int32] {
             owner: Owner? := Owner name: "x";
             ticket: Ticket? := nil;
-            owner ifNotNil: { :o | ticket := Ticket owner: o; };
+            owner ifNotNil: { [o] ticket := Ticket owner: o; };
             owner := nil;
             # the owner is destroyed; reading the unowned reference traps
-            ticket ifNotNil: { :t |
+            ticket ifNotNil: { [t]
                 name := t owner name;
                 return 1;
             };

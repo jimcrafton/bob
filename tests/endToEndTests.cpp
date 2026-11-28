@@ -428,7 +428,7 @@ TEST_F(Modules, ReflectionAcrossModules)
                          "        extends plugins {\n"
                          "            @[static] msg sizeOf: name:string [int64] {\n"
                          "                result: int64 := 0;\n"
-                         "                (Class named: name) ifNotNil: { :c | w: Widget := c new; result := c perform: \"grow:\" on: w with: 1i64; };\n"
+                         "                (Class named: name) ifNotNil: { [c] w: Widget := c new; result := c perform: \"grow:\" on: w with: 1i64; };\n"
                          "                return result;\n"
                          "            }\n"
                          "        }\n"
@@ -478,12 +478,88 @@ TEST_F(Modules, ContainersOfBlocksInAnInterface)
     write("listen.bob", "program listen, 1.0.0\nimport events;\n{\n    extends listen {\n"
                         "        @[static] msg main: args:array [int32] {\n"
                         "            bus: Bus;\n            k := 5;\n"
-                        "            bus on: \"a\" do: { :x | x + k };\n            bus on: \"b\" do: { :x | x * 2 };\n"
+                        "            bus on: \"a\" do: { [x] x + k };\n            bus on: \"b\" do: { [x] x * 2 };\n"
                         "            sum := 0;\n            for h in bus all { sum := sum + (h value: 10); }\n"
                         "            return (sum = 35) ifTrue: { 0 } ifFalse: { 1 };\n"
                         "        }\n    }\n}\n");
     ASSERT_EQ(build("listen.bob", output), 0) << output;
     RunResult run = runExe(workPath("listen.exe"));
+    EXPECT_EQ(run.exitCode, 0) << run.stdOut;
+}
+
+TEST_F(Modules, CFunctionsInAnInterface)
+{
+    std::string output;
+    write("clib.bob", "module clib, 1.0.0\n{\n    interface {\n"
+                      "        type Op := cFunction { int32 [int32] };\n"
+                      "        class C { @[extern: \"C\"] msg memset: dst:[pointer to: uint8] value:int32 count:uint64 [[pointer to: uint8]?]; }\n"
+                      "        extends clib {\n"
+                      "            @[extern: \"C\"] msg clibTwice: f:Op x:int32 [int32] { return @[unsafe] (f value: (f value: x)); }\n"
+                      "        }\n    }\n}\n");
+    ASSERT_EQ(build("clib.bob", output), 0) << output;
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> written = llvm::MemoryBuffer::getFile(workPath("clib.bobi"));
+    ASSERT_TRUE(static_cast<bool>(written));
+    std::string bobi = std::string((*written)->getBuffer());
+    EXPECT_NE(bobi.find("extern: \"C\", symbol: \"memset\"] msg memset: dst:"), std::string::npos) << bobi;
+    EXPECT_NE(bobi.find("msg clibTwice: f:[cFunction { int32 [int32] }] x: x:int32 [int32];"), std::string::npos) << bobi;
+    EXPECT_NE(bobi.find("@[alias] type Op := cFunction { int32 [int32] };"), std::string::npos) << bobi;
+    write("useC.bob", "program useC, 1.0.0\nimport clib;\n{\n    extends useC {\n"
+                      "        @[static] msg main: args:array [int32] {\n"
+                      "            b: array of: uint8 by: [0 to: 1];\n"
+                      "            @[unsafe] { C memset: b address asPointer value: 3 count: 2; }\n"
+                      "            n := clib clibTwice: { [x] x + 1 } x: (b at: 1);\n"
+                      "            return (n = 5) ifTrue: { 0 } ifFalse: { 1 };\n"
+                      "        }\n    }\n}\n");
+    ASSERT_EQ(build("useC.bob", output), 0) << output;
+    RunResult run = runExe(workPath("useC.exe"));
+    EXPECT_EQ(run.exitCode, 0) << run.stdOut;
+}
+
+TEST_F(Modules, PointersInAnInterface)
+{
+    std::string output;
+    write("dev.bob", "module dev, 1.0.0\n{\n    interface {\n"
+                     "        record Regs { id: uint32; next: [pointer to: Regs]?; }\n"
+                     "        class Device { public { regs: volatilePointer to: Regs; window: slice of: uint8; } }\n"
+                     "        extends dev { @[static] @[unsafe] msg read: p:[pointer to: uint32] [uint32] { return p contents; } }\n"
+                     "    }\n}\n");
+    ASSERT_EQ(build("dev.bob", output), 0) << output;
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> written = llvm::MemoryBuffer::getFile(workPath("dev.bobi"));
+    ASSERT_TRUE(static_cast<bool>(written));
+    std::string bobi = std::string((*written)->getBuffer());
+    EXPECT_NE(bobi.find("next: [pointer to: dev.Regs]?;"), std::string::npos) << bobi;
+    EXPECT_NE(bobi.find("regs: volatilePointer to: dev.Regs; window: slice of: uint8;"), std::string::npos) << bobi;
+    EXPECT_NE(bobi.find("msg read: p:[pointer to: uint32] [uint32];"), std::string::npos) << bobi;
+    write("useDev.bob", "program useDev, 1.0.0\nimport dev;\n{\n    extends useDev {\n"
+                        "        @[static] msg main: args:array [int32] {\n"
+                        "            n: uint32 := 3;\n            got: uint32 := @[unsafe] (dev read: n address);\n"
+                        "            return (got = 3) ifTrue: { 0 } ifFalse: { 1 };\n"
+                        "        }\n    }\n}\n");
+    ASSERT_EQ(build("useDev.bob", output), 0) << output;
+    RunResult run = runExe(workPath("useDev.exe"));
+    EXPECT_EQ(run.exitCode, 0) << run.stdOut;
+}
+
+TEST_F(Modules, AlignedRecordsInAnInterface)
+{
+    std::string output;
+    write("cache.bob", "module cache, 1.0.0\n{\n    interface {\n"
+                       "        @[align: 64] record Line { a: uint8; @[align: 16] b: uint32; }\n"
+                       "        extends cache { @[static] msg make: n:uint32 [Line] { return Line a: 1 b: n; } }\n"
+                       "    }\n}\n");
+    ASSERT_EQ(build("cache.bob", output), 0) << output;
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> written = llvm::MemoryBuffer::getFile(workPath("cache.bobi"));
+    ASSERT_TRUE(static_cast<bool>(written));
+    std::string bobi = std::string((*written)->getBuffer());
+    EXPECT_NE(bobi.find("@[align: 64] record Line { a: uint8; @[align: 16] b: uint32; }"), std::string::npos) << bobi;
+    // The importer lays the record out the same way: the value crosses intact.
+    write("useCache.bob", "program useCache, 1.0.0\nimport cache;\n{\n    extends useCache {\n"
+                          "        @[static] msg main: args:array [int32] {\n"
+                          "            line := cache make: 42;\n"
+                          "            return (line.b = 42 and Line meta size = 64) ifTrue: { 0 } ifFalse: { 1 };\n"
+                          "        }\n    }\n}\n");
+    ASSERT_EQ(build("useCache.bob", output), 0) << output;
+    RunResult run = runExe(workPath("useCache.exe"));
     EXPECT_EQ(run.exitCode, 0) << run.stdOut;
 }
 

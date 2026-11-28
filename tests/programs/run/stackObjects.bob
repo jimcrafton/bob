@@ -39,7 +39,7 @@ program stackObjects, 0.1.0
 
         @[static] msg sum: n:int32 [int64] {
             @[stack] c: Counter;
-            run := { :k: int32 |
+            run := { [k: int32]
                 @[stack] inner: Counter;
                 inner bump;
                 c bump;
@@ -87,7 +87,7 @@ program stackObjects, 0.1.0
             keep: Label?;
             @[stack] original := Label text: "orig";
             keep := original copy;
-            keep ifNotNil: { :k | failures := failures + (self check: k text = "orig" id: 6); };
+            keep ifNotNil: { [k] failures := failures + (self check: k text = "orig" id: 6); };
             return failures;
         }
     }

@@ -258,6 +258,17 @@ void Analyzer::noteCall(const Node* site, const MessageInfo* target)
         error(site, "sema.compileTimeOnly",
               "'" + target->selector + "' is @[compiletime]: call it from compile-time code, such as '@[compiletime] (…)' or a constant");
     }
+    if (target->externImport) {
+        if (context_.compileTime) {
+            error(site, "sema.invalidExtern", "compile-time code can't call the C function '" + target->cSymbol + "'");
+        }
+        else if (unsafeDepth_ == 0) {
+            error(site, "sema.unsafeRequired",
+                  "'" + target->cSymbol +
+                      "' is a C function the compiler can't check against its real declaration, so calling it needs an unsafe region: mark "
+                      "the message, a '{ }' block or a parenthesised expression '@[unsafe]'");
+        }
+    }
     if (context_.message != nullptr) {
         context_.message->calls.push_back(target);
     }

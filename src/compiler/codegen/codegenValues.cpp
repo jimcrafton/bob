@@ -31,11 +31,15 @@ llvm::Constant* Generator::defaultValue(const Type* type)
         }
         return llvm::ConstantInt::get(llvm, static_cast<uint64_t>(type->low), type->isSigned);
     case TypeKind::record: {
+        auto structure = llvm::cast<llvm::StructType>(llvm);
         std::vector<llvm::Constant*> fields;
-        for (const sema::FieldInfo& field : type->record->fields) {
-            fields.push_back(defaultValue(field.type));
+        for (llvm::Type* element : structure->elements()) {
+            fields.push_back(llvm::Constant::getNullValue(element));
         }
-        return llvm::ConstantStruct::get(llvm::cast<llvm::StructType>(llvm), fields);
+        for (const sema::FieldInfo& field : type->record->fields) {
+            fields[recordSlot(type->record, field.index)] = defaultValue(field.type);
+        }
+        return llvm::ConstantStruct::get(structure, fields);
     }
     case TypeKind::fixedArray:
         return llvm::ConstantArray::get(llvm::cast<llvm::ArrayType>(llvm),
@@ -182,7 +186,7 @@ llvm::Constant* Generator::elementDescriptor(const Type* type)
 
 llvm::Value* Generator::optionalPresent(llvm::Value* value, const Type* type)
 {
-    if (sema::isReference(type)) {
+    if (sema::isWordOptional(type)) {
         return builder_.CreateICmpNE(value, llvm::ConstantPointerNull::get(builder_.getPtrTy()));
     }
     return builder_.CreateExtractValue(value, {0});
@@ -190,13 +194,13 @@ llvm::Value* Generator::optionalPresent(llvm::Value* value, const Type* type)
 
 llvm::Value* Generator::optionalValue(llvm::Value* value, const Type* type)
 {
-    return sema::isReference(type) ? value : builder_.CreateExtractValue(value, {1});
+    return sema::isWordOptional(type) ? value : builder_.CreateExtractValue(value, {1});
 }
 
 llvm::Value* Generator::makeOptional(llvm::Value* present, llvm::Value* value, const Type* type)
 {
     type = sema::canonical(type);
-    if (sema::isReference(type)) {
+    if (sema::isWordOptional(type)) {
         return builder_.CreateSelect(present, value, llvm::ConstantPointerNull::get(builder_.getPtrTy()));
     }
     // An absent optional always holds the zero value (so releasing it is harmless).
@@ -302,7 +306,7 @@ llvm::Value* Generator::coerce(llvm::Value* value, const Type* from, const Type*
         if (from->kind == TypeKind::nilType) {
             return defaultValue(to);
         }
-        if (sema::isOptional(from) || sema::isReference(to)) {
+        if (sema::isOptional(from) || sema::isWordOptional(to)) {
             return value;
         }
         llvm::Value* inner = widen(value, from, to->inner);

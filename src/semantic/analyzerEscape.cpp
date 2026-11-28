@@ -80,11 +80,21 @@ bool holdsBlock(const Type* type)
     return isBlock(type) || (isOptional(type) && isBlock(type->inner));
 }
 
-// Values whose escape matters: object references and blocks.
+// Values whose escape matters: object references, blocks, and pointers and
+// slices (which may point into a frame).
 bool carriesEscape(const Type* type)
 {
-    return isReference(canonical(type)) || holdsBlock(type);
+    type = canonical(type);
+    return isReference(type) || holdsBlock(type) || isPointer(type) || isSlice(type) || (isOptional(type) && isPointer(type->inner));
 }
+
+// `x address` of a local: the pointer, and anything derived from it, must not outlive the frame.
+struct PointerSite {
+    const Node* send = nullptr;
+    const LocalInfo* local = nullptr;
+    Scope scope;
+    Escape direct;
+};
 
 struct Effect {
     enum Kind { none, escape, alias } kind = none;
@@ -163,6 +173,7 @@ public:
             if (hasBody(message.get())) {
                 analyze(message.get());
                 placeObjects(message.get());
+                checkPointers();
                 placeBlocks();
                 findStackOnlyLocals();
             }
@@ -187,6 +198,7 @@ private:
         tracked_.clear();
         sites_.clear();
         blockSites_.clear();
+        pointerSites_.clear();
         definitions_.clear();
         scope_ = Scope{};
         nextLoop_ = 0;
@@ -612,6 +624,59 @@ private:
             walkExpression(receiver, noEffect());
             walkArguments(escapeEffect("passed to a block"));
             return;
+        case SendKind::pointerAddress: {
+            walkExpression(receiver, noEffect());
+            if (!send->frameBound || effect.kind == Effect::none) {
+                return;
+            }
+            PointerSite site;
+            site.send = node;
+            site.scope = scope_;
+            const Node* root = receiver;
+            while (auto access = nodeCast<FieldAccess>(root)) {
+                root = access->receiver;
+            }
+            if (const LocalInfo* place = model_.localOf(root)) {
+                auto declared = declared_.find(place);
+                if (declared != declared_.end()) {
+                    site.scope = declared->second;
+                }
+            }
+            if (effect.kind == Effect::escape) {
+                site.direct = Escape{node, effect.why};
+            }
+            else if (isTracked(effect.target)) {
+                site.local = effect.target;
+            }
+            pointerSites_.push_back(site);
+            return;
+        }
+        case SendKind::pointerAdvance:
+        case SendKind::pointerCast:
+        case SendKind::pointerSlice:
+            // The result points where the receiver does.
+            walkExpression(receiver, effect);
+            walkArguments(noEffect());
+            return;
+        case SendKind::pointerLoad:
+        case SendKind::pointerToInteger:
+        case SendKind::pointerFromInteger:
+        case SendKind::sliceCount:
+        case SendKind::sliceIsEmpty:
+        case SendKind::sliceAt:
+            walkExpression(receiver, noEffect());
+            walkArguments(noEffect());
+            return;
+        case SendKind::pointerStore:
+        case SendKind::sliceAtPut:
+            walkExpression(receiver, noEffect());
+            walkArguments(escapeEffect("stored through a pointer"));
+            return;
+        case SendKind::cFunctionInvoke:
+            // As for a C import: C is trusted not to keep a pointer it's given (the call is unsafe).
+            walkExpression(receiver, noEffect());
+            walkArguments(noEffect());
+            return;
         default:
             // Everything else (arithmetic, strings, containers ...) never takes an
             // object; anything unexpected is treated as keeping it.
@@ -896,6 +961,37 @@ private:
         }
     }
 
+    // A frame-bound pointer is an error when it escapes, or when an alias is
+    // declared in another function (a block) than the place it points at.
+    void checkPointers()
+    {
+        for (const PointerSite& site : pointerSites_) {
+            const Node* where = site.direct.site;
+            std::string why = site.direct.why;
+            if (where == nullptr && site.local != nullptr) {
+                if (const Escape* escape = escaped(site.local)) {
+                    where = escape->site;
+                    why = escape->why;
+                }
+                const LocalInfo* root = find(site.local);
+                for (const LocalInfo* other : tracked_) {
+                    if (where != nullptr || find(other) != root) {
+                        continue;
+                    }
+                    auto declared = declared_.find(other);
+                    if (declared != declared_.end() && declared->second.owner != site.scope.owner) {
+                        where = site.send;
+                        why = "it's assigned to '" + other->name + "', which belongs to another function";
+                    }
+                }
+            }
+            if (where != nullptr) {
+                diagnostics_.error(site.send->range, "sema.pointerEscapes",
+                                   "this pointer is to a variable of this frame, so it can't outlive it, but it does: " + why);
+            }
+        }
+    }
+
     // Whether a block outlives the frame that creates it: its value escapes, or
     // it's assigned to a variable declared in another function or outside the
     // loop that creates it.
@@ -987,6 +1083,7 @@ private:
     std::set<const LocalInfo*> tracked_;
     std::vector<Site> sites_;
     std::vector<BlockSite> blockSites_;
+    std::vector<PointerSite> pointerSites_;
     std::map<const LocalInfo*, std::vector<Definition>> definitions_;
     Scope scope_;
     int nextLoop_ = 0;

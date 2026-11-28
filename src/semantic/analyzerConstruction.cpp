@@ -35,7 +35,7 @@ MessageInfo* Analyzer::declareInit(ClassInfo* info, const MessageDecl* decl, boo
     message->owner = info;
     message->isInstance = true;
     message->isInit = true;
-    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "keeps"});
+    message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "keeps", "unsafe"});
     message->symbolName = "bob." + info->unitName + "." + info->name + ".init";
     message->origin = info->origin;
     auto self = std::make_unique<LocalInfo>();
@@ -115,14 +115,16 @@ bool Analyzer::resolveDefaultable(ClassInfo* info)
             continue;
         }
         bool classObject = canonical(field.type)->kind == TypeKind::classObject;
-        if (field.initializer == nullptr && (isBlock(canonical(field.type)) || classObject)) {
-            // There's no default block or Class: it must be passed, or the field made optional.
+        bool pointer = isNonNullWord(field.type);
+        if (field.initializer == nullptr && (isBlock(canonical(field.type)) || classObject || pointer)) {
+            // There's no default block, Class or pointer: it must be passed, or the field made optional.
             field.required = true;
             defaultable = false;
             if (!field.isPublic) {
+                std::string spelled = typeName(field.type).find(' ') != std::string::npos ? "[" + typeName(field.type) + "]" : typeName(field.type);
                 error(field.decl->nameRange, "sema.uninitializedReference",
-                      "private field '" + field.name + "' needs an initializer: a " + (classObject ? "Class" : "block") +
-                          " has no default, and only public fields can be passed when constructing; make it optional ('" + typeName(field.type) +
+                      "private field '" + field.name + "' needs an initializer: a " + (classObject ? "Class" : pointer ? "pointer" : "block") +
+                          " has no default, and only public fields can be passed when constructing; make it optional ('" + spelled +
                           "?') or give it ':= …'");
             }
             continue;

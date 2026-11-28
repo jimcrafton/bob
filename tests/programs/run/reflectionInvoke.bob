@@ -73,8 +73,8 @@ program reflectionInvoke, 0.1.0
             failures := failures + (self check: s area = 4 and s class = Square class id: 12);
 
             # Class named: by qualified name, or a bare name only one class has.
-            failures := failures + (self check: ((Class named: "reflectionInvoke.Square") ifNil: { false } ifNotNil: { :f | f = Square class }) id: 13);
-            failures := failures + (self check: ((Class named: "Rect") ifNil: { false } ifNotNil: { :f | f = Rect class }) id: 14);
+            failures := failures + (self check: ((Class named: "reflectionInvoke.Square") ifNil: { false } ifNotNil: { [f] f = Square class }) id: 13);
+            failures := failures + (self check: ((Class named: "Rect") ifNil: { false } ifNotNil: { [f] f = Rect class }) id: 14);
             failures := failures + (self check: (Class named: "Nope") = nil id: 15);
             failures := failures + (self check: (Class named: "Plain") = nil id: 16);
             failures := failures + (self check: q class qualifiedName = "reflectionInvoke.Square" id: 17);
@@ -83,7 +83,7 @@ program reflectionInvoke, 0.1.0
             # A name read at runtime, all the way to a new object and a call.
             name := "reflectionInvoke." + "Rect";
             area: int64 := 0;
-            (Class named: name) ifNotNil: { :found |
+            (Class named: name) ifNotNil: { [found]
                 shape: Shape := found new;
                 area := found perform: "area" on: shape;
             };

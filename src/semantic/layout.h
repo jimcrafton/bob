@@ -19,5 +19,4 @@ uint64_t fieldOffset(const RecordInfo* record, size_t index);
 // An object: its 16-byte header, then the fields (inherited ones first).
 uint64_t objectSize(const ClassInfo* info);
 uint64_t objectFieldOffset(const ClassInfo* info, size_t index);
-
 }

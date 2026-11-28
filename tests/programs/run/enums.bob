@@ -53,7 +53,7 @@ program enums, 0.1.0
 
             k: PciClass := PciClass network;
             failures := failures + (self check: k value = 2u8 id: 5);
-            (PciClass fromValue: 3u8) ifNil: { failures := failures + 6; } ifNotNil: { :p |
+            (PciClass fromValue: 3u8) ifNil: { failures := failures + 6; } ifNotNil: { [p]
                 failures := failures + (self check: p = PciClass display id: 6);
             };
             failures := failures + (self check: (PciClass fromValue: 9u8) = nil id: 7);
@@ -72,7 +72,7 @@ program enums, 0.1.0
             for col in Color red to: Color green {
                 count := count + 1;
             }
-            Color do: { :each | count := count + 10; };
+            Color do: { [each] count := count + 10; };
             failures := failures + (self check: count = 32 id: 10);
 
             failures := failures + (self check: (self describe: Color blue) = 2 and (self describe: Color red) = 1 id: 11);

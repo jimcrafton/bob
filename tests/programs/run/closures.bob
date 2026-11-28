@@ -13,7 +13,7 @@ program closures, 0.1.0
         }
         msg press: n:int32 [int32] { return onPress value: n; }
         msg hover [int32] {
-            return onHover ifNil: { -1 } ifNotNil: { :f | f value };
+            return onHover ifNil: { -1 } ifNotNil: { [f] f value };
         }
     }
 
@@ -28,7 +28,7 @@ program closures, 0.1.0
         public { balance: int64; }
         # The closure captures self, so the account lives as long as the closure.
         msg depositor [{ int64 }] {
-            return { :amount: int64 | balance := balance + amount; };
+            return { [amount: int64] balance := balance + amount; };
         }
     }
 
@@ -45,15 +45,15 @@ program closures, 0.1.0
 
         # Parameters are read-only, so the closure copies them.
         @[static] msg adder: n:int32 [Transform] {
-            return { :x: int32 | x + n };
+            return { [x: int32] x + n };
         }
 
         @[static] msg twice: f:Transform [Transform] {
-            return { :x: int32 | f value: (f value: x) };
+            return { [x: int32] f value: (f value: x) };
         }
 
         @[static] msg curried: a:int32 [{ int32 [Transform] }] {
-            return { :b: int32 | ({ :c: int32 | a + b + c }) };
+            return { [b: int32] ({ [c: int32] a + b + c }) };
         }
 
         @[static] msg handlers [Handler?] {
@@ -69,7 +69,7 @@ program closures, 0.1.0
             total := 0;
             current := list;
             while current <> nil {
-                current ifNotNil: { :h |
+                current ifNotNil: { [h]
                     total := total + (h run value);
                     current := h next;
                 };
@@ -93,7 +93,7 @@ program closures, 0.1.0
             failures := failures + (self check: (((self curried: 1) value: 2) value: 3) = 6 id: 5);
 
             scale := 3;
-            button := Button onPress: { :n: int32 | n * scale };
+            button := Button onPress: { [n: int32] n * scale };
             failures := failures + (self check: (button press: 7) = 21 id: 6);
             scale := 4;
             failures := failures + (self check: (button press: 7) = 28 id: 7);

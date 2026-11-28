@@ -56,7 +56,7 @@ program reflection, 0.1.0
 
             # superclass is optional: Rect has none, Square's is Rect.
             failures := failures + (self check: r class superclass = nil id: 6);
-            failures := failures + (self check: (q class superclass ifNil: { "" } ifNotNil: { :c | c name }) = "Rect" id: 7);
+            failures := failures + (self check: (q class superclass ifNil: { "" } ifNotNil: { [c] c name }) = "Rect" id: 7);
 
             # respondsTo: counts inherited messages; the name can be built at runtime.
             failures := failures + (self check: (q class respondsTo: "area") id: 8);
@@ -82,7 +82,7 @@ program reflection, 0.1.0
             c: Class? := nil;
             failures := failures + (self check: c = nil id: 19);
             c := r class;
-            failures := failures + (self check: (c ifNil: { "" } ifNotNil: { :k | k name }) = "Rect" id: 20);
+            failures := failures + (self check: (c ifNil: { "" } ifNotNil: { [k] k name }) = "Rect" id: 20);
 
             # Escape analysis kept these objects on the stack; asking doesn't move them.
             failures := failures + (self check: r isOnStack id: 21);

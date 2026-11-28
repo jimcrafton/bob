@@ -60,12 +60,12 @@ bool Analyzer::settleContainer(const Type* pendingType, const Type* key, const T
         if (!isValueType(type) || type->pending) {
             bool block = isBlock(type);
             error(site, block ? "sema.cannotInferBlock" : "sema.invalidElementType",
-                  block          ? std::string("a block stored in a container needs its parameter types; write them, as in '{ :x: int32 | … }'")
+                  block          ? std::string("a block stored in a container needs its parameter types; write them, as in '{ [x: int32] … }'")
                   : type->pending ? std::string("a nested container needs its element type written out, such as 'array of: int32'")
                                   : "'" + typeName(type) + "' can't be " + role);
             return false;
         }
-        return true;
+        return fitsHeapAlignment(site, type, "a container's buffer");
     };
     const Type* concrete = nullptr;
     switch (current->kind) {
@@ -327,7 +327,7 @@ const Type* Analyzer::checkCollectionIterable(const ForStmt* statement)
         return type;
     }
     const Type* element = nullptr;
-    if (isStringView(type)) {
+    if (isStringView(type) || type->kind == TypeKind::slice) {
         element = type->inner;
     }
     else if (type->kind == TypeKind::array || type->kind == TypeKind::fixedArray || type->kind == TypeKind::set) {
@@ -341,7 +341,7 @@ const Type* Analyzer::checkCollectionIterable(const ForStmt* statement)
         return types_.error();
     }
     else if (type->kind == TypeKind::dictionary || type->kind == TypeKind::hashtable) {
-        error(iterable, "sema.notIterable", "iterate 'd keys' or 'd values', or use 'd keysAndValuesDo: { :k :v | ... }'");
+        error(iterable, "sema.notIterable", "iterate 'd keys' or 'd values', or use 'd keysAndValuesDo: { [k, v] ... }'");
         return types_.error();
     }
     else {
@@ -688,7 +688,7 @@ const Type* Analyzer::checkContainerKeyword(const KeywordSend* send, const Type*
             auto literal = nodeCast<BlockLiteral>(args[0]);
             if (literal == nullptr || literal->params.size() != 2) {
                 check(args[0], nullptr);
-                error(args[0], "sema.inlinedNeedsBlock", "'keysAndValuesDo:' needs a block literal with two parameters, such as '{ :k :v | ... }'");
+                error(args[0], "sema.inlinedNeedsBlock", "'keysAndValuesDo:' needs a block literal with two parameters, such as '{ [k, v] ... }'");
                 return types_.error();
             }
             BlockInfo* info = newBlockInfo(literal, true);

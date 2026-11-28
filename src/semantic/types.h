@@ -49,6 +49,13 @@ enum class TypeKind : uint8_t {
     classObject,
     // `Reflector`: the build-time switch for invoke-level reflection; only `main`'s parameter.
     reflector,
+    // `pointer to: T` / `volatilePointer to: T` (design §6.5): one T, never null; `inner` is T.
+    pointer,
+    // `slice of: T`: a pointer and a count, bounds-checked; `inner` is T.
+    slice,
+    // `cFunction { T… [R] }` (design §6.6): a plain C function pointer, never null;
+    // `params` and `result` as for a block.
+    cFunction,
 };
 
 // `meta` is the class side of something named in an expression: the program
@@ -64,6 +71,8 @@ struct Type {
     // integer, real; enums and subranges carry their storage integer here too.
     uint32_t bits = 0;
     bool isSigned = false;
+    // pointer: every access through it is volatile (`volatilePointer to: T`).
+    bool isVolatile = false;
     RecordInfo* record = nullptr;
     const Type* instance = nullptr;
     ProgramInfo* program = nullptr;
@@ -144,6 +153,9 @@ public:
     const Type* reflector() const { return reflector_; }
     // The one block type that stands for a block's shape (params and result); other types unchanged.
     const Type* blockShape(const Type* type);
+    const Type* pointerTo(const Type* pointee, bool isVolatile);
+    const Type* sliceOf(const Type* element);
+    const Type* cFunction(std::vector<const Type*> params, const Type* result);
     // A container whose element (and key) types are still to be inferred.
     Type* pendingContainer(TypeKind kind);
 
@@ -171,6 +183,7 @@ private:
     const Type* reflector_ = nullptr;
     std::unordered_map<const Type*, const Type*> metaInfos_;
     std::map<std::vector<const Type*>, const Type*> blockShapes_;
+    std::map<std::vector<const Type*>, const Type*> cFunctions_;
 };
 
 // A pending container's canonical type once its element type is known; otherwise itself.
@@ -200,8 +213,20 @@ bool isManaged(const Type* type);
 // Values that need retain/release when copied or dropped (managed values,
 // and aggregates that contain them).
 bool needsCleanup(const Type* type);
-// An optional held as {present: i1, value}: every optional except a class optional.
+// An optional held as {present: i1, value}: every optional except class and pointer optionals.
 bool isValueOptional(const Type* type);
+bool isPointer(const Type* type);
+bool isSlice(const Type* type);
+bool isCFunction(const Type* type);
+// Never null and with no default (pointers, C functions): records and fixed arrays hold optional ones.
+bool isNonNullWord(const Type* type);
+// What can cross a C boundary (design §6.6): integers, reals, bool, char, enums,
+// records of plain data, pointers, C functions, and optional pointers and C functions.
+bool isCType(const Type* type);
+// An optional held as one nullable word (nil = null): optionals of classes and of pointers.
+bool isWordOptional(const Type* type);
+// What a pointer or slice may point at: plain data, never anything reference counted.
+bool isPointee(const Type* type);
 bool isValueType(const Type* type);
 bool sameBlockShape(const Type* a, const Type* b);
 std::string blockTypeName(const Type* type);

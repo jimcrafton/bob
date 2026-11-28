@@ -14,7 +14,7 @@ program stackRefcount, 0.1.0
             maybe: Point? := nil;
             maybe := q;
             total := 0;
-            maybe ifNotNil: { :m | total := m sum; };
+            maybe ifNotNil: { [m] total := m sum; };
             return total + q sum - 14;
         }
     }

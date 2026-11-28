@@ -36,7 +36,8 @@ TypeTable::TypeTable()
     builtins_["hashtable"] = own({TypeKind::hashtable, "hashtable"});
     builtins_["set"] = own({TypeKind::set, "set"});
 
-    const char* placeholders[] = {"slice", "pointer", "int128", "uint128"};
+    // `pointer`, `volatilePointer` and `slice` are only complete with a type message (`pointer to: T`).
+    const char* placeholders[] = {"slice", "pointer", "volatilePointer", "int128", "uint128"};
     for (const char* name : placeholders) {
         builtins_[name] = own({TypeKind::placeholder, name});
     }
@@ -133,6 +134,52 @@ const Type* TypeTable::blockShape(const Type* type)
     }
     blockShapes_[parts] = type;
     return type;
+}
+
+const Type* TypeTable::pointerTo(const Type* pointee, bool isVolatile)
+{
+    int kind = static_cast<int>(TypeKind::pointer) * 2 + (isVolatile ? 1 : 0);
+    auto key = std::make_pair(kind, std::make_pair(pointee, static_cast<const Type*>(nullptr)));
+    auto it = containers_.find(key);
+    if (it != containers_.end()) {
+        return it->second;
+    }
+    Type* type = own({TypeKind::pointer, std::string(isVolatile ? "volatilePointer" : "pointer") + " to: " + elementName(pointee)});
+    type->inner = pointee;
+    type->isVolatile = isVolatile;
+    containers_[key] = type;
+    return type;
+}
+
+const Type* TypeTable::sliceOf(const Type* element)
+{
+    auto key = std::make_pair(static_cast<int>(TypeKind::slice) * 2, std::make_pair(element, static_cast<const Type*>(nullptr)));
+    auto it = containers_.find(key);
+    if (it != containers_.end()) {
+        return it->second;
+    }
+    Type* type = own({TypeKind::slice, "slice of: " + elementName(element)});
+    type->inner = element;
+    containers_[key] = type;
+    return type;
+}
+
+const Type* TypeTable::cFunction(std::vector<const Type*> params, const Type* result)
+{
+    std::vector<const Type*> key = params;
+    key.push_back(result);
+    auto it = cFunctions_.find(key);
+    if (it != cFunctions_.end()) {
+        return it->second;
+    }
+    Type type{TypeKind::cFunction, ""};
+    type.params = std::move(params);
+    type.result = result;
+    type.arityKnown = true;
+    type.name = "cFunction " + blockTypeName(&type);
+    const Type* made = own(std::move(type));
+    cFunctions_[key] = made;
+    return made;
 }
 
 const Type* TypeTable::arrayOf(const Type* element)
@@ -435,7 +482,88 @@ bool needsCleanup(const Type* type)
 
 bool isValueOptional(const Type* type)
 {
-    return isOptional(type) && !isClass(type->inner);
+    return isOptional(type) && !isClass(type->inner) && !isPointer(type->inner) && !isCFunction(type->inner);
+}
+
+bool isCFunction(const Type* type)
+{
+    type = canonical(type);
+    return type != nullptr && type->kind == TypeKind::cFunction;
+}
+
+bool isNonNullWord(const Type* type)
+{
+    return isPointer(type) || isCFunction(type);
+}
+
+bool isCType(const Type* type)
+{
+    type = canonical(type);
+    if (type == nullptr) {
+        return false;
+    }
+    switch (type->kind) {
+    case TypeKind::boolType:
+    case TypeKind::integer:
+    case TypeKind::real:
+    case TypeKind::character:
+    case TypeKind::enumType:
+    case TypeKind::pointer:
+    case TypeKind::cFunction:
+        return true;
+    case TypeKind::record:
+        return isPointee(type);
+    case TypeKind::optional:
+        return isNonNullWord(type->inner);
+    default:
+        return false;
+    }
+}
+
+bool isPointer(const Type* type)
+{
+    type = canonical(type);
+    return type != nullptr && type->kind == TypeKind::pointer;
+}
+
+bool isSlice(const Type* type)
+{
+    type = canonical(type);
+    return type != nullptr && type->kind == TypeKind::slice;
+}
+
+bool isWordOptional(const Type* type)
+{
+    type = canonical(type);
+    return isOptional(type) && (isClass(type->inner) || isNonNullWord(type->inner));
+}
+
+bool isPointee(const Type* type)
+{
+    type = canonical(type);
+    if (type == nullptr) {
+        return false;
+    }
+    switch (type->kind) {
+    case TypeKind::boolType:
+    case TypeKind::integer:
+    case TypeKind::real:
+    case TypeKind::character:
+    case TypeKind::enumType:
+    case TypeKind::subrange:
+    case TypeKind::record:
+    case TypeKind::pointer:
+    case TypeKind::cFunction:
+        return true;
+    case TypeKind::fixedArray:
+        return isPointee(type->inner);
+    case TypeKind::optional:
+        return isNonNullWord(type->inner);
+    case TypeKind::set:
+        return isBitSet(type);
+    default:
+        return false;
+    }
 }
 
 bool isValueType(const Type* type)
@@ -463,6 +591,9 @@ bool isValueType(const Type* type)
     case TypeKind::stringView:
     case TypeKind::classObject:
     case TypeKind::reflector:
+    case TypeKind::pointer:
+    case TypeKind::slice:
+    case TypeKind::cFunction:
         return true;
     default:
         return false;

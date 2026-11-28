@@ -264,8 +264,8 @@ u := Token open;
 **Matching** reuses `case` and its exhaustiveness rule (`semantics.md`, enums and inferred unions). Labels are variants; a single-label entry may bind the payload as a block parameter:
 ```
 case t of {
-    Token number: { :n | total := total + n; }
-    Token word:   { :w | names add: w; }
+    Token number: { [n] total := total + n; }
+    Token word:   { [w] names add: w; }
     Token open, Token close: { depth := depth + 1; }
 }
 ```
@@ -312,9 +312,9 @@ if status = Status timeout {
    ```
 2. **Inlined handlers**, the same pattern as the existing `ifNil:` / `ifNotNil:` family, so no new statement syntax:
    ```
-   n := (self parse: text) ifError: { :e | return -1; };
-   (self poll) ifOk:    { :b | self store: b; }
-               ifError: { :e | self noteFault: e; };
+   n := (self parse: text) ifError: { [e] return -1; };
+   (self poll) ifOk:    { [b] self store: b; }
+               ifError: { [e] self noteFault: e; };
    ```
    Blocks are inlined (no closure), `return` and `fail` are allowed inside them (they run in the message's own frame), and a value-producing handler must end in an expression of the result type or diverge.
 

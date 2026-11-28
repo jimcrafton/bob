@@ -45,7 +45,7 @@ program subranges, 0.1.0
             pct := raw;
             failures := failures + (self check: pct = 99 id: 4);
             failures := failures + (self check: (Percent fromValue: 150) = nil id: 5);
-            (Percent fromValue: 7) ifNotNil: { :p | failures := failures + (self check: p = 7 id: 6); };
+            (Percent fromValue: 7) ifNotNil: { [p] failures := failures + (self check: p = 7 id: 6); };
 
             s: Setting;
             failures := failures + (self check: s.port = 1 and s.level = 0 id: 7);

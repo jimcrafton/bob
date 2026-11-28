@@ -67,6 +67,12 @@ private:
     void declareClass(const ClassDecl* decl);
     // `@[reflect: level]`; false (with an error) if the value isn't a level.
     bool reflectAttribute(const Attribute* attribute, ReflectLevel& level);
+    // `@[align: n]`; false (with an error) if n isn't a power of two from 1 to 4096.
+    bool alignAttribute(const Attribute* attribute, uint64_t& align);
+    // Storage that is only 16-byte aligned (objects, container buffers, boxes) can't hold `type`
+    // when it needs more; false (with an error at `site`).
+    bool fitsHeapAlignment(const Node* site, const Type* type, const std::string& what);
+    void checkCapturedAlignment();
     void resolveClass(ClassInfo* info);
     void declareClassMembers(ClassInfo* info, const std::vector<Node*>& members);
     void addProtocols(ClassInfo* info, const std::vector<Node*>& names);
@@ -98,6 +104,12 @@ private:
     ClassInfo* currentClass() const { return context_.message != nullptr ? context_.message->owner : nullptr; }
     const Type* resolveType(const Node* node);
     const Type* resolveBlockType(const BlockType* block);
+    // Why a type can't cross to C, as a "; …" suffix for sema.notCType (or empty).
+    std::string cTypeHint(const Type* type) const;
+    bool applyExtern(MessageInfo* message, const MessageDecl* decl);
+    // A capture-free block literal where a C function is expected (design §6.6).
+    const Type* checkCFunctionLiteral(const BlockLiteral* block, const Type* cFunction);
+    const Type* checkCFunctionInvoke(const Node* send, const Type* cFunction, const std::vector<Node*>& arguments);
     bool requireValueType(const Node* node, const Type* type);
     bool rejectBareBlock(const Node* node, const Type* type, const char* where);
     static bool isOwnershipAttribute(const Attribute* attribute);
@@ -266,6 +278,17 @@ private:
     OverflowMode unitOverflow_ = OverflowMode::trap;
     // The unit header's `@[reflect: level]`, the default for its classes.
     ReflectLevel unitReflect_ = ReflectLevel::introspect;
+    // Inside `@[unsafe]` (a message, a `{ }` group or a parenthesised expression) when > 0.
+    int unsafeDepth_ = 0;
+    const Node* unsafeStatement_ = nullptr;
+    // Raw pointer operations need an unsafe region (design §6.5); false (with an error) outside one.
+    bool requireUnsafe(const Node* site, const std::string& what);
+    // Pointer and slice messages (analyzerPointers.cpp); null when the send isn't one.
+    const Type* checkPointerUnary(const UnarySend* send, const Type* receiver, const Type* expected);
+    const Type* checkPointerKeyword(const KeywordSend* send, const Type* receiver);
+    const Type* checkAddress(const UnarySend* send, const Type* receiver);
+    // `p.x` or `p.a.b`: the place is reached through a pointer, so its root needn't be a variable.
+    bool reachesThroughPointer(const Node* node) const;
     // Only while resolving main's parameter types may `Reflector` appear.
     bool allowReflector_ = false;
     bool mainHasReflector_ = false;

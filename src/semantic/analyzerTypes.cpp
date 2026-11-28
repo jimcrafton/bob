@@ -180,8 +180,8 @@ const Type* Analyzer::resolveNamedType(NamedTypeInfo* info)
         else if (info->isAlias) {
             type = base;
         }
-        else if (isBlock(base) || (isOptional(base) && isBlock(base->inner))) {
-            // Blocks match by shape, so naming one just gives the shape a name.
+        else if (isBlock(base) || isCFunction(base) || (isOptional(base) && (isBlock(base->inner) || isCFunction(base->inner)))) {
+            // Blocks and C functions match by shape, so naming one just gives the shape a name.
             info->isAlias = true;
             type = base;
         }
@@ -291,11 +291,12 @@ const Type* Analyzer::resolveSubrange(const Node* lowNode, const Node* highNode,
 
 const Type* Analyzer::resolveTypeMessage(const TypeMessage* message, const std::string& name)
 {
-    if (message->selector == "to:") {
-        return resolveSubrange(message->receiver, message->arguments[0], nullptr, name, message);
-    }
     auto receiver = nodeCast<TypeName>(message->receiver);
     std::string container = receiver != nullptr ? receiver->name : "";
+    bool pointer = (container == "pointer" || container == "volatilePointer") && message->selector == "to:";
+    if (message->selector == "to:" && !pointer) {
+        return resolveSubrange(message->receiver, message->arguments[0], nullptr, name, message);
+    }
     auto element = [&](const Node* node, const char* role) -> const Type* {
         const Type* type = resolveType(node);
         if (type == types_.error()) {
@@ -321,8 +322,12 @@ const Type* Analyzer::resolveTypeMessage(const TypeMessage* message, const std::
         }
         return ok;
     };
+    // A dynamic container's buffer is a heap block, only 16-byte aligned.
+    auto inBuffer = [&](const Node* node, const Type* type) {
+        return type == types_.error() || fitsHeapAlignment(node, type, "a container's buffer") ? type : types_.error();
+    };
     if (container == "array" && message->selector == "of:") {
-        const Type* type = element(message->arguments[0], "an array element");
+        const Type* type = inBuffer(message->arguments[0], element(message->arguments[0], "an array element"));
         return type == types_.error() ? type : types_.arrayOf(type);
     }
     if (container == "array" && message->selector == "of:by:") {
@@ -331,9 +336,10 @@ const Type* Analyzer::resolveTypeMessage(const TypeMessage* message, const std::
         if (type == types_.error() || index == types_.error()) {
             return types_.error();
         }
-        if (isBlock(type)) {
+        if (isBlock(type) || isNonNullWord(type)) {
             error(message->arguments[0], "sema.invalidElementType",
-                  "a fixed array's elements start out defaulted, and a block has no default; use 'array of: " + typeName(type) + "'");
+                  "a fixed array's elements start out defaulted, and a " + std::string(isBlock(type) ? "block" : isPointer(type) ? "pointer" : "C function") +
+                      " has no default; use 'array of: " + typeName(type) + "'" + (isNonNullWord(type) ? " or optional ones" : ""));
             return types_.error();
         }
         uint64_t count = 0;
@@ -354,16 +360,32 @@ const Type* Analyzer::resolveTypeMessage(const TypeMessage* message, const std::
         return types_.fixedArrayOf(type, index, count);
     }
     if (container == "dictionary" && message->selector == "of:") {
-        const Type* type = element(message->arguments[0], "a dictionary value");
+        const Type* type = inBuffer(message->arguments[0], element(message->arguments[0], "a dictionary value"));
         return type == types_.error() ? type : types_.dictionaryOf(type);
     }
     if (container == "hashtable" && message->selector == "keys:values:") {
         const Type* key = element(message->arguments[0], "a key");
-        const Type* value = element(message->arguments[1], "a value");
+        const Type* value = inBuffer(message->arguments[1], element(message->arguments[1], "a value"));
         if (key == types_.error() || value == types_.error() || !hashable(message->arguments[0], key)) {
             return types_.error();
         }
         return types_.hashtableOf(key, value);
+    }
+    if (pointer || (container == "slice" && message->selector == "of:")) {
+        const Type* pointee = resolveType(message->arguments[0]);
+        if (pointee == types_.error()) {
+            return pointee;
+        }
+        if (!isPointee(pointee)) {
+            error(message->arguments[0], "sema.invalidPointee",
+                  "a pointer or slice points at plain data (numbers, characters, enums, records, fixed arrays, pointers), not a '" +
+                      typeName(pointee) + "'; reference-counted values can't be reached through a pointer");
+            return types_.error();
+        }
+        if (container == "slice") {
+            return types_.sliceOf(canonical(pointee));
+        }
+        return types_.pointerTo(canonical(pointee), container == "volatilePointer");
     }
     if (container == "set" && message->selector == "of:") {
         const Type* type = element(message->arguments[0], "a set element");
@@ -374,7 +396,7 @@ const Type* Analyzer::resolveTypeMessage(const TypeMessage* message, const std::
     }
     error(message, "sema.expectedType",
           "unknown type message '" + message->selector + "'; expected 'array of: T', 'array of: T by: I', 'dictionary of: V', "
-          "'hashtable keys: K values: V', 'set of: T' or a subrange 'lo to: hi'");
+          "'hashtable keys: K values: V', 'set of: T', 'pointer to: T', 'volatilePointer to: T', 'slice of: T' or a subrange 'lo to: hi'");
     return types_.error();
 }
 

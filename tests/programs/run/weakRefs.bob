@@ -14,7 +14,7 @@ program weakRefs, 0.1.0
             children add: child;
         }
         msg parentName [string] {
-            return parent ifNil: { "none" } ifNotNil: { :p | p name };
+            return parent ifNil: { "none" } ifNotNil: { [p] p name };
         }
     }
 
@@ -32,11 +32,11 @@ program weakRefs, 0.1.0
         msg wire {
             @[weak] me := self;
             onPress := {
-                me ifNil: { -1 } ifNotNil: { :b | b clicks: b clicks + 1; b clicks }
+                me ifNil: { -1 } ifNotNil: { [b] b clicks: b clicks + 1; b clicks }
             };
         }
         msg press [int32] {
-            return onPress ifNil: { 0 } ifNotNil: { :f | f value };
+            return onPress ifNil: { 0 } ifNotNil: { [f] f value };
         }
     }
 
@@ -74,7 +74,7 @@ program weakRefs, 0.1.0
             holder: Item? := Item tag: 7;
             @[weak] w := holder;
             failures := failures + (self check: w <> nil id: 3);
-            failures := failures + (self check: (w ifNil: { 0 } ifNotNil: { :i | i tag }) = 7 id: 4);
+            failures := failures + (self check: (w ifNil: { 0 } ifNotNil: { [i] i tag }) = 7 id: 4);
             holder := nil;
             failures := failures + (self check: w = nil id: 5);
 
@@ -85,7 +85,7 @@ program weakRefs, 0.1.0
 
             customer: Customer;
             customer issue;
-            failures := failures + (self check: (customer card ifNil: { "" } ifNotNil: { :c | c ownerName }) = "ann" id: 7);
+            failures := failures + (self check: (customer card ifNil: { "" } ifNotNil: { [c] c ownerName }) = "ann" id: 7);
 
             return failures;
         }

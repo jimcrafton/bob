@@ -8,6 +8,7 @@ add_library(bobSemantic STATIC
     analyzerTypes.cpp
     analyzerContainers.cpp
     analyzerReflection.cpp
+    analyzerPointers.cpp
     analyzerConstruction.cpp
     analyzerEscape.cpp
     analyzerCompileTime.cpp

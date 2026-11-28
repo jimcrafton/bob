@@ -153,6 +153,9 @@ void Generator::createSlots(const std::vector<sema::LocalInfo*>& locals)
             continue;
         }
         llvm::AllocaInst* slot = builder_.CreateAlloca(llvmType(local->type), nullptr, local->name);
+        if (local->align > slot->getAlign().value()) {
+            slot->setAlignment(llvm::Align(local->align));
+        }
         slots_[local] = slot;
         if (sema::needsCleanup(local->type) && !local->isParameter) {
             builder_.CreateStore(llvm::Constant::getNullValue(llvmType(local->type)), slot);
@@ -228,6 +231,9 @@ const sema::FieldInfo* Generator::assignedField(const Node* target) const
 llvm::Value* Generator::emitBlockLiteral(const BlockLiteral* literal)
 {
     const sema::BlockInfo* info = model_.blockOf(literal);
+    if (model_.cFunctionBlocks.count(info) != 0) {
+        return emitCFunctionBlock(info);
+    }
     llvm::Function* function = emitBlockFunction(info);
 
     llvm::Value* environment = llvm::ConstantPointerNull::get(builder_.getPtrTy());

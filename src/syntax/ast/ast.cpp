@@ -522,6 +522,11 @@ std::vector<Property> propertiesOf(const Node* node)
     case NodeKind::typeMessage:
         out.push_back({"selector", static_cast<const TypeMessage*>(node)->selector});
         break;
+    case NodeKind::blockType:
+        if (static_cast<const BlockType*>(node)->cFunction) {
+            out.push_back({"cFunction", "true"});
+        }
+        break;
     case NodeKind::forStmt:
         out.push_back({"variable", static_cast<const ForStmt*>(node)->variable});
         break;
@@ -545,7 +550,6 @@ std::vector<Property> propertiesOf(const Node* node)
     case NodeKind::attributedExpr:
     case NodeKind::optionalType:
     case NodeKind::tupleType:
-    case NodeKind::blockType:
     case NodeKind::error:
         break;
     }

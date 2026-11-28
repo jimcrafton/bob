@@ -54,7 +54,7 @@ module geometry, 1.4.11
 
             # A closure made in the module and called by the importer.
             @[static] msg scaler: k:int32 [Scale] {
-                return { :x: int32 | x * k };
+                return { [x: int32] x * k };
             }
 
             # Keeps the block: the importer's literal must become a heap closure.
