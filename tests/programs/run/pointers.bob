@@ -1,0 +1,100 @@
+# expect-exit: 0
+program pointers, 0.1.0
+{
+    record Regs { id: uint32; eoi: uint32; }
+    record Frame { hdr: Regs; data: array of: uint8 by: [0 to: 7]; }
+    record Node { value: int32; next: [pointer to: Node]?; }
+
+    extends pointers {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] @[unsafe] msg bump: p:[pointer to: int32] { p contents: p contents + 1; }
+
+        # A slice is used in safe code: bounds-checked indexing and iteration.
+        @[static] msg total: bytes:[slice of: uint8] [int64] {
+            sum: int64 := 0;
+            for b in bytes { sum := sum + b; }
+            return sum;
+        }
+
+        @[static] @[unsafe] msg length: list:[pointer to: Node]? [int32] {
+            n := 0;
+            cursor := list;
+            while cursor <> nil {
+                cursor ifNotNil: { [node] n := n + 1; cursor := node.next; };
+            }
+            return n;
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            # Address of a local, load and store, passed to a message that doesn't keep it.
+            x: int32 := 41;
+            @[unsafe] (self bump: x address);
+            failures := failures + (self check: x = 42 id: 1);
+
+            # Fields through a pointer, also nested, without loading the whole record.
+            r: Regs;
+            f: Frame;
+            f.data at: 3 put: 9;
+            @[unsafe] {
+                q := r address;
+                q.id := 7;
+                q.eoi := q.id + 1;
+                fp := f address;
+                fp.hdr.id := 5;
+            }
+            failures := failures + (self check: r.id = 7 and r.eoi = 8 and f.hdr.id = 5 id: 2);
+
+            # Reinterpret a record as bytes, then a bounds-checked slice over it.
+            bytes := @[unsafe] ((f address asPointer: uint8) slice: f meta size);
+            failures := failures + (self check: bytes count = 16 and (self total: bytes) = 14 id: 3);
+            failures := failures + (self check: (bytes at: 11) = 9 id: 4);
+            bytes at: 12 put: 4;
+            failures := failures + (self check: (f.data at: 4) = 4 id: 5);
+
+            # Through an address and back; pointers compare by identity.
+            same := false;
+            nothing := false;
+            @[unsafe] {
+                q := r address;
+                address := q asUIntPtr;
+                back: pointer to: Regs := address asPointer;
+                same := back = q;
+                maybe: [pointer to: Regs]? := 0 asPointer;
+                nothing := maybe = nil;
+                # Every access through a volatilePointer is a volatile load or store.
+                device: volatilePointer to: Regs := back asPointer;
+                device.eoi := 3;
+                failures := failures + (self check: device.eoi = 3 and r.eoi = 3 id: 6);
+            }
+            failures := failures + (self check: same and nothing id: 7);
+
+            # advancedBy: counts elements.
+            pair: array of: uint32 by: [0 to: 1];
+            @[unsafe] {
+                first: pointer to: uint32 := pair address asPointer;
+                (first advancedBy: 1) contents: 77;
+            }
+            failures := failures + (self check: (pair at: 1) = 77 id: 8);
+
+            # Optional pointers in records, unwrapped with ifNotNil:.
+            c: Node;
+            c.value := 3;
+            b: Node;
+            a: Node;
+            count := 0;
+            @[unsafe] {
+                b.next := c address;
+                a.next := b address;
+                count := self length: a address;
+            }
+            failures := failures + (self check: count = 3 id: 9);
+
+            return failures;
+        }
+    }
+}

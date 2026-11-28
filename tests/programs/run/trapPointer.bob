@@ -1,0 +1,13 @@
+# expect-exit: 101
+# expect-stderr: bob: runtime trap: invalid pointer (null or misaligned)
+program trapPointer, 0.1.0
+{
+    extends trapPointer {
+        @[static] msg main: args:array [int32] {
+            address: uint64 := 6;
+            # a uint32 needs 4-byte alignment; 6 isn't, so making the pointer traps before any access
+            p: pointer to: uint32 := @[unsafe] (address asPointer);
+            return @[unsafe] (p contents) asInt32;
+        }
+    }
+}

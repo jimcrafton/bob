@@ -1,0 +1,76 @@
+# expect-exit: 0
+# expect-stderr: bob->C
+program externC, 0.1.0
+{
+    # 8 bytes: crosses as an integer. 12 bytes: by reference, and returned through a hidden pointer.
+    record Pair { a: int32; b: int32; }
+    record Triple { a: int32; b: int32; c: int32; }
+    type Combine := cFunction { int32, int32 [int32] };
+
+    # Real C: kernel32 (through the runtime's import library) and bobrt's C runtime.
+    class Kernel {
+        @[extern: "C"] msg GetStdHandle: which:uint32 [uintptr];
+        @[extern: "C"] msg WriteFile: handle:uintptr bytes:[pointer to: uint8] count:uint32 written:[pointer to: uint32]?
+            overlapped:[pointer to: uint8]? [int32];
+    }
+    class LibC {
+        @[extern: "C"] msg memset: dst:[pointer to: uint8] value:int32 count:uint64 [[pointer to: uint8]?];
+        @[extern: "C"] msg memcmp: a:[pointer to: uint8] b:[pointer to: uint8] count:uint64 [int32];
+    }
+
+    extends externC {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        # Exports: bob code that C can call under these names.
+        @[extern: "C"] msg bobSwap: p:Pair [Pair] { return Pair a: p.b b: p.a; }
+        @[extern: "C"] msg bobSpread: t:Triple by:int32 [Triple] { return Triple a: t.a + by b: t.b + by c: t.c + by; }
+        @[extern: "C"] msg bobApply: f:Combine x:int32 y:int32 [int32] { return @[unsafe] (f value: x value: y); }
+        @[extern: "C"] msg bobFlip: flag:bool [bool] { return flag not; }
+
+        # The same symbols imported back, so these calls go through the C ABI both ways.
+        @[extern: "C", symbol: "bobSwap"] msg cSwap: p:Pair [Pair];
+        @[extern: "C", symbol: "bobSpread"] msg cSpread: t:Triple by:int32 [Triple];
+        @[extern: "C", symbol: "bobApply"] msg cApply: f:Combine x:int32 y:int32 [int32];
+        @[extern: "C", symbol: "bobFlip"] msg cFlip: flag:bool [bool];
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+            @[unsafe] {
+                swapped := self cSwap: (Pair a: 1 b: 2);
+                failures := failures + (self check: swapped.a = 2 and swapped.b = 1 id: 1);
+                t := self cSpread: (Triple a: 1 b: 2 c: 3) by: 10;
+                failures := failures + (self check: t.a = 11 and t.b = 12 and t.c = 13 id: 2);
+                failures := failures + (self check: (self cApply: { [a, b] a * b } x: 6 y: 7) = 42 id: 3);
+                failures := failures + (self check: (self cFlip: false) and (self cFlip: true) not id: 4);
+
+                buffer: array of: uint8 by: [0 to: 3];
+                other: array of: uint8 by: [0 to: 3];
+                p: pointer to: uint8 := buffer address asPointer;
+                q: pointer to: uint8 := other address asPointer;
+                LibC memset: p value: 7 count: 4;
+                failures := failures + (self check: (buffer at: 3) = 7 id: 5);
+                failures := failures + (self check: (LibC memcmp: p b: q count: 4) > 0 id: 6);
+
+                text: array of: uint8 by: [0 to: 5];
+                i := 0;
+                for b in "bob->C" bytes {
+                    text at: i put: b;
+                    i := i + 1;
+                }
+                written: uint32 := 0;
+                stderr := Kernel GetStdHandle: 4294967284u32;
+                ok := Kernel WriteFile: stderr bytes: text address asPointer count: 6 written: written address overlapped: nil;
+                failures := failures + (self check: ok <> 0 and written = 6 id: 7);
+            }
+
+            # A C function held in an optional, compared with nil and unwrapped.
+            f: [cFunction { int32, int32 [int32] }]? := nil;
+            failures := failures + (self check: f = nil id: 8);
+            f := { [a, b] a - b };
+            f ifNotNil: { [g] failures := failures + (self check: @[unsafe] (g value: 9 value: 4) = 5 id: 9); };
+            return failures;
+        }
+    }
+}

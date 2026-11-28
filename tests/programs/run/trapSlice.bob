@@ -1,0 +1,13 @@
+# expect-exit: 101
+# expect-stderr: bob: runtime trap: index out of range
+program trapSlice, 0.1.0
+{
+    extends trapSlice {
+        @[static] msg main: args:array [int32] {
+            word: uint32 := 0;
+            bytes := @[unsafe] ((word address asPointer: uint8) slice: 4);
+            # a slice is bounds-checked: byte 4 of a 4-byte slice traps
+            return (bytes at: 4) asInt32;
+        }
+    }
+}

@@ -1,0 +1,65 @@
+# expect-exit: 0
+program alignment, 0.1.0
+{
+    # A cache line: 64-byte alignment, size rounded up to it.
+    @[align: 64] record Line { a: uint8; b: uint32; }
+    # Field alignment: b starts at 16, d at 24.
+    record Spaced { a: uint8; @[align: 16] b: uint32; c: uint8; @[align: 8] d: uint16; }
+    record Holder { first: uint8; line: Line; }
+
+    @[constant] SAMPLE := Spaced a: 1 b: 2 c: 3 d: 4;
+
+    class Keeper {
+        public { spaced: Spaced; count: int32 := 1; }
+    }
+
+    extends alignment {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+
+            failures := failures + (self check: Line meta alignment = 64 and Line meta size = 64 id: 1);
+            failures := failures + (self check: Spaced meta size = 32 and Holder meta size = 128 id: 2);
+
+            # Real addresses: a page-aligned buffer, an aligned record, a field offset.
+            @[align: 4096] buffer: array of: uint8 by: [0 to: 4095];
+            line: Line;
+            s := Spaced a: 9 b: 8 c: 7 d: 6;
+            h: Holder;
+            pageOk := false;
+            lineOk := false;
+            offsetOk := false;
+            nestedOk := false;
+            @[unsafe] {
+                pageOk := (buffer address asUIntPtr and 4095) = 0;
+                lineOk := (line address asUIntPtr and 63) = 0;
+                offsetOk := (s.b address asUIntPtr) - (s address asUIntPtr) = 16;
+                nestedOk := (h.line address asUIntPtr) - (h address asUIntPtr) = 64 and (h.line address asUIntPtr and 63) = 0;
+            }
+            failures := failures + (self check: pageOk and lineOk id: 3);
+            failures := failures + (self check: offsetOk and nestedOk id: 4);
+
+            # Values survive the padding: constructors, constants, field writes.
+            failures := failures + (self check: s.a = 9 and s.b = 8 and s.c = 7 and s.d = 6 id: 5);
+            failures := failures + (self check: SAMPLE.b = 2 and SAMPLE.d = 4 id: 6);
+            line.b := 77;
+            failures := failures + (self check: line.b = 77 id: 7);
+
+            # Up to 16-byte alignment fits heap storage: objects, containers, optionals.
+            k: Keeper;
+            k spaced: s;
+            list: array of: Spaced;
+            list add: s;
+            list add: SAMPLE;
+            maybe: Spaced? := s;
+            got: uint32 := 0;
+            maybe ifNotNil: { [value] got := value.b; };
+            failures := failures + (self check: (k spaced).d = 6 and (list at: 1).b = 2 and got = 8 id: 8);
+
+            return failures;
+        }
+    }
+}
