@@ -1,0 +1,13 @@
+# expect-exit: 101
+# expect-stderr: bob: runtime trap: value out of range
+program trapPort, 0.1.0
+{
+    extends trapPort {
+        @[static] msg main: args:array [int32] {
+            n: int32 := 70000;
+            # a port number is 0 to: 65535, so making this port traps before any access
+            p: port of: uint8 := @[unsafe] (n asPort);
+            return p asUInt16 asInt32;
+        }
+    }
+}

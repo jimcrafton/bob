@@ -1,0 +1,40 @@
+# expect-exit: 0
+program hardware, 0.1.0
+{
+    # A record of device ports: plain uint16 port numbers, zero by default.
+    record Uart { data: port of: uint8; lineStatus: port of: uint8; }
+
+    extends hardware {
+        @[static] msg check: ok:bool id:int32 [int32] {
+            return ok ifTrue: { 0 } ifFalse: { id };
+        }
+
+        @[unsafe] @[static] msg uartAt: base:uint16 [Uart] {
+            data: port of: uint8 := base asPort;
+            return Uart data: data lineStatus: (data advancedBy: 5);
+        }
+
+        @[static] msg main: args:array [int32] {
+            failures := 0;
+            empty: Uart;
+            failures := failures + (self check: empty.data asUInt16 = 0 id: 1);
+            com1 := @[unsafe] (self uartAt: 0x3F8);
+            failures := failures + (self check: com1.data asUInt16 = 0x3F8 and com1.lineStatus asUInt16 = 0x3FD id: 2);
+            wide: port of: uint32 := @[unsafe] (com1.data asPort);
+            failures := failures + (self check: wide asUInt16 = 0x3F8 id: 3);
+            narrow := @[unsafe] (0x80 asPort: uint16);
+            failures := failures + (self check: narrow asUInt16 = 128 id: 4);
+
+            # cpuid, timestamp and pause work in user mode too, so they need no unsafe region.
+            vendor := Cpu cpuid: 0;
+            failures := failures + (self check: vendor.eax > 0 and vendor.ebx <> 0 id: 5);
+            features := Cpu cpuid: 1 subleaf: 0;
+            failures := failures + (self check: (features.edx and 1) = 1 id: 6);
+            t0 := Cpu timestamp;
+            Cpu pause;
+            t1 := Cpu timestamp;
+            failures := failures + (self check: t1 >= t0 id: 7);
+            return failures;
+        }
+    }
+}

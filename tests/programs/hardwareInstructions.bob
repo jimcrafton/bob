@@ -1,0 +1,36 @@
+program hardwareInstructions, 0.1.0
+{
+    # Privileged: compiled (and checked as IR), never run in user mode.
+    extends hardwareInstructions {
+        @[unsafe] @[static] msg serialPut: c:uint8 {
+            data: port of: uint8 := 0x3F8 asPort;
+            status := data advancedBy: 5;
+            while ((status contents) and 0x20) = 0 {
+                Cpu pause;
+            }
+            data contents: c;
+        }
+
+        @[unsafe] @[static] msg kernelBits {
+            wordPort: port of: uint16 := 0x1F0 asPort;
+            longPort: port of: uint32 := 0xCF8 asPort;
+            longPort contents: 0x80000000;
+            sector := wordPort contents;
+            pci := longPort contents;
+            Cpu disableInterrupts;
+            efer := Cpu readMsr: 0xC0000080;
+            Cpu writeMsr: 0xC0000080 value: efer;
+            Cpu cr3: Cpu cr3;
+            fault := Cpu cr2;
+            Cpu invalidatePage: fault;
+            Cpu loadGdt: 0x1000 limit: 23;
+            Cpu loadIdt: 0x2000 limit: 4095;
+            Cpu enableInterrupts;
+            Cpu halt;
+        }
+
+        @[static] msg main: args:array [int32] {
+            return 0;
+        }
+    }
+}
