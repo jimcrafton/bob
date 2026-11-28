@@ -57,10 +57,12 @@ bool Analyzer::settleContainer(const Type* pendingType, const Type* key, const T
     }
     auto valid = [&](const Type* type, const char* role) {
         type = canonical(type);
-        if (!isValueType(type) || isBlock(type) || type->pending) {
-            error(site, "sema.invalidElementType",
-                  type->pending ? std::string("a nested container needs its element type written out, such as 'array of: int32'")
-                                : "'" + typeName(type) + "' can't be " + role);
+        if (!isValueType(type) || type->pending) {
+            bool block = isBlock(type);
+            error(site, block ? "sema.cannotInferBlock" : "sema.invalidElementType",
+                  block          ? std::string("a block stored in a container needs its parameter types; write them, as in '{ :x: int32 | … }'")
+                  : type->pending ? std::string("a nested container needs its element type written out, such as 'array of: int32'")
+                                  : "'" + typeName(type) + "' can't be " + role);
             return false;
         }
         return true;
@@ -177,7 +179,7 @@ const Type* Analyzer::mergeElementTypes(const std::vector<const Type*>& elementT
             sawNil = true;
             continue;
         }
-        if (!isValueType(type) || isBlock(type) || type->pending) {
+        if (!isValueType(type) || type->pending) {
             error(site, "sema.invalidElementType", "'" + typeName(type) + "' can't be an element of a literal");
             return types_.error();
         }

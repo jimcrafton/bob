@@ -41,6 +41,10 @@ import shapes, 2.0;
             offset := 200;
             failures := failures + (self check: (watcher fire: 1) = 201 id: 11);
             failures := failures + (self check: (watcher target ifNil: { 0 } ifNotNil: { :s | s area }) = 16 id: 12);
+
+            # Reflection on imported classes: their descriptors come from their module.
+            failures := failures + (self check: sq class name = "Square" and (sq class respondsTo: "area") id: 13);
+            failures := failures + (self check: shape class = Rectangle class and shape class name = "Rectangle" id: 14);
             return failures;
         }
     }

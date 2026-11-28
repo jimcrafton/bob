@@ -14,6 +14,8 @@ void analyze(const ast::Unit* unit, SemanticModel& model, DiagnosticEngine& diag
 struct AnalyzeOptions {
     // Where `import name;` looks for `name.bobi`, in order (design §11.5).
     std::vector<std::string> modulePaths;
+    // `--reflect-max=`: the most reflection metadata the unit's classes emit (design §9).
+    ReflectLevel reflectMax = ReflectLevel::invoke;
 };
 
 void analyze(const ast::Unit* unit, SemanticModel& model, DiagnosticEngine& diagnostics, const AnalyzeOptions& options);

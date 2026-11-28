@@ -32,14 +32,15 @@ struct Analyzed {
 };
 
 // Wraps `body` in a program with a `main` and analyzes it.
-std::unique_ptr<Analyzed> analyzeMain(const std::string& body, const std::string& extraMessages = "", const std::string& items = "")
+std::unique_ptr<Analyzed> analyzeMain(const std::string& body, const std::string& extraMessages = "", const std::string& items = "",
+                                      const bob::sema::AnalyzeOptions& options = {}, const std::string& header = "")
 {
     auto result = std::make_unique<Analyzed>();
-    result->source = "program p, 1.0.0\n{\n" + items + "\nextends p {\n" + extraMessages +
+    result->source = header + "program p, 1.0.0\n{\n" + items + "\nextends p {\n" + extraMessages +
                      "\n@[static] msg main: args:array [int32] {\n" + body + "\n}\n}\n}\n";
     result->parsed = bob::parser::parseSource(result->source, result->diagnostics);
     EXPECT_EQ(result->diagnostics.errorCount(), 0u) << result->text();
-    bob::sema::analyze(result->parsed.unit, result->model, result->diagnostics);
+    bob::sema::analyze(result->parsed.unit, result->model, result->diagnostics, options);
     return result;
 }
 
@@ -702,4 +703,158 @@ TEST(Semantic, MetaIsCompileTimeInformation)
     EXPECT_EQ(constantOf("c")->bits, 2u);
     EXPECT_EQ(constantOf("m")->elements.size(), 2u);
     EXPECT_EQ(constantOf("e")->text, "int32");
+}
+
+TEST(Semantic, ReflectionThroughTheClassObject)
+{
+    auto a = analyzeMain("b: Box;\nc := b class;\nn := c name;\nk := Box class isKindOf: c;\nr := c respondsTo: \"size\";\ns := c superclass;\n"
+                         "stack := b isOnStack;\nd: Class;\nbad := Shape class;\nreturn 0;",
+                         "",
+                         "@[protocol] class Shape { msg area [int32]; }\n"
+                         "@[reflect: invoke] class Box { public { size: int32; } msg class [int32] { return 1; } }\n"
+                         "@[reflect: everything] class Odd { }\n"
+                         "class Kept { public { kind: Class; } }\n"
+                         "record R { kind: Class; }");
+    EXPECT_EQ(localNamed(*a, "c")->type->name, "Class");
+    EXPECT_EQ(localNamed(*a, "n")->type->name, "string");
+    EXPECT_EQ(localNamed(*a, "k")->type->name, "bool");
+    EXPECT_EQ(localNamed(*a, "r")->type->name, "bool");
+    EXPECT_EQ(localNamed(*a, "s")->type->name, "Class?");
+    EXPECT_EQ(localNamed(*a, "stack")->type->name, "bool");
+    EXPECT_TRUE(a->hasCode("sema.reservedSelector")) << a->text();
+    EXPECT_NE(a->text().find("takes a level: none, identity, introspect or invoke"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("'d' is a Class and has no default"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("'Shape' is a protocol and has no class object"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("a Class has no default, so it can't be a record field"), std::string::npos) << a->text();
+    EXPECT_EQ(a->diagnostics.errorCount(), 5u) << a->text();
+    EXPECT_EQ(a->model.classNamed("Box")->reflectLevel, bob::sema::ReflectLevel::invoke);
+    EXPECT_EQ(a->model.classNamed("Kept")->reflectLevel, bob::sema::ReflectLevel::introspect); // the default
+    EXPECT_TRUE(a->model.classNamed("Kept")->field("kind")->required); // a Class field must be passed
+}
+
+TEST(Semantic, IntrospectionThroughTheClassObject)
+{
+    auto a = analyzeMain("b: Box;\nc := b class;\nfs := c fields;\nms := c messages;\nps := c protocols;\nct := Box meta fields;\n"
+                         "w: int32 := c get: \"size\" of: b;\nok: int32 := Box class get: \"size\" of: b;\n"
+                         "wrong: int64 := Box class get: \"size\" of: b;\nmissing: int32 := Box class get: \"nope\" of: b;\n"
+                         "hidden: int32 := Box class get: \"secret\" of: b;\nq: Quiet;\nnone: int32 := Quiet class get: \"n\" of: q;\n"
+                         "notObject: int32 := c get: \"size\" of: 3;\nx := 1 + (c get: \"size\" of: b);\n(c get: \"size\" of: b);\nreturn 0;",
+                         "",
+                         "class Box { public { size: int32; } private { secret: int32; } }\n"
+                         "@[reflect: identity] class Quiet { public { n: int32; } }");
+    EXPECT_EQ(localNamed(*a, "fs")->type->name, "array of: FieldMeta");
+    EXPECT_EQ(localNamed(*a, "ms")->type->name, "array of: MessageMeta");
+    EXPECT_EQ(localNamed(*a, "ps")->type->name, "array of: string");
+    EXPECT_EQ(localNamed(*a, "ct")->type, localNamed(*a, "fs")->type); // one FieldMeta for compile time and runtime
+    EXPECT_NE(a->text().find("'Box size' is a 'int32', not a 'int64'"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("'Box' has no public field 'nope'"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("'Box' has no public field 'secret'"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("'Quiet' is emitted at @[reflect: identity]"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("reads a field of an object, not a"), std::string::npos) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.reflectNeedsType")) << a->text();
+}
+
+TEST(Semantic, InvokeLevelReflectionNeedsAReflectorOnMain)
+{
+    // Without a Reflector on main, the first invoke-level send is reported.
+    auto a = analyzeMain("b: Box;\nc := b class;\nn: int32 := c perform: \"size\" on: b;\nreturn 0;", "",
+                         "@[reflect: invoke] class Box { public { size: int32; } }");
+    EXPECT_TRUE(a->hasCode("sema.reflectorRequired")) << a->text();
+    EXPECT_EQ(a->diagnostics.errorCount(), 1u) << a->text();
+    EXPECT_TRUE(a->model.needsReflector);
+
+    // Reading needs nothing.
+    auto reading = analyzeMain("b: Box;\nn: int32 := b class get: \"size\" of: b;\nreturn 0;", "", "class Box { public { size: int32; } }");
+    EXPECT_EQ(reading->diagnostics.errorCount(), 0u) << reading->text();
+    EXPECT_FALSE(reading->model.needsReflector);
+
+    // Reflector is only main's parameter type; compile-time code can't act through reflection.
+    auto misplaced = analyzeMain("return 0;", "@[static] msg helper: r:Reflector [int32] { return 0; }\n"
+                                              "@[static] @[compiletime] msg early [int32] { c := Box class; b: Box := c new; return 0; }",
+                                 "@[reflect: invoke] class Box { public { size: int32 := 1; } }");
+    EXPECT_TRUE(misplaced->hasCode("sema.invalidReflector")) << misplaced->text();
+    EXPECT_NE(misplaced->text().find("'new' acts through reflection, which compile-time code can't do"), std::string::npos) << misplaced->text();
+}
+
+TEST(Semantic, InvokeLevelReflectionIsCheckedOnANamedClass)
+{
+    std::string source = "program p, 1.0.0\n{\n"
+                         "@[reflect: invoke] class Box { public { size: int32 := 1; } msg grow: n:int64 [int64] { return n; } }\n"
+                         "class Plain { public { n: int32 := 1; } msg get [int32] { return n; } }\n"
+                         "@[reflect: invoke] class Tagged { public { kind: Class; } }\n"
+                         "extends p {\n@[static] msg main: args:array reflector: r:Reflector [int32] {\n"
+                         "b: Box;\npl: Plain;\n"
+                         "g := Box class perform: \"grow:\" on: b with: 2;\n"
+                         "Box class perform: \"shrink\" on: b;\n"
+                         "Box class perform: \"grow:\" on: b;\n"
+                         "Plain class perform: \"get\" on: pl;\n"
+                         "Box class set: \"size\" of: b to: 3;\n"
+                         "Plain class set: \"n\" of: pl to: 3;\n"
+                         "made: Box := Box class new;\n"
+                         "notBox: Box := Plain class new;\n"
+                         "t: Tagged := Tagged class new;\n"
+                         "untyped := Box class new;\n"
+                         "found := Class named: \"p.Box\";\n"
+                         "c := b class;\nc perform: \"grow:\" on: b with: 2i64 with: 3;\n"
+                         "return 0;\n}\n}\n}\n";
+    bob::DiagnosticEngine diagnostics;
+    bob::parser::ParsedUnit parsed = bob::parser::parseSource(source, diagnostics);
+    bob::sema::SemanticModel model;
+    bob::sema::analyze(parsed.unit, model, diagnostics);
+    std::string text;
+    for (const auto& diagnostic : diagnostics.diagnostics()) {
+        text += diagnostic.code + ": " + diagnostic.message + "\n";
+    }
+    auto has = [&](const std::string& part) { return text.find(part) != std::string::npos; };
+    EXPECT_TRUE(has("'Box' doesn't understand 'shrink'")) << text;
+    EXPECT_TRUE(has("'grow:' takes 1 argument(s), but 0 are passed")) << text;
+    EXPECT_TRUE(has("'Plain' is emitted at @[reflect: introspect]; 'perform:' needs 'invoke'")) << text;
+    EXPECT_TRUE(has("writing a field by reflection needs 'invoke'")) << text;
+    EXPECT_TRUE(has("a new 'Plain' isn't a 'Box'")) << text;
+    EXPECT_TRUE(has("'Tagged' can't be created by reflection")) << text;
+    EXPECT_TRUE(has("'new' takes its type from context")) << text;
+    EXPECT_TRUE(has("'grow:' takes 1 argument(s), but 2 are passed")) << text;
+    EXPECT_FALSE(has("reflectorRequired")) << text;
+    EXPECT_EQ(diagnostics.errorCount(), 8u) << text;
+    for (const auto& local : model.locals) {
+        if (local->name == "g") {
+            EXPECT_EQ(local->type->name, "int64"); // the message's own result type
+        }
+        if (local->name == "found") {
+            EXPECT_EQ(local->type->name, "Class?");
+        }
+    }
+}
+
+TEST(Semantic, ContainersOfBlocks)
+{
+    auto a = analyzeMain("f := { :x: int32 | x };\nops: array of: { int32 [int32] };\nops add: { :x | x + 1 };\nops add: f;\n"
+                         "same: array of: { int32 [int32] } := ops;\n"
+                         "table: dictionary of: { int32 [int32] };\nhit := table at: \"a\";\n"
+                         "bad := ops includes: f;\n"
+                         "later: array;\nlater add: { :x | x };\n"
+                         "fixed: array of: { int32 [int32] } by: Slot;\n"
+                         "keyed: hashtable keys: { int32 [int32] } values: int32;\n"
+                         "loose: array of: block;\nreturn 0;",
+                         "", "enum Slot { a; b; }");
+    EXPECT_EQ(localNamed(*a, "same")->type, localNamed(*a, "ops")->type); // one array type per block shape
+    EXPECT_EQ(localNamed(*a, "hit")->type->name, "[{ int32 [int32] }]?");
+    EXPECT_NE(a->text().find("'includes:' needs elements that '=' can compare"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("the type of block parameter 'x' can't be inferred here"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("a block has no default"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("can't be a key"), std::string::npos) << a->text();
+    EXPECT_NE(a->text().find("'block' can't be an array element"), std::string::npos) << a->text();
+}
+
+TEST(Semantic, ReflectionLevelDefaultsAndTheBuildCap)
+{
+    bob::sema::AnalyzeOptions capped;
+    capped.reflectMax = bob::sema::ReflectLevel::identity;
+    auto a = analyzeMain("return 0;", "", "class Plain { }\n@[reflect: invoke] class Asks { }\n@[reflect: none] class Hidden { }", capped,
+                         "@[reflect: none] ");
+    EXPECT_EQ(a->diagnostics.errorCount(), 0u) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.reflectCapped")) << a->text();
+    EXPECT_EQ(a->model.classNamed("Plain")->reflectLevel, bob::sema::ReflectLevel::none); // the unit's default
+    EXPECT_EQ(a->model.classNamed("Asks")->reflectLevel, bob::sema::ReflectLevel::identity);
+    EXPECT_EQ(a->model.classNamed("Hidden")->reflectLevel, bob::sema::ReflectLevel::none);
 }

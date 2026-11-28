@@ -65,6 +65,8 @@ private:
     void declareMessage(const MessageDecl* decl);
 
     void declareClass(const ClassDecl* decl);
+    // `@[reflect: level]`; false (with an error) if the value isn't a level.
+    bool reflectAttribute(const Attribute* attribute, ReflectLevel& level);
     void resolveClass(ClassInfo* info);
     void declareClassMembers(ClassInfo* info, const std::vector<Node*>& members);
     void addProtocols(ClassInfo* info, const std::vector<Node*>& names);
@@ -183,6 +185,21 @@ private:
     void checkExports(const Unit* unit);
     bool importing() const { return unitModule_ != nullptr; }
 
+    // reflection: `obj class`, `Button class`, `Class` messages (analyzerReflection.cpp)
+    const Type* checkReflectionUnary(const UnarySend* send, const Type* receiver, const Type* expected);
+    const Type* checkClassObjectKeyword(const KeywordSend* send, const Type* expected);
+    const Type* checkGetField(const KeywordSend* send, const Type* expected);
+    const Type* checkSetField(const KeywordSend* send);
+    const Type* checkPerform(const KeywordSend* send, const Type* expected);
+    const Type* checkClassNew(const UnarySend* send, const Type* expected);
+    const Type* checkClassNamed(const KeywordSend* send);
+    // An invoke-level operation (design §9): needs a Reflector on main; never in compile-time code.
+    bool noteInvokeUse(const Node* site, const std::string& what);
+    void checkReflector(const Unit* unit);
+    // A literal class (`Button class`) as a reflection receiver, else null.
+    const ClassInfo* staticClassOf(const Node* receiver) const;
+    const Type* checkClassObjectBinary(const BinarySend* send);
+
     // compile-time code, constants, `meta`, `compiler` (analyzerCompileTime.cpp)
     void declareConstant(const Node* declaration);
     void declareUnitBlock(const StatementGroup* group);
@@ -199,6 +216,8 @@ private:
     const Type* checkCompilerSend(const KeywordSend* send);
     const ConstValue* makeConst(ConstValue value);
     ClassInfo* fieldMetaClass();
+    ClassInfo* messageMetaClass();
+    ClassInfo* synthesizeMetaClass(const char* name, const std::vector<std::pair<const char*, const Type*>>& fields);
     // Records what the current function calls, for ordering compile-time evaluation.
     void noteCall(const Node* site, const MessageInfo* target);
     void noteConstruct(const ClassInfo* info);
@@ -245,6 +264,13 @@ private:
     std::vector<std::unordered_map<std::string, LocalInfo*>> scopes_;
     std::vector<OverflowMode> overflow_;
     OverflowMode unitOverflow_ = OverflowMode::trap;
+    // The unit header's `@[reflect: level]`, the default for its classes.
+    ReflectLevel unitReflect_ = ReflectLevel::introspect;
+    // Only while resolving main's parameter types may `Reflector` appear.
+    bool allowReflector_ = false;
+    bool mainHasReflector_ = false;
+    // The first send in this unit that acts through reflection (design §9).
+    const Node* firstInvokeUse_ = nullptr;
     std::unordered_map<const MessageInfo*, int> checkState_;
     int blockCounter_ = 0;
     AnalyzeOptions options_;

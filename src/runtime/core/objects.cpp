@@ -1,6 +1,7 @@
 #include "abi.h"
 #include "bobRuntime.h"
 #include "objectModel.h"
+#include "runtimeInternal.h"
 
 #include <Windows.h>
 #include <intrin.h>
@@ -33,6 +34,26 @@ void writeError(const char* text)
         ++length;
     }
     bobRuntimeWrite(static_cast<int32_t>(bob::abi::StreamId::error), reinterpret_cast<const uint8_t*>(text), length);
+}
+
+void writeClassName(const BobClass* cls)
+{
+    if (cls->name == nullptr) {
+        writeError("(unnamed class: reflect level 'none')");
+        return;
+    }
+    bobRuntimeWrite(static_cast<int32_t>(bob::abi::StreamId::error), cls->name->bytes, cls->name->byteCount);
+}
+
+bool sameText(const char* text, const BobString* string)
+{
+    uint64_t count = string != nullptr ? string->byteCount : 0;
+    for (uint64_t i = 0; i < count; ++i) {
+        if (text[i] == '\0' || static_cast<uint8_t>(text[i]) != string->bytes[i]) {
+            return false;
+        }
+    }
+    return text[count] == '\0';
 }
 
 void writeNumber(long long value)
@@ -220,7 +241,7 @@ void* const* bobWitness(const BobClass* cls, const void* protocol)
         }
     }
     writeError("bob: '");
-    writeError(cls->name);
+    writeClassName(cls);
     writeError("' doesn't conform to '");
     writeError(static_cast<const BobProtocol*>(protocol)->name);
     writeError("'\n");
@@ -235,6 +256,14 @@ void* bobMsgSendLookup(BobClass* cls, const char* selector)
         for (uint32_t i = 0; i < current->methodCount; ++i) {
             if (current->methods[i].selector == selector) {
                 void* imp = current->methods[i].imp;
+                if (imp == nullptr) {
+                    writeError("bob: '");
+                    writeClassName(cls);
+                    writeError("' can't be sent '");
+                    writeError(selector);
+                    writeError("' by reflection; declare it @[reflect: invoke]\n");
+                    bobRuntimeTrap(static_cast<int32_t>(bob::abi::TrapReason::doesNotUnderstand));
+                }
                 BobMethodCache* cache = cacheOf(cls);
                 uint64_t slot = (reinterpret_cast<uint64_t>(selector) >> 3) & cache->mask;
                 bool stored = false;
@@ -260,11 +289,252 @@ void* bobMsgSendLookup(BobClass* cls, const char* selector)
         }
     }
     writeError("bob: '");
-    writeError(cls->name);
+    writeClassName(cls);
     writeError("' doesn't understand '");
     writeError(selector);
     writeError("'\n");
     bobRuntimeTrap(static_cast<int32_t>(bob::abi::TrapReason::doesNotUnderstand));
+}
+
+bool bobClassIsKindOf(const BobClass* cls, const BobClass* other)
+{
+    for (const BobClass* current = cls; current != nullptr; current = current->superclass) {
+        if (current == other) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// By text, so a selector built at runtime works too; superclasses' messages count.
+bool bobClassRespondsTo(const BobClass* cls, const BobString* selector)
+{
+    for (const BobClass* current = cls; current != nullptr; current = current->superclass) {
+        for (uint32_t i = 0; i < current->methodCount; ++i) {
+            if (sameText(current->methods[i].selector, selector)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+namespace {
+
+bool sameString(const BobString* a, const BobString* b)
+{
+    uint64_t count = a != nullptr ? a->byteCount : 0;
+    if (count != (b != nullptr ? b->byteCount : 0)) {
+        return false;
+    }
+    return count == 0 || bob::runtime::sameBytes(a->bytes, b->bytes, count);
+}
+
+void* metaObject(BobClass* metaClass, const void* const* values, uint32_t count)
+{
+    void* object = bobAllocObject(metaClass);
+    auto slots = reinterpret_cast<const void**>(static_cast<uint8_t*>(object) + bob::abi::metaFirstFieldOffset);
+    for (uint32_t i = 0; i < count; ++i) {
+        slots[i] = values[i];
+    }
+    return object;
+}
+
+void appendFields(const BobClass* cls, void** array, BobClass* metaClass, const BobElementType* metaElement)
+{
+    if (cls == nullptr) {
+        return;
+    }
+    appendFields(cls->superclass, array, metaClass, metaElement);
+    if (cls->meta == nullptr) {
+        return;
+    }
+    for (uint64_t i = 0; i < cls->meta->fieldCount; ++i) {
+        const BobFieldEntry& field = cls->meta->fields[i];
+        const void* values[] = {field.name, field.typeName, reinterpret_cast<const void*>(field.offset), reinterpret_cast<const void*>(field.size)};
+        void* object = metaObject(metaClass, values, 4);
+        bobArrayPush(array, &object, metaElement);
+    }
+}
+
+void appendMessages(const BobClass* cls, void** array, BobClass* metaClass, const BobElementType* metaElement, const BobElementType* stringElement)
+{
+    if (cls == nullptr) {
+        return;
+    }
+    appendMessages(cls->superclass, array, metaClass, metaElement, stringElement);
+    if (cls->meta == nullptr) {
+        return;
+    }
+    for (uint64_t i = 0; i < cls->meta->messageCount; ++i) {
+        const BobMessageEntry& message = cls->meta->messages[i];
+        void* argumentTypes = nullptr;
+        for (uint64_t k = 0; k < message.argumentCount; ++k) {
+            bobArrayPush(&argumentTypes, &message.argumentTypes[k], stringElement);
+        }
+        const void* values[] = {message.selector, argumentTypes, message.resultType};
+        void* object = metaObject(metaClass, values, 3);
+        bobArrayPush(array, &object, metaElement);
+    }
+}
+
+[[noreturn]] void fieldMismatch(const BobClass* cls, const BobString* name, const char* problem)
+{
+    writeError("bob: reflection: '");
+    writeClassName(cls);
+    writeError(" ");
+    if (name != nullptr) {
+        bobRuntimeWrite(static_cast<int32_t>(bob::abi::StreamId::error), name->bytes, name->byteCount);
+    }
+    writeError("' ");
+    writeError(problem);
+    writeError("\n");
+    bobRuntimeTrap(static_cast<int32_t>(bob::abi::TrapReason::reflectionMismatch));
+}
+
+}
+
+void* bobClassFields(const BobClass* cls, BobClass* metaClass, const BobElementType* metaElement)
+{
+    void* array = nullptr;
+    appendFields(cls, &array, metaClass, metaElement);
+    return array;
+}
+
+void* bobClassMessages(const BobClass* cls, BobClass* metaClass, const BobElementType* metaElement, const BobElementType* stringElement)
+{
+    void* array = nullptr;
+    appendMessages(cls, &array, metaClass, metaElement, stringElement);
+    return array;
+}
+
+void* bobClassProtocols(const BobClass* cls, const BobElementType* stringElement)
+{
+    void* array = nullptr;
+    if (cls->meta != nullptr) {
+        for (uint64_t i = 0; i < cls->meta->protocolCount; ++i) {
+            bobArrayPush(&array, &cls->meta->protocols[i], stringElement);
+        }
+    }
+    return array;
+}
+
+namespace {
+
+constexpr uint32_t invokeLevel = 3;
+
+void requireKindOf(const BobClass* cls, const void* object)
+{
+    if (!bobClassIsKindOf(static_cast<const BobObjectHeader*>(object)->isa, cls)) {
+        writeError("bob: reflection: the object isn't a '");
+        writeClassName(cls);
+        writeError("'\n");
+        bobRuntimeTrap(static_cast<int32_t>(bob::abi::TrapReason::reflectionMismatch));
+    }
+}
+
+}
+
+uint64_t bobClassFieldOffset(const BobClass* cls, const void* object, const BobString* name, const BobString* typeKey, uint32_t write)
+{
+    requireKindOf(cls, object);
+    for (const BobClass* current = cls; current != nullptr; current = current->superclass) {
+        if (current->meta == nullptr) {
+            continue;
+        }
+        for (uint64_t i = 0; i < current->meta->fieldCount; ++i) {
+            const BobFieldEntry& field = current->meta->fields[i];
+            if (!sameString(field.name, name)) {
+                continue;
+            }
+            if (!sameString(field.typeKey, typeKey)) {
+                fieldMismatch(cls, name, "has a different type");
+            }
+            if (field.ownership != 0) {
+                fieldMismatch(cls, name, "is weak or unowned and can't be read or written by reflection");
+            }
+            if (write != 0 && current->meta->level < invokeLevel) {
+                fieldMismatch(cls, name, "can't be written by reflection; declare its class @[reflect: invoke]");
+            }
+            return field.offset;
+        }
+    }
+    fieldMismatch(cls, name, "isn't a public field (or the class is below @[reflect: introspect])");
+}
+
+void* bobClassMethod(const BobClass* cls, const void* object, const BobString* selector, const BobString* signatureKey)
+{
+    requireKindOf(cls, object);
+    // From the object's own class, so an override is the one that runs.
+    for (const BobClass* current = static_cast<const BobObjectHeader*>(object)->isa; current != nullptr; current = current->superclass) {
+        if (current->meta == nullptr) {
+            continue;
+        }
+        for (uint64_t i = 0; i < current->meta->messageCount; ++i) {
+            const BobMessageEntry& message = current->meta->messages[i];
+            if (!sameString(message.selector, selector)) {
+                continue;
+            }
+            if (!sameString(message.signatureKey, signatureKey)) {
+                fieldMismatch(current, selector, "has a different signature than the call");
+            }
+            if (message.imp == nullptr) {
+                fieldMismatch(current, selector, "can't be performed by reflection; declare its class @[reflect: invoke]");
+            }
+            return message.imp;
+        }
+    }
+    fieldMismatch(static_cast<const BobObjectHeader*>(object)->isa, selector, "isn't a message the object understands");
+}
+
+void* bobClassNew(const BobClass* cls, const BobClass* expectedClass, const void* expectedProtocol)
+{
+    if (cls->meta == nullptr || cls->meta->create == nullptr) {
+        writeError("bob: reflection: '");
+        writeClassName(cls);
+        writeError("' can't be created by reflection: it needs @[reflect: invoke] and a default for every field\n");
+        bobRuntimeTrap(static_cast<int32_t>(bob::abi::TrapReason::reflectionMismatch));
+    }
+    bool fits = expectedProtocol == nullptr ? bobClassIsKindOf(cls, expectedClass) : false;
+    for (uint32_t i = 0; expectedProtocol != nullptr && i < cls->conformanceCount; ++i) {
+        fits = fits || cls->conformances[i].protocol == expectedProtocol;
+    }
+    if (!fits) {
+        writeError("bob: reflection: a new '");
+        writeClassName(cls);
+        writeError("' isn't the type the call expects\n");
+        bobRuntimeTrap(static_cast<int32_t>(bob::abi::TrapReason::reflectionMismatch));
+    }
+    return cls->meta->create();
+}
+
+// The registry's brackets (see bob::abi::classRegistrySection). The linker sorts
+// `.bobcls$…` contributions by suffix and may pad between them with zeros.
+#pragma section(".bobcls$a", read)
+#pragma section(".bobcls$z", read)
+extern "C" __declspec(allocate(".bobcls$a")) const BobClass* const bobClassRegistryStart[] = {nullptr};
+extern "C" __declspec(allocate(".bobcls$z")) const BobClass* const bobClassRegistryEnd[] = {nullptr};
+
+const BobClass* bobClassNamed(const BobString* name)
+{
+    const BobClass* const* first = bobClassRegistryStart + 1;
+    const BobClass* const* last = bobClassRegistryEnd;
+    for (const BobClass* const* entry = first; entry < last; ++entry) {
+        if (*entry != nullptr && (*entry)->meta != nullptr && sameString((*entry)->meta->qualifiedName, name)) {
+            return *entry;
+        }
+    }
+    const BobClass* found = nullptr;
+    for (const BobClass* const* entry = first; entry < last; ++entry) {
+        if (*entry == nullptr || !sameString((*entry)->name, name)) {
+            continue;
+        }
+        if (found != nullptr && found != *entry) {
+            return nullptr;
+        }
+        found = *entry;
+    }
+    return found;
 }
 
 void bobRuntimeReportLeaks()

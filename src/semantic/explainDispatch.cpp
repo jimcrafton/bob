@@ -119,6 +119,7 @@ std::string describe(const SendInfo& send, const SemanticModel& model)
     case SendKind::metaInfo:
         return "";
     case SendKind::metaFields:
+        return "tier 0, an array of FieldMeta built from compile-time constants";
     case SendKind::compilerDiagnostic:
         return "compile time only";
     case SendKind::inlineEnumDo:
@@ -147,6 +148,33 @@ std::string describe(const SendInfo& send, const SemanticModel& model)
     case SendKind::dictionaryKeys:
     case SendKind::dictionaryValues:
         return "tier 1, runtime call";
+    case SendKind::classOf:
+        return "tier 0, intrinsic load of the object's class";
+    case SendKind::namedClass:
+        return "tier 0, the class descriptor of '" + send.classInfo->name + "' (a constant)";
+    case SendKind::className:
+    case SendKind::classSuperclass:
+        return "tier 0, intrinsic read of the class descriptor";
+    case SendKind::objectIsOnStack:
+        return "tier 0, intrinsic test of the object header's stack flag";
+    case SendKind::classIsKindOf:
+    case SendKind::classRespondsTo:
+    case SendKind::classFields:
+    case SendKind::classMessages:
+    case SendKind::classProtocols:
+        return "tier 1, runtime call (reflection)";
+    case SendKind::classGetField:
+        return "tier 1, runtime field lookup (checked against the stored type), then a load";
+    case SendKind::classSetField:
+        return "tier 1, runtime field lookup (checked against the stored type, needs invoke), then a store";
+    case SendKind::classPerform:
+        return "tier 3, runtime message lookup by selector text (checked against the stored signature), then a call through its thunk";
+    case SendKind::classNew:
+        return "tier 1, runtime call (the class's default constructor, checked against the expected type)";
+    case SendKind::classNamed:
+        return "tier 1, runtime search of the class registry";
+    case SendKind::classQualifiedName:
+        return "tier 0, intrinsic read of the class's introspection table";
     case SendKind::containerAt:
     case SendKind::containerAtPut:
         return send.operandType != nullptr && (send.operandType->kind == TypeKind::array || send.operandType->kind == TypeKind::fixedArray)

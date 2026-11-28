@@ -9,6 +9,7 @@ add_library(bobCompiler STATIC
     codegen/codegenValues.cpp
     codegen/codegenCompileTime.cpp
     codegen/codegenClosures.cpp
+    codegen/codegenReflection.cpp
     compiletime/evaluator.cpp
     driver/driver.cpp
     driver/driverOptions.cpp

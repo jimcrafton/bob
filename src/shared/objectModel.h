@@ -28,6 +28,8 @@ enum : uint32_t {
 inline constexpr uint32_t bobWeakCountShift = 8;
 inline constexpr uint32_t bobWeakCountUnit = 1u << bobWeakCountShift;
 
+// `imp` is null for a class emitted below the `invoke` reflection level: its
+// selectors are listed (for respondsTo:) but bob_msgSend can't reach them.
 struct BobMethodEntry {
     const char* selector;
     void* imp;
@@ -50,11 +52,56 @@ struct BobConformance {
     void* const* witness;
 };
 
+// Introspection metadata (reflection level `introspect` and above). Each class
+// lists only what it declares itself; readers walk the superclass chain.
+// `typeKey` identifies the field's type for `get:of:` (class types are
+// qualified by their unit); `ownership` is 0 strong, 1 weak, 2 unowned.
+struct BobFieldEntry {
+    const struct BobString* name;
+    const struct BobString* typeName;
+    const struct BobString* typeKey;
+    uint64_t offset;
+    uint64_t size;
+    uint32_t ownership;
+    uint32_t reserved;
+};
+
+// `signatureKey` is the argument type keys and the result's, "int64,string>bool"
+// (">void" for none); `perform:` compares it with the call site's. `imp` is the
+// `.msgSend` thunk at `invoke`, null below.
+struct BobMessageEntry {
+    const struct BobString* selector;
+    const struct BobString* resultType;
+    const struct BobString* const* argumentTypes;
+    uint64_t argumentCount;
+    const struct BobString* signatureKey;
+    void* imp;
+};
+
+struct BobClassMeta {
+    const BobFieldEntry* fields;
+    uint64_t fieldCount;
+    const BobMessageEntry* messages;
+    uint64_t messageCount;
+    // Every protocol the class conforms to, by name.
+    const struct BobString* const* protocols;
+    uint64_t protocolCount;
+    // "unit.Class", what `Class named:` matches first.
+    const struct BobString* qualifiedName;
+    // The default constructor, for `c new`: at `invoke` when every field has a default, else null.
+    void* (*create)();
+    // The class's reflection level: 0 none ... 3 invoke.
+    uint32_t level;
+    uint32_t reserved;
+};
+
 // One per class, emitted by the compiler as a mutable global. The vtable (one
 // implementation pointer per slot) follows the fixed part.
 struct BobClass {
     BobClass* superclass;
-    const char* name;
+    // An immortal string, or null (the empty string) for a class emitted below
+    // the `identity` reflection level and for the runtime's own classes.
+    const struct BobString* name;
     uint64_t instanceSize;
     void (*destroy)(void* object);
     const BobMethodEntry* methods;
@@ -63,6 +110,8 @@ struct BobClass {
     // Used only by bob_msgSend (reflection); protocol sends go through `conformances`.
     BobMethodCache* cache;
     const BobConformance* conformances;
+    // Null below the `introspect` reflection level.
+    const BobClassMeta* meta;
     // void* vtable[];
 };
 
@@ -116,7 +165,15 @@ extern BobClass bobTableClass;
 namespace bob::abi {
 
 inline constexpr uint32_t objectHeaderSize = 16;
-inline constexpr uint32_t classVtableOffset = 64;
+inline constexpr uint32_t classVtableOffset = 72;
+// FieldMeta { name, typeName, offset, size } and MessageMeta { selector,
+// argumentTypes, resultType }: the fields of the synthesized classes behind
+// `c fields` / `T meta fields` and `c messages`, after the object header.
+inline constexpr uint32_t metaFirstFieldOffset = 16;
+// Classes at `invoke` are listed for `Class named:`: every module puts a pointer
+// to each in the COFF section `.bobcls$m`; the runtime brackets them with
+// `.bobcls$a` and `.bobcls$z`, so the linker builds the program-wide list.
+inline constexpr const char* classRegistrySection = ".bobcls$m";
 inline constexpr uint32_t stringCountOffset = 16;
 inline constexpr uint32_t stringBytesOffset = 24;
 inline constexpr uint32_t arrayCountOffset = 16;

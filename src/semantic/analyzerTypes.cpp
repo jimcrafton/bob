@@ -301,7 +301,8 @@ const Type* Analyzer::resolveTypeMessage(const TypeMessage* message, const std::
         if (type == types_.error()) {
             return type;
         }
-        if (!isValueType(type) || isBlock(type) || type->kind == TypeKind::blockToInfer) {
+        // A block element must have its shape written out ('{ int32 [int32] }', not 'block').
+        if (!isValueType(type) || type->kind == TypeKind::blockToInfer || (isBlock(type) && type->pending)) {
             error(node, "sema.invalidElementType", std::string("'") + typeName(type) + "' can't be " + role);
             return types_.error();
         }
@@ -328,6 +329,11 @@ const Type* Analyzer::resolveTypeMessage(const TypeMessage* message, const std::
         const Type* type = element(message->arguments[0], "an array element");
         const Type* index = resolveType(message->arguments[1]);
         if (type == types_.error() || index == types_.error()) {
+            return types_.error();
+        }
+        if (isBlock(type)) {
+            error(message->arguments[0], "sema.invalidElementType",
+                  "a fixed array's elements start out defaulted, and a block has no default; use 'array of: " + typeName(type) + "'");
             return types_.error();
         }
         uint64_t count = 0;

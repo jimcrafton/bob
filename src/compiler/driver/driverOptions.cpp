@@ -79,6 +79,12 @@ std::optional<std::string> parseDriverArguments(std::span<const std::string> arg
         else if (arg.starts_with("--module-path=")) {
             options.modulePaths.push_back(std::string(arg.substr(14)));
         }
+        else if (takeValue(arg, "--reflect-max=", options.reflectMax)) {
+            if (options.reflectMax != "none" && options.reflectMax != "identity" && options.reflectMax != "introspect" &&
+                options.reflectMax != "invoke") {
+                return "--reflect-max takes none, identity, introspect or invoke, not '" + options.reflectMax + "'";
+            }
+        }
         else if (arg.starts_with("-")) {
             return "unknown option '" + std::string(arg) + "'";
         }
@@ -121,6 +127,7 @@ const char* driverUsage()
            "  -c                      compile to an object file only, do not link\n"
            "  --module-path=<dir>     also look for imported modules' interfaces (.bobi) here (repeatable)\n"
            "  -O0 .. -O3              optimization level (default -O0)\n"
+           "  --reflect-max=<level>   most reflection metadata a class emits: none, identity, introspect, invoke (default)\n"
            "  --syntax-only           parse a .bob file and report errors, nothing else\n"
            "  --dump-tokens           print the token stream of a .bob file\n"
            "  --dump-ast[=text|json]  print the syntax tree of a .bob file\n"

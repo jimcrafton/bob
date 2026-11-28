@@ -510,8 +510,45 @@ private:
             return;
         }
         case SendKind::fieldGet:
+        case SendKind::classOf:
+        case SendKind::objectIsOnStack:
+        case SendKind::className:
+        case SendKind::classSuperclass:
+        case SendKind::classIsKindOf:
+        case SendKind::classRespondsTo:
+        case SendKind::classCompare:
+        case SendKind::classFields:
+        case SendKind::classMessages:
+        case SendKind::classProtocols:
+        case SendKind::classGetField:
             walkExpression(receiver, noEffect());
+            walkArguments(noEffect());
             return;
+        case SendKind::namedClass:
+        case SendKind::classNamed:
+        case SendKind::classQualifiedName:
+        case SendKind::classNew:
+            walkExpression(receiver, noEffect());
+            walkArguments(noEffect());
+            return;
+        case SendKind::classSetField: {
+            auto keyword = static_cast<const KeywordSend*>(node);
+            walkExpression(receiver, noEffect());
+            walkExpression(keyword->arguments[0], noEffect());
+            walkExpression(keyword->arguments[1], noEffect());
+            walkExpression(keyword->arguments[2], escapeEffect("stored into a field by reflection"));
+            return;
+        }
+        case SendKind::classPerform: {
+            // The message isn't known, so the object and arguments may be kept.
+            auto keyword = static_cast<const KeywordSend*>(node);
+            walkExpression(receiver, noEffect());
+            walkExpression(keyword->arguments[0], noEffect());
+            for (size_t i = 1; i < keyword->arguments.size(); ++i) {
+                walkExpression(keyword->arguments[i], escapeEffect("passed to a message sent by reflection"));
+            }
+            return;
+        }
         case SendKind::fieldSet:
             walkExpression(receiver, noEffect());
             walkArguments(escapeEffect("stored into a field"));

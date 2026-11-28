@@ -81,7 +81,12 @@ void Analyzer::run(const Unit* unit)
     unit_ = unit;
     model_.program.name = unit->unitKind == UnitKind::fragment ? "" : unit->name;
     model_.program.type = types_.addProgram(&model_.program);
-    unitOverflow_ = overflowFrom(unit, OverflowMode::trap, {"overflow"});
+    unitOverflow_ = overflowFrom(unit, OverflowMode::trap, {"overflow", "reflect"});
+    for (const Attribute* attribute : unit->attributes) {
+        if (attribute->name == "reflect") {
+            reflectAttribute(attribute, unitReflect_);
+        }
+    }
     // Imported modules' declarations first (they come from their interfaces),
     // then the unit's own, which shadow them.
     loadImports(unit->imports, "", nullptr);
@@ -149,6 +154,7 @@ void Analyzer::run(const Unit* unit)
 
     finalizePendingContainers();
     checkExports(unit);
+    checkReflector(unit);
     if (diagnostics_.errorCount() == 0) {
         analyzeEscapes(model_, diagnostics_);
     }
@@ -308,6 +314,10 @@ void Analyzer::resolveRecord(RecordInfo* record)
             error(field->type, "sema.invalidElementType", "records hold plain data; containers can't be record fields");
             type = types_.error();
         }
+        if (type->kind == TypeKind::classObject) {
+            error(field->type, "sema.invalidElementType", "a Class has no default, so it can't be a record field; use a class instead");
+            type = types_.error();
+        }
         if (type->kind == TypeKind::record) {
             resolveRecord(type->record);
         }
@@ -336,16 +346,40 @@ void Analyzer::declareClass(const ClassDecl* decl)
     info->origin = currentOrigin();
     info->unitName = unitProgram_->name;
     info->decl = decl;
+    info->reflectLevel = unitReflect_;
+    const Attribute* reflect = nullptr;
     for (const Attribute* attribute : decl->attributes) {
         if (attribute->name == "protocol" && attribute->value == nullptr) {
             info->isProtocol = true;
         }
-        else {
+        else if (attribute->name == "reflect" && reflectAttribute(attribute, info->reflectLevel)) {
+            reflect = attribute;
+        }
+        else if (attribute->name != "reflect") {
             unsupported(attribute, "the class attribute '@[" + attribute->name + "]'", "a later phase");
         }
     }
+    // An imported class was emitted by its module, at the level its interface records.
+    if (!importing() && info->reflectLevel > options_.reflectMax) {
+        if (reflect != nullptr) {
+            diagnostics_.warning(reflect->range, "sema.reflectCapped",
+                                 "'" + info->name + "' asks for @[reflect: " + reflectLevelName(info->reflectLevel) + "], but this build emits at most '" +
+                                     reflectLevelName(options_.reflectMax) + "' (--reflect-max)");
+        }
+        info->reflectLevel = options_.reflectMax;
+    }
     info->type = types_.addClass(info.get());
     model_.classes.push_back(std::move(info));
+}
+
+bool Analyzer::reflectAttribute(const Attribute* attribute, ReflectLevel& level)
+{
+    auto name = nodeCast<Identifier>(attribute->value);
+    if (name == nullptr || !parseReflectLevel(name->name, level)) {
+        error(attribute, "sema.invalidAttribute", "'@[reflect: …]' takes a level: none, identity, introspect or invoke");
+        return false;
+    }
+    return true;
 }
 
 void Analyzer::addProtocols(ClassInfo* info, const std::vector<Node*>& names)
@@ -512,6 +546,10 @@ MessageInfo* Analyzer::declareMethod(ClassInfo* info, const MessageDecl* decl)
         return declareInit(info, decl, isStatic);
     }
     auto& table = isStatic ? info->classMethods : info->methods;
+    if (decl->selector == "class" || (!isStatic && decl->selector == "isOnStack")) {
+        error(decl->selectorRange, "sema.reservedSelector", "'" + decl->selector + "' is built in (reflection) and can't be declared");
+        return nullptr;
+    }
     if (table.count(decl->selector) != 0) {
         error(decl->selectorRange, "sema.redeclared", "'" + info->name + "' already declares '" + decl->selector + "'");
         return nullptr;
@@ -978,12 +1016,14 @@ void Analyzer::declareMessage(const MessageDecl* decl)
     message->symbolName = "bob." + unitProgram_->name + "." + decl->selector;
     message->overflow = overflowFrom(decl, unitOverflow_, {"overflow", "static", "compiletime", "keeps"});
     message->compileTimeOnly = hasAttribute(decl, "compiletime");
-    message->isMain = !importing() && (decl->selector == "main" || decl->selector == "main:");
+    message->isMain = !importing() && (decl->selector == "main" || decl->selector == "main:" || decl->selector == "main:reflector:");
     message->origin = currentOrigin();
 
     for (const Node* node : decl->params) {
         auto param = static_cast<const MessageParam*>(node);
+        allowReflector_ = message->isMain;
         const Type* type = resolveType(param->type);
+        allowReflector_ = false;
         if (type->kind == TypeKind::blockToInfer) {
             type = types_.pendingBlock();
         }
@@ -1026,9 +1066,18 @@ void Analyzer::declareMessage(const MessageDecl* decl)
         if (message->returnType != types_.int32()) {
             error(decl->selectorRange, "sema.invalidMain", "'main' must return [int32], the process exit code");
         }
-        if (decl->selector == "main:" && !(message->params[0]->type == types_.arrayOf(types_.string()) &&
-                                           message->params[0]->type->kind == TypeKind::array)) {
-            error(decl->params[0]->range, "sema.invalidMain", "the parameter of 'main:' must be 'args:array'");
+        auto isArgs = [&](size_t i) {
+            return message->params[i]->type == types_.arrayOf(types_.string()) && message->params[i]->type->kind == TypeKind::array;
+        };
+        auto isReflector = [&](size_t i) { return message->params[i]->type->kind == TypeKind::reflector; };
+        if (decl->selector == "main:" && !isArgs(0) && !isReflector(0)) {
+            error(decl->params[0]->range, "sema.invalidMain", "the parameter of 'main:' must be 'args:array' or 'r:Reflector'");
+        }
+        if (decl->selector == "main:reflector:" && (!isArgs(0) || !isReflector(1))) {
+            error(decl->range, "sema.invalidMain", "'main:reflector:' takes 'args:array' and 'r:Reflector'");
+        }
+        for (size_t i = 0; i < message->params.size(); ++i) {
+            mainHasReflector_ = mainHasReflector_ || isReflector(i);
         }
         model_.program.main = message.get();
     }
@@ -1052,6 +1101,11 @@ const Type* Analyzer::resolveType(const Node* node)
             // The bare container names infer their element types from first use.
             if ((isDynamicContainer(builtin) || builtin->kind == TypeKind::set) && builtin->inner == nullptr) {
                 return types_.pendingContainer(builtin->kind);
+            }
+            if (builtin->kind == TypeKind::reflector && !allowReflector_) {
+                error(node, "sema.invalidReflector",
+                      "'Reflector' is only the type of main's parameter: 'msg main: args:array reflector: r:Reflector [int32]'");
+                return types_.error();
             }
             return builtin;
         }
@@ -1361,6 +1415,10 @@ void Analyzer::checkStatement(const Node* statement)
         }
         else if (isClass(type) && !hasAttribute(statement, "unowned")) {
             checkDefaultObject(decl, type);
+        }
+        else if (canonical(type)->kind == TypeKind::classObject) {
+            error(decl->nameRange, "sema.uninitializedReference",
+                  "'" + decl->name + "' is a Class and has no default; give it one ('" + decl->name + " := obj class') or declare it 'Class?'");
         }
         Ownership ownership = ownershipOf(statement, type, false);
         if (ownership == Ownership::unowned && decl->initializer == nullptr && isClass(canonical(type))) {
@@ -2050,6 +2108,9 @@ const Type* Analyzer::checkUnary(const UnarySend* send, const Type* expected)
     if (receiver->kind == TypeKind::metaInfo) {
         return checkMetaQuery(send, receiver);
     }
+    if (const Type* result = checkReflectionUnary(send, receiver, expected)) {
+        return result;
+    }
     if (isClass(receiver) || isOptional(receiver)) {
         return checkInstanceSend(send, send->receiver, receiver, selector, {}, send->selectorRange);
     }
@@ -2220,6 +2281,9 @@ const Type* Analyzer::checkBinary(const BinarySend* send, const Type* expected)
         if ((op == "=" || op == "<>") && (isReference(left) || isOptional(left) || left->kind == TypeKind::nilType)) {
             return checkReferenceComparison(send, left);
         }
+        if (canonical(left)->kind == TypeKind::classObject) {
+            return checkClassObjectBinary(send);
+        }
         if (isBitSet(canonical(left))) {
             return checkBitSetBinary(send, canonical(left));
         }
@@ -2300,6 +2364,12 @@ const Type* Analyzer::checkKeyword(const KeywordSend* send, const Type* expected
     }
     if (receiver->kind == TypeKind::compilerObject) {
         return checkCompilerSend(send);
+    }
+    if (receiver->kind == TypeKind::meta && receiver->instance != nullptr && receiver->instance->kind == TypeKind::classObject) {
+        return checkClassNamed(send);
+    }
+    if (canonical(receiver)->kind == TypeKind::classObject) {
+        return checkClassObjectKeyword(send, expected);
     }
     if (isOptional(receiver) && (selector == "ifNil:" || selector == "ifNotNil:" || selector == "ifNil:ifNotNil:" ||
                                  selector == "ifNotNil:ifNil:")) {

@@ -100,6 +100,7 @@ int Driver::runBobSource(const DriverOptions& options)
     llvm::sys::path::remove_filename(sourceDirectory);
     analyzeOptions.modulePaths.push_back(sourceDirectory.empty() ? "." : std::string(sourceDirectory));
     analyzeOptions.modulePaths.insert(analyzeOptions.modulePaths.end(), options.modulePaths.begin(), options.modulePaths.end());
+    sema::parseReflectLevel(options.reflectMax, analyzeOptions.reflectMax);
     sema::analyze(parsed.unit, model, diagnostics, analyzeOptions);
     if (reportDiagnostics(diagnostics, file) != 0) {
         return 1;

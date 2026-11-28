@@ -55,12 +55,12 @@ llvm::GlobalVariable* Generator::plainClass(const std::string& name, llvm::Struc
 {
     llvm::Type* ptr = builder_.getPtrTy();
     llvm::StructType* type = classInfoType(0);
-    llvm::Constant* text = builder_.CreateGlobalString(name, "name." + name, 0, module_.get());
+    llvm::Constant* text = stringLiteral(name);
     llvm::Constant* null = llvm::ConstantPointerNull::get(ptr);
     uint64_t size = module_->getDataLayout().getTypeAllocSize(layout);
     llvm::Constant* initializer = llvm::ConstantStruct::get(
         type, {null, text, builder_.getInt64(size), destroy != nullptr ? static_cast<llvm::Constant*>(destroy) : null, null, builder_.getInt32(0),
-               builder_.getInt32(0), null, null, llvm::ConstantArray::get(llvm::ArrayType::get(ptr, 0), {})});
+               builder_.getInt32(0), null, null, null, llvm::ConstantArray::get(llvm::ArrayType::get(ptr, 0), {})});
     return new llvm::GlobalVariable(*module_, type, false, llvm::GlobalValue::InternalLinkage, initializer, "class." + name);
 }
 

@@ -49,6 +49,7 @@ bobc -O2 prog.bob -o fast.exe      # optimize (-O0 default, -O1..-O3)
 bobc -c prog.bob                   # object file only
 bobc --dump-llvm prog.bob          # print the generated LLVM IR instead of compiling
 bobc --explain-dispatch prog.bob   # also report how each send and block is compiled
+bobc --reflect-max=none prog.bob   # emit no reflection metadata (none, identity, introspect, invoke)
 bobc --syntax-only prog.bob        # report syntax errors only (exit 1 if any)
 bobc --dump-tokens prog.bob        # token stream
 bobc --dump-ast prog.bob           # syntax tree, text

@@ -130,7 +130,7 @@ Tests: `tests/programs/run/noalloc*.bob` (positive, including a stack object and
 - each method-table entry points at a thunk `<symbol>.msgSend(self, selector, args…)` that drops the selector and tail-calls the message;
 - `tests/reflectionTests.cpp` JITs a class and calls it through `bob_msgSend`, for its own message and for an adopted protocol default.
 
-Thunks are emitted for every method-table entry. Gating them on a class's reflection level waits for phase 8's reflection design.
+Thunks are emitted only for classes at reflection level `invoke` (design §9). Below that, the method table lists selectors without implementations (`identity`, `introspect`) or is empty (`none`).
 
 **Stage 1:** Every protocol send uses an itable, and the record-return restriction is lifted. `tests/programs/run/itables.bob` covers:
 - a protocol message returning a record;

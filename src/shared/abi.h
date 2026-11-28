@@ -36,6 +36,7 @@ enum class TrapReason : int32_t {
     doesNotUnderstand = 12,
     // phase 8
     unownedDestroyed = 13, // reading an unowned reference whose object is gone
+    reflectionMismatch = 14, // `get:of:` on a missing field, the wrong type or an object of another class
 };
 
 }

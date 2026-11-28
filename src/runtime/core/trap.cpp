@@ -43,6 +43,8 @@ const char* reasonText(int32_t reason)
         return "message not understood";
     case bob::abi::TrapReason::unownedDestroyed:
         return "unowned reference to a destroyed object";
+    case bob::abi::TrapReason::reflectionMismatch:
+        return "reflection mismatch";
     }
     return "unknown trap";
 }

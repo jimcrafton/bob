@@ -134,6 +134,7 @@ ModuleInfo* Analyzer::loadModule(const Import* import, const std::string& direct
     }
     module->version = unit->version;
     module->fingerprint = stringAttribute(unit, "interface");
+    module->needsReflector = attributeNamed(unit, "reflector") != nullptr;
     std::stringstream depends(stringAttribute(unit, "depends"));
     std::string entry;
     while (std::getline(depends, entry, ';')) {
@@ -324,7 +325,8 @@ void Analyzer::checkExports(const Unit* unit)
         case TypeKind::record:
             return type->record->origin.module != nullptr || type->record->origin.exported;
         case TypeKind::classType:
-            return type->classInfo->origin.module != nullptr || type->classInfo->origin.exported || type->classInfo == model_.fieldMetaClass;
+            return type->classInfo->origin.module != nullptr || type->classInfo->origin.exported || type->classInfo == model_.fieldMetaClass ||
+                   type->classInfo == model_.messageMetaClass;
         case TypeKind::enumType:
             return type->enumInfo->origin.module != nullptr || type->enumInfo->origin.exported;
         case TypeKind::stringView:

@@ -84,7 +84,7 @@ llvm::StructType* Generator::objectType(const sema::ClassInfo* info)
 llvm::StructType* Generator::classInfoType(size_t vtableSize)
 {
     llvm::Type* ptr = builder_.getPtrTy();
-    return llvm::StructType::get(context_, {ptr, ptr, builder_.getInt64Ty(), ptr, ptr, builder_.getInt32Ty(), builder_.getInt32Ty(), ptr, ptr,
+    return llvm::StructType::get(context_, {ptr, ptr, builder_.getInt64Ty(), ptr, ptr, builder_.getInt32Ty(), builder_.getInt32Ty(), ptr, ptr, ptr,
                                             llvm::ArrayType::get(ptr, vtableSize)});
 }
 
@@ -355,12 +355,18 @@ void Generator::emitClass(const sema::ClassInfo* info)
     builder_.CreateCall(initsFunctions_.at(info), {created});
     builder_.CreateRet(created);
 
-    // class info: header, method table for bob_msgSend (reflection), vtable
+    // class info: header, method table for reflection, vtable. What reflection
+    // gets depends on the class's level (design §9): from `identity` the name and
+    // the selectors (for respondsTo:), and only at `invoke` the implementations
+    // bob_msgSend jumps to.
     std::vector<llvm::Constant*> entries;
     llvm::StructType* entryType = llvm::StructType::get(context_, {ptr, ptr});
+    bool named = info->reflectLevel >= sema::ReflectLevel::identity;
+    bool invocable = info->reflectLevel >= sema::ReflectLevel::invoke;
     for (const sema::MessageInfo* method : info->methodList) {
-        if (functions_.count(method) != 0) {
-            entries.push_back(llvm::ConstantStruct::get(entryType, {selectorGlobal(method->selector), reflectionThunk(method)}));
+        if (named && functions_.count(method) != 0) {
+            llvm::Constant* imp = invocable ? static_cast<llvm::Constant*>(reflectionThunk(method)) : llvm::ConstantPointerNull::get(builder_.getPtrTy());
+            entries.push_back(llvm::ConstantStruct::get(entryType, {selectorGlobal(method->selector), imp}));
         }
     }
     llvm::ArrayType* tableType = llvm::ArrayType::get(entryType, entries.size());
@@ -373,14 +379,14 @@ void Generator::emitClass(const sema::ClassInfo* info)
                                                       : llvm::ConstantPointerNull::get(builder_.getPtrTy()));
     }
     llvm::StructType* type = classInfoType(info->vtable.size());
-    llvm::Constant* name = builder_.CreateGlobalString(info->name, "name." + info->unitName + "." + info->name, 0, module_.get());
+    llvm::Constant* name = named ? stringLiteral(info->name) : llvm::ConstantPointerNull::get(builder_.getPtrTy());
     uint64_t size = module_->getDataLayout().getTypeAllocSize(objectType(info));
     llvm::Constant* superclass = info->superclass != nullptr ? static_cast<llvm::Constant*>(classGlobals_.at(info->superclass))
                                                              : llvm::ConstantPointerNull::get(builder_.getPtrTy());
     auto [conformances, conformanceCount] = emitConformances(info);
     classGlobals_.at(info)->setInitializer(llvm::ConstantStruct::get(
         type, {superclass, name, builder_.getInt64(size), destroyFunctions_.at(info), table, builder_.getInt32(static_cast<uint32_t>(entries.size())),
-               builder_.getInt32(conformanceCount), llvm::ConstantPointerNull::get(builder_.getPtrTy()), conformances,
+               builder_.getInt32(conformanceCount), llvm::ConstantPointerNull::get(builder_.getPtrTy()), conformances, emitClassMeta(info),
                llvm::ConstantArray::get(llvm::ArrayType::get(ptr, vtable.size()), vtable)}));
 }
 
@@ -676,6 +682,8 @@ llvm::Type* Generator::llvmType(const Type* type)
         }
         return builder_.getPtrTy();
     case TypeKind::classType:
+    case TypeKind::classObject:
+    case TypeKind::reflector:
     case TypeKind::nilType:
     case TypeKind::blockToInfer:
     case TypeKind::placeholder:
@@ -758,8 +766,10 @@ void Generator::emitEntryPoint()
     llvm::Function* entry = llvm::Function::Create(type, llvm::GlobalValue::ExternalLinkage, abi::mainSymbol, module_.get());
     builder_.SetInsertPoint(llvm::BasicBlock::Create(context_, "entry", entry));
     std::vector<llvm::Value*> args;
-    for (size_t i = 0; i < model_.program.main->params.size(); ++i) {
-        args.push_back(entry->getArg(0));
+    // A Reflector carries nothing at runtime; declaring it is what permits reflection.
+    for (const sema::LocalInfo* param : model_.program.main->params) {
+        bool reflector = param->type->kind == TypeKind::reflector;
+        args.push_back(reflector ? static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(builder_.getPtrTy())) : entry->getArg(0));
     }
     builder_.CreateRet(builder_.CreateCall(functions_.at(model_.program.main), args));
 }
@@ -1490,6 +1500,9 @@ llvm::Value* Generator::emitSend(const Node* node, const sema::SendInfo& send)
             return value;
         }
         if (llvm::Value* value = emitStringSend(node, send)) {
+            return value;
+        }
+        if (llvm::Value* value = emitReflectionSend(node, send)) {
             return value;
         }
         return emitContainerSend(node, send);

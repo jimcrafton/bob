@@ -33,7 +33,7 @@ uint64_t bytesFor(const BobElementType* type, uint64_t capacity)
 
 extern "C" {
 
-BobClass bobArrayClass = {nullptr, "array", 0, destroyArray, nullptr, 0, 0, nullptr};
+BobClass bobArrayClass = {nullptr, nullptr, 0, destroyArray, nullptr, 0, 0, nullptr};
 
 void* bobArrayNew(const BobElementType* element, uint64_t capacity)
 {

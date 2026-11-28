@@ -390,6 +390,7 @@ TEST_F(Modules, ProgramWithAModuleAndAStaticLibrary)
     EXPECT_EQ(bobi.find("Helper"), std::string::npos) << bobi;
     EXPECT_EQ(bobi.find("return "), std::string::npos) << bobi;
     EXPECT_NE(bobi.find("@[weak] target: geometry.Square?;"), std::string::npos) << bobi;
+    EXPECT_NE(bobi.find("@[reflect: introspect] class Square implements"), std::string::npos) << bobi;
     EXPECT_NE(bobi.find("onChange: { int32 [int32] };"), std::string::npos) << bobi;
     EXPECT_NE(bobi.find("@[alias] type Scale := { int32 [int32] };"), std::string::npos) << bobi;
     EXPECT_NE(bobi.find("@[constant] SQUARES: array of: int32 := [1, 4, 9, 16, 25];"), std::string::npos) << bobi;
@@ -413,6 +414,77 @@ TEST_F(Modules, ProgramWithAModuleAndAStaticLibrary)
     EXPECT_NE(output.find("'shapes' was compiled against a different interface of 'geometry'"), std::string::npos) << output;
     ASSERT_EQ(build("shapes.bob", output), 0) << output;
     EXPECT_EQ(build("app.bob", output), 0) << output;
+}
+
+// Invoke-level reflection across modules: the class registry spans every
+// module linked in, and a module that acts through reflection says so in its
+// interface, so a program must declare a Reflector to use it.
+TEST_F(Modules, ReflectionAcrossModules)
+{
+    std::string output;
+    write("plugins.bob", "module plugins, 1.0.0\n{\n"
+                         "    interface {\n"
+                         "        @[reflect: invoke] class Widget { public { size: int64 := 5; } msg grow: n:int64 [int64] { size := size + n; return size; } }\n"
+                         "        extends plugins {\n"
+                         "            @[static] msg sizeOf: name:string [int64] {\n"
+                         "                result: int64 := 0;\n"
+                         "                (Class named: name) ifNotNil: { :c | w: Widget := c new; result := c perform: \"grow:\" on: w with: 1i64; };\n"
+                         "                return result;\n"
+                         "            }\n"
+                         "        }\n"
+                         "    }\n"
+                         "    implementation { @[reflect: invoke] class Hidden inherits Widget { } }\n"
+                         "}\n");
+    ASSERT_EQ(build("plugins.bob", output), 0) << output;
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> written = llvm::MemoryBuffer::getFile(workPath("plugins.bobi"));
+    ASSERT_TRUE(static_cast<bool>(written));
+    EXPECT_NE(std::string((*written)->getBuffer()).find("reflector: \"needed\""), std::string::npos) << std::string((*written)->getBuffer());
+
+    const std::string body = "{\n    extends host {\n        @[static] msg main: args:array%s [int32] {\n"
+                             "            a := plugins sizeOf: \"plugins.Widget\";\n"
+                             "            b := plugins sizeOf: \"Hidden\";\n"
+                             "            missing := plugins sizeOf: \"host.Widget\";\n"
+                             "            return (a = 6 and b = 6 and missing = 0) ifTrue: { 0 } ifFalse: { 1 };\n"
+                             "        }\n    }\n}\n";
+    auto program = [&](const std::string& reflector) {
+        std::string text = body;
+        text.replace(text.find("%s"), 2, reflector);
+        return "program host, 1.0.0\nimport plugins;\n" + text;
+    };
+    write("host.bob", program(""));
+    EXPECT_NE(build("host.bob", output), 0);
+    EXPECT_NE(output.find("the imported module 'plugins' acts through reflection"), std::string::npos) << output;
+
+    write("host.bob", program(" reflector: r:Reflector"));
+    ASSERT_EQ(build("host.bob", output), 0) << output;
+    RunResult run = runExe(workPath("host.exe"));
+    EXPECT_EQ(run.exitCode, 0) << run.stdOut;
+}
+
+TEST_F(Modules, ContainersOfBlocksInAnInterface)
+{
+    std::string output;
+    write("events.bob", "module events, 1.0.0\n{\n    interface {\n        class Bus {\n"
+                        "            public { handlers: dictionary of: { int32 [int32] }; }\n"
+                        "            msg on: name:string do: h:{ int32 [int32] } { handlers at: name put: h; }\n"
+                        "            msg all [array of: { int32 [int32] }] { return handlers values; }\n"
+                        "        }\n    }\n}\n");
+    ASSERT_EQ(build("events.bob", output), 0) << output;
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> written = llvm::MemoryBuffer::getFile(workPath("events.bobi"));
+    ASSERT_TRUE(static_cast<bool>(written));
+    std::string bobi = std::string((*written)->getBuffer());
+    EXPECT_NE(bobi.find("handlers: dictionary of: { int32 [int32] };"), std::string::npos) << bobi;
+    EXPECT_NE(bobi.find("msg all [array of: { int32 [int32] }];"), std::string::npos) << bobi;
+    write("listen.bob", "program listen, 1.0.0\nimport events;\n{\n    extends listen {\n"
+                        "        @[static] msg main: args:array [int32] {\n"
+                        "            bus: Bus;\n            k := 5;\n"
+                        "            bus on: \"a\" do: { :x | x + k };\n            bus on: \"b\" do: { :x | x * 2 };\n"
+                        "            sum := 0;\n            for h in bus all { sum := sum + (h value: 10); }\n"
+                        "            return (sum = 35) ifTrue: { 0 } ifFalse: { 1 };\n"
+                        "        }\n    }\n}\n");
+    ASSERT_EQ(build("listen.bob", output), 0) << output;
+    RunResult run = runExe(workPath("listen.exe"));
+    EXPECT_EQ(run.exitCode, 0) << run.stdOut;
 }
 
 TEST_F(Modules, InterfaceRules)

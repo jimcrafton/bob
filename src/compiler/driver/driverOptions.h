@@ -27,6 +27,8 @@ struct DriverOptions {
     std::string sdkLibPath;
     // Where `import` looks for interfaces (after the source file's own directory).
     std::vector<std::string> modulePaths;
+    // `--reflect-max=`: none, identity, introspect or invoke (design §9).
+    std::string reflectMax = "invoke";
     bool compileOnly = false;
     bool verbose = false;
     bool showHelp = false;

@@ -43,6 +43,10 @@ TypeTable::TypeTable()
     builtins_["block"] = own({TypeKind::blockToInfer, "block"});
 
     compiler_ = own({TypeKind::compilerObject, "compiler"});
+    classObject_ = own({TypeKind::classObject, "Class"});
+    builtins_["Class"] = classObject_;
+    reflector_ = own({TypeKind::reflector, "Reflector"});
+    builtins_["Reflector"] = reflector_;
 
     const char* viewNames[] = {"string bytes", "string codepoints", "string graphemes"};
     const Type* viewElements[] = {integer(8, false), character_, string_};
@@ -110,8 +114,30 @@ std::string elementName(const Type* type)
 
 }
 
+// Blocks match by shape, but containers are keyed by their element type's
+// identity, so a block element is replaced by the one type that stands for its shape.
+const Type* TypeTable::blockShape(const Type* type)
+{
+    type = canonical(type);
+    if (type == nullptr || type->kind != TypeKind::block || type->pending) {
+        return type;
+    }
+    std::vector<const Type*> parts;
+    for (const Type* param : type->params) {
+        parts.push_back(blockShape(param));
+    }
+    parts.push_back(blockShape(type->result));
+    auto it = blockShapes_.find(parts);
+    if (it != blockShapes_.end()) {
+        return it->second;
+    }
+    blockShapes_[parts] = type;
+    return type;
+}
+
 const Type* TypeTable::arrayOf(const Type* element)
 {
+    element = blockShape(element);
     auto key = std::make_pair(static_cast<int>(TypeKind::array), std::make_pair(element, static_cast<const Type*>(nullptr)));
     auto it = containers_.find(key);
     if (it != containers_.end()) {
@@ -125,6 +151,7 @@ const Type* TypeTable::arrayOf(const Type* element)
 
 const Type* TypeTable::dictionaryOf(const Type* value)
 {
+    value = blockShape(value);
     auto key = std::make_pair(static_cast<int>(TypeKind::dictionary), std::make_pair(value, static_cast<const Type*>(nullptr)));
     auto it = containers_.find(key);
     if (it != containers_.end()) {
@@ -139,6 +166,7 @@ const Type* TypeTable::dictionaryOf(const Type* value)
 
 const Type* TypeTable::hashtableOf(const Type* keyType, const Type* value)
 {
+    value = blockShape(value);
     auto key = std::make_pair(static_cast<int>(TypeKind::hashtable), std::make_pair(value, keyType));
     auto it = containers_.find(key);
     if (it != containers_.end()) {
@@ -433,6 +461,8 @@ bool isValueType(const Type* type)
     case TypeKind::set:
     case TypeKind::fixedArray:
     case TypeKind::stringView:
+    case TypeKind::classObject:
+    case TypeKind::reflector:
         return true;
     default:
         return false;

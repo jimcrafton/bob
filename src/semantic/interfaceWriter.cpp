@@ -336,7 +336,8 @@ private:
 
     void writeClass(const ClassInfo& info)
     {
-        out_ << "    " << (info.isProtocol ? "@[protocol] " : "") << "class " << info.name;
+        out_ << "    " << (info.isProtocol ? "@[protocol] " : "@[reflect: " + std::string(reflectLevelName(info.reflectLevel)) + "] ") << "class "
+             << info.name;
         if (info.superclass != nullptr) {
             out_ << " inherits " << spell(info.superclass->type, false);
         }
@@ -427,7 +428,8 @@ std::string writeInterface(const ast::Unit* unit, const SemanticModel& model, st
     }
     std::string header = "# The interface of " + std::string(unit->unitKind == ast::UnitKind::library ? "lib" : "module") + " '" + unit->name +
                          "', written by bobc. Don't edit it: recompile " + unit->name + " instead.\n";
-    header += "@[interface: \"" + fingerprint + "\"" + (depends.empty() ? "" : ", depends: \"" + depends + "\"") + "] " +
+    header += "@[interface: \"" + fingerprint + "\"" + (depends.empty() ? "" : ", depends: \"" + depends + "\"") +
+              (model.needsReflector ? ", reflector: \"needed\"" : "") + "] " +
               (unit->unitKind == ast::UnitKind::library ? "lib " : "module ") + unit->name + ", " +
               (unit->version.empty() ? "0.0.0" : unit->version) + "\n";
     return header + body;

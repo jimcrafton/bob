@@ -29,7 +29,7 @@ TEST(Reflection, MsgSendReachesMethodsThroughTheirThunks)
             msg greet: n:int64 [int64];
             msg twiceGreet: n:int64 [int64] { return (self greet: n) * 2; }
         }
-        class Doubler implements Greeter {
+        @[reflect: invoke] class Doubler implements Greeter {
             public { base: int64 := 10; }
             msg twice: n:int64 [int64] { return base + n * 2; }
             msg greet: n:int64 [int64] { return n + 1; }

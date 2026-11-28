@@ -39,6 +39,17 @@ enum class Ownership : uint8_t {
     unowned,
 };
 
+// What a class emits for reflection (design §9); each level includes the ones before.
+enum class ReflectLevel : uint8_t {
+    none,
+    identity,
+    introspect,
+    invoke,
+};
+
+const char* reflectLevelName(ReflectLevel level);
+bool parseReflectLevel(std::string_view name, ReflectLevel& level);
+
 struct FieldInfo {
     std::string name;
     const Type* type = nullptr;
@@ -114,7 +125,7 @@ struct MessageInfo {
     OverflowMode overflow = OverflowMode::trap;
     bool isMain = false;
 
-    // Class messages. Instance messages take (self, selector, params...);
+    // Class messages. Instance messages take (self, params...);
     // class-side (@[static]) messages take only their params.
     ClassInfo* owner = nullptr;
     bool isInstance = false;
@@ -146,6 +157,8 @@ struct ClassInfo {
     std::string name;
     const ast::ClassDecl* decl = nullptr;
     bool isProtocol = false;
+    // After the unit default and the build cap; an imported class keeps its module's.
+    ReflectLevel reflectLevel = ReflectLevel::introspect;
     ClassInfo* superclass = nullptr;
     std::vector<ClassInfo*> protocols;
     std::vector<ClassInfo*> subclasses;
@@ -375,6 +388,25 @@ enum class SendKind : uint8_t {
     metaInfo,          // `x meta` itself (`op` is the variable's name, if any)
     metaFields,        // `T meta fields`: an array of FieldMeta, built where it's used
     compilerDiagnostic,// `compiler error:` / `warning:` / `note:`
+
+    // reflection (design §9)
+    classOf,           // `obj class`: the receiver's class
+    namedClass,        // `Button class`: classInfo
+    className,         // `c name`
+    classSuperclass,   // `c superclass` -> Class?
+    classIsKindOf,
+    classRespondsTo,
+    classCompare,      // `c = d`, `c <> d` (op)
+    objectIsOnStack,   // `obj isOnStack`
+    classFields,       // `c fields` -> array of: FieldMeta (classInfo)
+    classMessages,     // `c messages` -> array of: MessageMeta (classInfo)
+    classProtocols,    // `c protocols` -> array of: string
+    classGetField,     // `c get: "name" of: obj`; resultType from context
+    classQualifiedName,// `c qualifiedName` -> "unit.Class"
+    classSetField,     // `c set: "name" of: obj to: value`; operandType is the value's type
+    classPerform,      // `c perform: "sel" on: obj with: …`; resultType from context (void without one)
+    classNew,          // `c new`; resultType from context, classInfo the expected class or protocol
+    classNamed,        // `Class named: "unit.Button"` -> Class?
 };
 
 // How a send node is implemented. `operandType` is the type every operand is
@@ -396,6 +428,8 @@ struct SendInfo {
     const EnumInfo* enumInfo = nullptr;
     std::vector<const FieldInfo*> fields;
     const ConstValue* value = nullptr;
+    // `perform:`: the type each `with:` argument is passed as.
+    std::vector<const Type*> argumentTypes;
 };
 
 // One case label as an inclusive range of the subject's values, stored as
@@ -411,6 +445,8 @@ struct ModuleInfo {
     std::string name;
     std::string version;
     std::string fingerprint;
+    // Its interface says it acts through reflection (`@[reflector: "needed"]`).
+    bool needsReflector = false;
     std::string interfacePath;
     // The compiled code next to the interface (`.lib`, else `.obj`); empty if missing.
     std::string libraryPath;
@@ -458,8 +494,12 @@ public:
     std::unordered_map<ast::NodeId, ConstantInfo*> constantRefs;
     // `@[compiletime] (expr)` and `@[compiletime] { }` nodes.
     std::unordered_map<ast::NodeId, CompileTimeItem*> compileTimeNodes;
-    // The class `meta fields` returns instances of, created on first use.
+    // The classes `meta fields` / `c fields` and `c messages` return instances of, created on first use.
     ClassInfo* fieldMetaClass = nullptr;
+    ClassInfo* messageMetaClass = nullptr;
+    // The unit, or a module it imports, acts through reflection (`perform:`,
+    // `set:of:to:`, `new`, `Class named:`), so its program's main needs a Reflector.
+    bool needsReflector = false;
     // Locals that only ever hold stack objects (or nil): no retain/release on them.
     std::unordered_set<const LocalInfo*> stackOnlyLocals;
     // Block functions whose environment lives in the creating frame, because the

@@ -386,11 +386,6 @@ const Type* Analyzer::checkMetaQuery(const UnarySend* send, const Type* metaType
         }
     }
     if (selector == "fields" && (subject->kind == TypeKind::record || (isClass(subject) && !subject->classInfo->isProtocol))) {
-        if (!context_.compileTime) {
-            error(send->selectorRange, "sema.compileTimeOnly",
-                  "'meta fields' gives FieldMeta objects, which exist only in compile-time code; use it inside '@[compiletime]'");
-            return types_.error();
-        }
         ClassInfo* fieldMeta = fieldMetaClass();
         std::vector<const FieldInfo*> fields;
         const std::vector<FieldInfo>& all = subject->kind == TypeKind::record ? subject->record->fields : subject->classInfo->fields;
@@ -412,18 +407,34 @@ const Type* Analyzer::checkMetaQuery(const UnarySend* send, const Type* metaType
     return types_.error();
 }
 
-// `FieldMeta { name; typeName; offset; size }`: the elements of `T meta fields`.
+// `FieldMeta { name; typeName; offset; size }`: the elements of `T meta fields` and `c fields`.
 ClassInfo* Analyzer::fieldMetaClass()
 {
-    if (model_.fieldMetaClass != nullptr) {
-        return model_.fieldMetaClass;
+    if (model_.fieldMetaClass == nullptr) {
+        model_.fieldMetaClass = synthesizeMetaClass(
+            "FieldMeta", {{"name", types_.string()}, {"typeName", types_.string()}, {"offset", types_.int64()}, {"size", types_.int64()}});
     }
+    return model_.fieldMetaClass;
+}
+
+// `MessageMeta { selector; argumentTypes; resultType }`: the elements of `c messages`.
+ClassInfo* Analyzer::messageMetaClass()
+{
+    if (model_.messageMetaClass == nullptr) {
+        model_.messageMetaClass = synthesizeMetaClass(
+            "MessageMeta", {{"selector", types_.string()}, {"argumentTypes", types_.arrayOf(types_.string())}, {"resultType", types_.string()}});
+    }
+    return model_.messageMetaClass;
+}
+
+// The runtime fills these by offset (bobClassFields/bobClassMessages), so every
+// field must be pointer-sized and in this order.
+ClassInfo* Analyzer::synthesizeMetaClass(const char* name, const std::vector<std::pair<const char*, const Type*>>& fields)
+{
     auto info = std::make_unique<ClassInfo>();
-    info->name = "FieldMeta";
+    info->name = name;
     info->unitName = model_.program.name;
     info->type = types_.addClass(info.get());
-    const std::pair<const char*, const Type*> fields[] = {
-        {"name", types_.string()}, {"typeName", types_.string()}, {"offset", types_.int64()}, {"size", types_.int64()}};
     for (const auto& [fieldName, type] : fields) {
         FieldInfo field;
         field.name = fieldName;
@@ -438,7 +449,6 @@ ClassInfo* Analyzer::fieldMetaClass()
     model_.classes.push_back(std::move(info));
     completeClass(raw);
     resolveDefaultable(raw);
-    model_.fieldMetaClass = raw;
     return raw;
 }
 

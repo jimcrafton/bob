@@ -14,7 +14,7 @@ constexpr uint64_t removedHash = 1;
 // its 16-byte object header.
 constexpr uint64_t entriesHeader = 16;
 
-BobClass entriesClass = {nullptr, "table entries", 0, nullptr, nullptr, 0, 0, nullptr};
+BobClass entriesClass = {nullptr, nullptr, 0, nullptr, nullptr, 0, 0, nullptr};
 
 uint64_t padded(uint64_t size)
 {
@@ -210,7 +210,7 @@ uint64_t elementHash(const BobElementType* type, const void* element)
 
 extern "C" {
 
-BobClass bobTableClass = {nullptr, "table", 0, destroyTable, nullptr, 0, 0, nullptr};
+BobClass bobTableClass = {nullptr, nullptr, 0, destroyTable, nullptr, 0, 0, nullptr};
 
 void* bobTableAt(void* object, const void* key)
 {

@@ -4,6 +4,7 @@
 
 struct BobClass;
 struct BobElementType;
+struct BobString;
 
 extern "C" {
 
@@ -33,6 +34,30 @@ void* bobMsgSendLookup(BobClass* cls, const char* selector);
 // The witness table of `cls` for `protocol` (a BobProtocol). Reads only
 // immutable data; a class that doesn't conform traps (well-typed code can't).
 void* const* bobWitness(const BobClass* cls, const void* protocol);
+// Reflection (design §9): `c isKindOf: d` (superclass chain) and `c respondsTo: "sel"`.
+bool bobClassIsKindOf(const BobClass* cls, const BobClass* other);
+bool bobClassRespondsTo(const BobClass* cls, const BobString* selector);
+// Introspection (design §9): owned arrays built from the classes' BobClassMeta,
+// superclass first. `metaClass` is the program's FieldMeta or MessageMeta class,
+// `metaElement` its element descriptor and `stringElement` that of a string.
+void* bobClassFields(const BobClass* cls, BobClass* metaClass, const BobElementType* metaElement);
+void* bobClassMessages(const BobClass* cls, BobClass* metaClass, const BobElementType* metaElement, const BobElementType* stringElement);
+void* bobClassProtocols(const BobClass* cls, const BobElementType* stringElement);
+// `c get: "name" of: object` (write = 0) and `c set: … to:` (write = 1): the
+// offset of the public, strongly held field `name` of type `typeKey`. Traps
+// unless `object` is a `cls` and the field exists with that type; writing also
+// needs its class at `invoke`.
+uint64_t bobClassFieldOffset(const BobClass* cls, const void* object, const BobString* name, const BobString* typeKey, uint32_t write);
+// `c perform: "sel" on: object …`: the implementation (a `.msgSend` thunk,
+// called as (self, selector, args…)) that `object`'s class has for `selector`
+// with exactly `signatureKey`. Traps otherwise.
+void* bobClassMethod(const BobClass* cls, const void* object, const BobString* selector, const BobString* signatureKey);
+// `c new`: a new default-constructed object (owned), which must be an
+// `expectedClass` (or conform to `expectedProtocol` when that isn't null).
+void* bobClassNew(const BobClass* cls, const BobClass* expectedClass, const void* expectedProtocol);
+// `Class named: "unit.Button"` or `"Button"`: the class at `invoke` with that
+// qualified name, else the only one with that bare name, else null.
+const BobClass* bobClassNamed(const BobString* name);
 void bob_msgSend();
 void bobRuntimeReportLeaks();
 

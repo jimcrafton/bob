@@ -4,7 +4,7 @@ What the analyzer (`bobSemantic`, `src/semantic`) and code generator (`src/compi
 
 ## Programs and messages
 - An executable is a `program name, version { … }` unit with an `extends name { … }` block. Messages there are **class-side** and must be marked `@[static]`. Inside them `self` is the program, so `self fact: 5` and `factorial fact: 5` are the same direct call.
-- The entry point is `@[static] msg main: args:array [int32]` (or `msg main [int32]`). Its return value is the process exit code. `args` is an `array of: string` holding the command-line arguments after the program name.
+- The entry point is `@[static] msg main: args:array [int32]` (or `msg main [int32]`). A program that acts through reflection adds a Reflector: `main: r:Reflector` or `main: args:array reflector: r:Reflector` (see **Reflection**). Its return value is the process exit code. `args` is an `array of: string` holding the command-line arguments after the program name.
 - Messages are compiled to internal LLVM functions named `bob.<program>.<selector>`. The runtime calls `bobMain`, which the compiler generates.
 - **Parameters and `for` loop variables are read-only.** Assigning to them is `sema.assignToReadOnly`.
 - A message with a return type must return on every path (`sema.missingReturn`). `loop { }` without a `break` counts as returning.
@@ -79,7 +79,13 @@ An untyped literal takes its type from context: the declared type, the parameter
   - Any other block is a **heap closure**: a reference-counted object holding its captures. It escapes when it's returned (also from another block), stored in a field, passed to a message that keeps that parameter, passed to a block, captured by a heap closure, or assigned to a variable declared in another function or outside the loop that creates it. `SemanticModel::blockEscapes` records why.
   - A heap closure **copies** read-only captures (parameters, `self`, loop variables, `ifNotNil:` bindings) and retains them. A mutable variable it captures is **boxed**: it lives in a small heap object shared by the frame and every closure that captures it, so all of them see the same variable (`SemanticModel::boxedLocals`). A variable declared inside a loop gets a new box on each pass, so closures made in different passes don't share it.
   - Whatever a heap closure captures escapes with it: a captured object goes on the heap, a captured `self` or parameter counts as kept in the message's escape summary.
-  - Blocks hold a reference, so a record can't have a block field (`sema.referenceInRecord`). Containers of blocks aren't supported yet.
+  - Blocks hold a reference, so a record can't have a block field (`sema.referenceInRecord`).
+  - **Containers of blocks.** A block can be an array element or a dictionary or hashtable value: `ops: array of: { int32 [int32] }`. A block literal stored into one takes its parameter types from the element type (`ops add: { :x | x + 1 }`), and so does each element of a literal assigned to one.
+    - A bare container can infer a block element type from the first block stored, as long as that block writes its parameter types (`later add: { :x: int32 | x }`). Otherwise it's `sema.cannotInferBlock`.
+    - A stored block escapes, so it's a heap closure. Its captures stay by reference.
+    - The shape must be written out; bare `block` is `sema.invalidElementType`.
+    - Blocks can't be keys or set elements (`sema.invalidKeyType`), can't use `includes:` (blocks have no `=`), and can't be fixed-array elements (`sema.invalidElementType`: a fixed array starts defaulted and a block has no default).
+    - Blocks match by shape, so every block of the same shape stands for one element type (`TypeTable::blockShape`): `array of: { int32 [int32] }` is one type wherever it's written, across modules too.
   - A class field of block type with no initializer is **required**: the constructor message must pass it (`Button onPress: { … }`). A private one needs an initializer.
 - **Values and ARC.** A block value is `{function, environment}`, and block values are reference counted like strings: copying retains the environment, dropping it releases it. A stack environment carries the immortal flag, so those calls return at once, and a block that captures nothing has a null environment.
 - **Inlined messages.** These compile to plain branches and loops, with no closure:
@@ -165,17 +171,17 @@ There's no `new` (design §4.3a).
 | `super` | any | direct call to the superclass's implementation |
 
 - Instance messages compile to `bob.<Class>.<selector>(self, args…)`. Protocol defaults compile to `bob.<Protocol>.<selector>`; their sends to `self` go through the itable.
-- The method table (`{selector, implementation}`, for `bob_msgSend` and reflection) points at a thunk per message, `….msgSend(self, selector, args…)`, which drops the selector and tail-calls the message.
+- The method table (`{selector, implementation}`, for `bob_msgSend` and reflection) depends on the class's reflection level (see **Reflection**). At `invoke` each entry points at a thunk, `….msgSend(self, selector, args…)`, which drops the selector and tail-calls the message. `perform:` calls the same thunks. At `identity` and `introspect` the entries have no implementation, and at `none` the table is empty.
 - Every class gets a vtable slot for each of its instance messages, with inherited slots first.
 - **Itables (phase 8).** A protocol's slots are the messages of the protocols it refines first (in the order it names them, without repeats), then its own, in declaration order. Every class has a witness table for each protocol it conforms to, directly, by refinement or through a superclass, filled with its own implementation, an inherited one or the protocol default. A value of a refined protocol can be used as the protocol it refines, because each protocol has its own table. Adding or reordering protocol messages changes the interface, so importers recompile.
 - Protocol messages can return records.
 
 **Object layout and runtime**
 - An object is `{class*, refCount: uint32, flags: uint32, fields…}`, with inherited fields first and the object allocated from the process heap.
-- The class info (`BobClass` in `src/shared/objectModel.h`) holds the superclass, name, instance size, `destroy` function, method table `{selector, implementation}`, the conformance count, the method cache, and the conformance list `{protocol, witness table}`, followed by the vtable (at offset 64).
+- The class info (`BobClass` in `src/shared/objectModel.h`) holds the superclass, the name (an immortal string, null below `identity`), instance size, `destroy` function, method table `{selector, implementation}`, the conformance count, the method cache, the conformance list `{protocol, witness table}`, and the introspection table (`BobClassMeta`, null below `introspect`), followed by the vtable (at offset 72).
 - A protocol descriptor (`BobProtocol`: name and slot count) is emitted link-once by every module that uses the protocol, so its address identifies it program-wide, like a selector. `bobWitness` scans the class's conformance list for it. It only reads immutable tables, so nothing in protocol dispatch is written at run time.
 - Selectors are unique strings, compared by address.
-- `bob_msgSend` (MASM) probes a per-class cache and falls back to `bobMsgSendLookup`, which walks the superclass chain. An unknown selector traps. No generated code uses it any more; it stays for reflection (`perform:`).
+- `bob_msgSend` (MASM) probes a per-class cache and falls back to `bobMsgSendLookup`, which walks the superclass chain. An unknown selector traps, and so does one listed without an implementation (a class below `invoke`). No generated code uses it any more; it stays for reflection (`perform:`).
 
 **Reference counting (ARC)** (atomic counts)
 - Variables and fields own one reference. Parameters and `self` are borrowed.
@@ -195,9 +201,41 @@ There's no `new` (design §4.3a).
 - Only object references can be weak or unowned. The attribute goes on the declaration, not on a later assignment.
 - Reading either gives a strong reference for the rest of the statement, so the object can't vanish while it's in use.
 - An object assigned to a weak or unowned variable goes on the heap, because it has to be destroyed when its last strong reference goes, which a stack object never is.
-- In the runtime, weak and unowned references count in the upper bits of the header's `flags`. When the strong count reaches 0 the object is destroyed (its fields released), and its memory is kept until the last weak or unowned reference lets go. The object header also has a stack flag (`bobObjectIsOnStack` in the runtime), set for stack objects and stack environments. The language query for it comes with reflection.
+- In the runtime, weak and unowned references count in the upper bits of the header's `flags`. When the strong count reaches 0 the object is destroyed (its fields released), and its memory is kept until the last weak or unowned reference lets go. The object header also has a stack flag (`bobObjectIsOnStack` in the runtime), set for stack objects and stack environments. `obj isOnStack` reads it.
 - Interfaces (`.bobi`) carry `@[weak]` and `@[unowned]` on exported fields.
 - **Leak report:** at exit, the runtime prints `bob: leak: N object(s), M bytes still allocated at exit` to stderr if anything is still alive. The test harness requires every program to report nothing, except `leakCycle.bob`, which checks that the report works.
+
+**Reflection** (phase 8, design §9: 8a levels, 8b introspection, 8c invocation)
+- Every class has a reflection level: `none`, `identity`, `introspect` or `invoke`. It's `introspect` unless the class says `@[reflect: level]` or the unit header does (`@[reflect: none] program p, …`), which sets the default for the unit's classes. A value that isn't a level is `sema.invalidAttribute`.
+- `--reflect-max=level` caps every class the unit compiles. A class that explicitly asked for more is lowered and gets the warning `sema.reflectCapped`. An imported class keeps the level its module was compiled with; the interface writes it on every class (`@[reflect: introspect] class Square …`).
+- What each level emits: `none` gives no name and an empty method table. `identity` adds the name and the selectors. `introspect` adds the class's introspection table (`BobClassMeta`): its own public fields (name, type name, type key, offset, size, ownership), its own sendable instance messages with their signatures, and every protocol it conforms to. It also holds the qualified name and the level. `invoke` adds the implementations (the `.msgSend` thunks, in the method table and in the introspection table), the default constructor (only when every field has a default), and an entry in the class registry.
+- `obj class` is the object's dynamic class, a `Class`: a plain pointer to the class descriptor, never reference counted. `Button class` names one; a protocol has no class object (`sema.unknownMessage`). Both are tier 0: a load of the object's `isa`, or a constant.
+- A `Class` has no default: a local needs a value (`sema.uninitializedReference`), a field without an initializer is required, and it can't be a record field. `Class?` is an ordinary value optional.
+- `c name` is a `string`: the class's name, or `""` at `none`. `c superclass` is a `Class?`, nil for a root class.
+- `c isKindOf: d` is true when `d` is `c` or one of its superclasses (`bobClassIsKindOf`). `c respondsTo: "sel"` looks the selector up in `c` and its superclasses by text, so a string built at runtime works too (`bobClassRespondsTo`). It's false at `none`.
+- Classes compare with `=` and `<>`.
+- `c fields` is an `array of: FieldMeta` (`name`, `typeName`, `offset`, `size`), the same class `T meta fields` returns. It lists public fields only, superclass first. Each class contributes what it declares itself, so a superclass below `introspect` contributes nothing. `offset` is from the start of the object (fields begin at 16).
+- `c messages` is an `array of: MessageMeta` (`selector`, `argumentTypes: array of: string`, `resultType`, which is `"void"` when nothing is returned). It lists instance messages, inherited ones first, and includes protocol defaults the class adopts. `init`, the generated `copy`, class-side (`@[static]`) messages and compile-time-only messages aren't listed. An override shows up under both the superclass and the subclass.
+- `c protocols` is an `array of: string`: every protocol the class conforms to, directly, by refinement or through a superclass.
+- All three are empty below `introspect`. They're tier 1 runtime calls (`bobClassFields`, `bobClassMessages`, `bobClassProtocols`) that build fresh arrays from the tables.
+- `c get: "name" of: obj` reads a public field. The result type comes from context: the declared variable, the parameter it's passed to, or the other operand. Without one it's `sema.reflectNeedsType`. `obj` must be an object (`sema.typeMismatch`).
+  - At runtime (`bobClassFieldOffset`) it traps with `reflection mismatch` unless `obj` is a `c` (or a subclass), the field exists in `c` or a superclass at `introspect` or above, its type matches the result type exactly (no widening; class types match by unit and name), and it is held strongly (weak and unowned fields can't be read this way). A successful read is a load at the found offset plus a retain.
+  - When the class is named statically and the field name is a literal (`Rect class get: "w" of: r`), the same checks happen at compile time: `sema.unknownField` (no public field), `sema.reflectLevel` (the declaring class is below `introspect`) and `sema.typeMismatch`. The runtime lookup still runs, because `obj` might not be a `Rect`.
+- `c qualifiedName` is `"unit.Class"`: the declaring unit's dotted name, then the class name. It's `""` below `introspect`. Namespaces aren't analysed yet; when they are, they'll sit between the two.
+- **Invoke-level operations** need the class at `invoke`, and the program needs a `Reflector`:
+  - `msg main: r:Reflector [int32]` or `msg main: args:array reflector: r:Reflector [int32]`. `Reflector` is only allowed as the type of main's parameter (`sema.invalidReflector`). It carries nothing at runtime (null is passed); declaring it is what allows the four operations below.
+  - When a program uses any of them, or imports a module whose interface says `reflector: "needed"`, and its main has no Reflector, that's `sema.reflectorRequired`. It's reported at the first such send, or at main when only a module needs it. A module or lib that uses them, or imports one that does, writes `reflector: "needed"` in its interface header.
+  - Compile-time code can't use them (`sema.reflectorRequired`).
+- `c perform: "sel" on: obj` with zero to three `with:` arguments. The selector's colon count must match the arguments (`sema.blockArity` for a literal). The argument types are the expressions' own types, so an untyped `2` is an `int32`; write `2i64` for an int64 parameter. The result type comes from context. Without one, the message must return nothing.
+  - At runtime (`bobClassMethod`) `obj` must be a `c`. The message is searched by text from obj's own class up, so an override runs. Its signature key (`"int64,string>bool"`, with class types qualified by unit) must equal the call's. Its class must be at `invoke`. Each failure traps with `reflection mismatch`. Then the message's `.msgSend` thunk is called as `(obj, null, args…)`.
+  - On a class named statically with a literal selector, the message is found at compile time (`sema.unknownMessage`, `sema.reflectLevel` below `invoke`). The arguments then convert to its parameter types and the result is its return type, so `x := Rect class perform: "scale:" on: r with: 2` works.
+  - The object and the arguments count as escaping, since the message isn't known.
+- `c set: "name" of: obj to: value` writes a public, strongly held field (released old value, retained new). The value's own type must be the field's type exactly. The declaring class must be at `invoke`, checked at runtime by `bobClassFieldOffset` and at compile time on a named class (where the value converts to the field type). The value counts as escaping.
+- `c new` makes a default-constructed object (the class's `new` function: field initializers, then `init`). The context gives the type, a class, protocol or optional of one (`sema.reflectNeedsType` otherwise). At runtime (`bobClassNew`) it traps unless `c` is at `invoke`, every field has a default, and the class is (or conforms to) the expected type. On a named class all three are checked at compile time.
+- `Class named: "unit.Button"` is a `Class?`. It searches the program-wide registry of `invoke` classes, first by qualified name, then by bare name when exactly one class has it. Ambiguous or unknown names give nil, and so do classes below `invoke`.
+  - The registry is built by the linker. Each module puts a pointer to each of its `invoke` classes, including private ones, in the COFF section `.bobcls$m`. The runtime brackets the section with `.bobcls$a` and `.bobcls$z` and skips the zero padding the linker may insert.
+- `obj isOnStack` is true when escape analysis put the object in a stack frame (a test of the header's stack flag). Asking doesn't make the object escape.
+- `class` and the instance message `isOnStack` are built in; declaring them is `sema.reservedSelector`.
 
 ## Enums, subranges and named types (phase 5)
 **Enums** (`enum Color { red; green; blue; }`, `enum PciClass : uint8 { storage := 0x01; … }`)
@@ -349,7 +387,7 @@ Compile-time code is ordinary bob, type checked like everything else. `bobc` com
 | `T meta count` | members of an enum, elements of a fixed array, values of a subrange, fields of a record |
 | `Color meta members` | `array of: Color` |
 | `c meta elementType` | `meta` of a container's or optional's element type |
-| `T meta fields` | `array of: FieldMeta` (`name`, `typeName`, `offset`, `size`), only in compile-time code. Outside the class, only public fields |
+| `T meta fields` | `array of: FieldMeta` (`name`, `typeName`, `offset`, `size`), the same class as `c fields` (Reflection). Outside compile-time code it's an array built where it's used, from constants, with no reflection level needed. Outside the class, only public fields |
 
 - The layout rules live in the semantic library (`layout.h`).
 - `Layout.MatchesTheCodeGenerator` checks them against LLVM's for every kind of type.

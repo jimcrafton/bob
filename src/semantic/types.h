@@ -45,6 +45,10 @@ enum class TypeKind : uint8_t {
     // `s bytes`, `s codepoints`, `s graphemes`: the string itself, seen as a collection.
     // `count` is the view (0 bytes, 1 codepoints, 2 graphemes), `inner` the element type.
     stringView,
+    // `Class`: a class's static descriptor (design §9), a plain pointer value.
+    classObject,
+    // `Reflector`: the build-time switch for invoke-level reflection; only `main`'s parameter.
+    reflector,
 };
 
 // `meta` is the class side of something named in an expression: the program
@@ -136,6 +140,10 @@ public:
     // The type of `x meta` for a subject type, and of the `compiler` object.
     const Type* metaInfoOf(const Type* subject);
     const Type* compilerObject() const { return compiler_; }
+    const Type* classObject() const { return classObject_; }
+    const Type* reflector() const { return reflector_; }
+    // The one block type that stands for a block's shape (params and result); other types unchanged.
+    const Type* blockShape(const Type* type);
     // A container whose element (and key) types are still to be inferred.
     Type* pendingContainer(TypeKind kind);
 
@@ -159,7 +167,10 @@ private:
     const Type* character_ = nullptr;
     const Type* views_[3] = {};
     const Type* compiler_ = nullptr;
+    const Type* classObject_ = nullptr;
+    const Type* reflector_ = nullptr;
     std::unordered_map<const Type*, const Type*> metaInfos_;
+    std::map<std::vector<const Type*>, const Type*> blockShapes_;
 };
 
 // A pending container's canonical type once its element type is known; otherwise itself.

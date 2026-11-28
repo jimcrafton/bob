@@ -8,7 +8,7 @@
 #include "unicode.h"
 
 extern "C" {
-BobClass bobStringClass = {nullptr, "string", 0, nullptr, nullptr, 0, 0, nullptr};
+BobClass bobStringClass = {nullptr, nullptr, 0, nullptr, nullptr, 0, 0, nullptr};
 }
 
 namespace bob::runtime {

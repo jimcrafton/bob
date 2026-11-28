@@ -214,6 +214,11 @@ private:
     llvm::Constant* stringLiteral(const std::string& text);
     llvm::Value* printString(llvm::Value* value, const Type* type);
     llvm::Value* emitStringSend(const Node* node, const sema::SendInfo& send);
+    // `obj class` and the `Class` messages (codegenReflection.cpp); null if not one.
+    llvm::Value* emitReflectionSend(const Node* node, const sema::SendInfo& send);
+    // The class's BobClassMeta, or null below the `introspect` level.
+    llvm::Constant* emitClassMeta(const sema::ClassInfo* info);
+    llvm::Function* fieldOffsetFunction();
     llvm::Value* emitContainerSend(const Node* node, const sema::SendInfo& send);
     llvm::Value* emitArrayLiteral(const ArrayLiteral* literal, const sema::SendInfo& send);
     // The address of a container variable/field for a mutating send; null if none.

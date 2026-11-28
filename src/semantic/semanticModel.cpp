@@ -4,6 +4,32 @@
 
 namespace bob::sema {
 
+const char* reflectLevelName(ReflectLevel level)
+{
+    switch (level) {
+    case ReflectLevel::none:
+        return "none";
+    case ReflectLevel::identity:
+        return "identity";
+    case ReflectLevel::introspect:
+        return "introspect";
+    case ReflectLevel::invoke:
+        return "invoke";
+    }
+    return "introspect";
+}
+
+bool parseReflectLevel(std::string_view name, ReflectLevel& level)
+{
+    for (ReflectLevel candidate : {ReflectLevel::none, ReflectLevel::identity, ReflectLevel::introspect, ReflectLevel::invoke}) {
+        if (name == reflectLevelName(candidate)) {
+            level = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
 namespace {
 
 // The unit's own declaration first (it shadows imports), then the first imported
