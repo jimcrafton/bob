@@ -387,6 +387,19 @@ const Type* Analyzer::resolveTypeMessage(const TypeMessage* message, const std::
         }
         return types_.pointerTo(canonical(pointee), container == "volatilePointer");
     }
+    if (container == "port" && message->selector == "of:") {
+        const Type* data = resolveType(message->arguments[0]);
+        if (data == types_.error()) {
+            return data;
+        }
+        data = canonical(data);
+        if (!isInteger(data) || data->isSigned || data->bits > 32 || data->distinctOf != nullptr) {
+            error(message->arguments[0], "sema.invalidPortType",
+                  "an I/O port moves a uint8, uint16 or uint32 ('in'/'out' have no other widths), not a '" + typeName(data) + "'");
+            return types_.error();
+        }
+        return types_.portOf(data);
+    }
     if (container == "set" && message->selector == "of:") {
         const Type* type = element(message->arguments[0], "a set element");
         if (type == types_.error() || !hashable(message->arguments[0], type)) {
@@ -396,7 +409,7 @@ const Type* Analyzer::resolveTypeMessage(const TypeMessage* message, const std::
     }
     error(message, "sema.expectedType",
           "unknown type message '" + message->selector + "'; expected 'array of: T', 'array of: T by: I', 'dictionary of: V', "
-          "'hashtable keys: K values: V', 'set of: T', 'pointer to: T', 'volatilePointer to: T', 'slice of: T' or a subrange 'lo to: hi'");
+          "'hashtable keys: K values: V', 'set of: T', 'pointer to: T', 'volatilePointer to: T', 'slice of: T', 'port of: T' or a subrange 'lo to: hi'");
     return types_.error();
 }
 

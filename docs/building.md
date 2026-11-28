@@ -86,7 +86,14 @@ bobc hello.ll                  # → hello.exe
 bobc -c hello.ll -o hello.obj  # object only
 bobc -v hello.ll               # also print the lld-link command
 ```
-Programs are linked with `/entry:bobStart /nodefaultlib` against `bobrt.lib` and `kernel32.lib` only. The resulting exe imports nothing but kernel32. Runtime functions available to IR in phase 0:
+Programs are linked with `/entry:bobStart /nodefaultlib` against `bobrt.lib` and `kernel32.lib` only. The resulting exe imports nothing but kernel32.
+
+`.obj` and `.lib` files after the input are linked in too: assembled code (design §6.7) or more import libraries. A module packs its `.obj` inputs into its own static library:
+```
+ml64 /c /Fo switch.obj switch.asm
+bobc kernel.bob switch.obj      # a program: linked into kernel.exe
+bobc tasks.bob switch.obj       # a module: switch.obj goes into tasks.lib
+``` Runtime functions available to IR in phase 0:
 ```
 declare void @bobRuntimeWrite(i32 %stream, ptr %bytes, i64 %count)   ; stream 1 = stdout, 2 = stderr; UTF-8 bytes
 ```

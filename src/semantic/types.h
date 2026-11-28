@@ -56,6 +56,11 @@ enum class TypeKind : uint8_t {
     // `cFunction { T… [R] }` (design §6.6): a plain C function pointer, never null;
     // `params` and `result` as for a block.
     cFunction,
+    // `port of: T` (design §6.7): an x86 I/O port number (uint16) whose accesses
+    // are `in`/`out` of T's width; `inner` is T (uint8, uint16 or uint32).
+    ioPort,
+    // `Cpu`: the receiver of the processor's own instructions (design §6.7).
+    cpu,
 };
 
 // `meta` is the class side of something named in an expression: the program
@@ -155,6 +160,8 @@ public:
     const Type* blockShape(const Type* type);
     const Type* pointerTo(const Type* pointee, bool isVolatile);
     const Type* sliceOf(const Type* element);
+    const Type* portOf(const Type* data);
+    const Type* cpu() const { return cpu_; }
     const Type* cFunction(std::vector<const Type*> params, const Type* result);
     // A container whose element (and key) types are still to be inferred.
     Type* pendingContainer(TypeKind kind);
@@ -181,6 +188,7 @@ private:
     const Type* compiler_ = nullptr;
     const Type* classObject_ = nullptr;
     const Type* reflector_ = nullptr;
+    const Type* cpu_ = nullptr;
     std::unordered_map<const Type*, const Type*> metaInfos_;
     std::map<std::vector<const Type*>, const Type*> blockShapes_;
     std::map<std::vector<const Type*>, const Type*> cFunctions_;
@@ -218,6 +226,7 @@ bool isValueOptional(const Type* type);
 bool isPointer(const Type* type);
 bool isSlice(const Type* type);
 bool isCFunction(const Type* type);
+bool isPort(const Type* type);
 // Never null and with no default (pointers, C functions): records and fixed arrays hold optional ones.
 bool isNonNullWord(const Type* type);
 // What can cross a C boundary (design §6.6): integers, reals, bool, char, enums,

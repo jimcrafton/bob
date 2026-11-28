@@ -664,6 +664,13 @@ private:
         case SendKind::sliceCount:
         case SendKind::sliceIsEmpty:
         case SendKind::sliceAt:
+        case SendKind::portFromInteger:
+        case SendKind::portCast:
+        case SendKind::portIn:
+        case SendKind::portOut:
+        case SendKind::portAdvance:
+        case SendKind::portToInteger:
+        case SendKind::cpuInstruction:
             walkExpression(receiver, noEffect());
             walkArguments(noEffect());
             return;

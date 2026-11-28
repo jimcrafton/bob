@@ -156,6 +156,13 @@ int Driver::buildModule(const DriverOptions& options, const ast::Unit* unit, con
                         const std::function<std::optional<std::string>(const std::string&)>& emitObject)
 {
     std::string outputPath = options.outputPath.empty() ? replaceExtension(options.inputPath, options.compileOnly ? ".obj" : ".lib") : options.outputPath;
+    std::vector<std::pair<std::string, std::string>> members;
+    for (const std::string& input : options.linkInputs) {
+        if (hasExtension(input, ".lib")) {
+            return fail("a module's static library takes .obj files only; link '" + input + "' into the program that imports '" + unit->name + "'");
+        }
+        members.emplace_back(input, std::string(llvm::sys::path::filename(input)));
+    }
     std::string fingerprint;
     std::string interfaceText = sema::writeInterface(unit, model, fingerprint);
 
@@ -172,7 +179,8 @@ int Driver::buildModule(const DriverOptions& options, const ast::Unit* unit, con
         std::string object = std::string(objectPath);
         std::optional<std::string> error = emitObject(object);
         if (!error) {
-            error = writeStaticLibrary(outputPath, object, unit->name + ".obj");
+            members.insert(members.begin(), {object, unit->name + ".obj"});
+            error = writeStaticLibrary(outputPath, members);
         }
         llvm::sys::fs::remove(object);
         if (error) {
@@ -226,6 +234,7 @@ int Driver::produceOutput(const DriverOptions& options, const std::function<std:
     else {
         LinkJob job;
         job.objects.push_back(object);
+        job.objects.insert(job.objects.end(), options.linkInputs.begin(), options.linkInputs.end());
         job.objects.insert(job.objects.end(), libraries.begin(), libraries.end());
         job.outputPath = outputPath;
         std::string commandLine;

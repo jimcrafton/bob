@@ -434,6 +434,15 @@ enum class SendKind : uint8_t {
     sliceAt,           // bounds-checked
     sliceAtPut,
     cFunctionInvoke,   // `f value: a` on a cFunction (operandType), through the C ABI
+
+    // I/O ports and processor instructions (design §6.7); operandType is the port type
+    portFromInteger,   // `n asPort` -> resultType; traps outside 0 to: 65535
+    portCast,          // `p asPort`, `p asPort: T`: the same port number, another width
+    portIn,            // `p contents`: one `in` of the port's width
+    portOut,           // `p contents: v`: one `out`
+    portAdvance,       // `p advancedBy: n`; traps outside 0 to: 65535
+    portToInteger,     // `p asUInt16`
+    cpuInstruction,    // `Cpu halt`, `Cpu readMsr: n` …: `op` is the selector
 };
 
 // How a send node is implemented. `operandType` is the type every operand is
@@ -526,6 +535,9 @@ public:
     // The classes `meta fields` / `c fields` and `c messages` return instances of, created on first use.
     ClassInfo* fieldMetaClass = nullptr;
     ClassInfo* messageMetaClass = nullptr;
+    // `CpuidResult { eax; ebx; ecx; edx }`, what `Cpu cpuid:` returns; kept out of `records`
+    // so it never appears in an interface.
+    std::unique_ptr<RecordInfo> cpuidRecord;
     // The unit, or a module it imports, acts through reflection (`perform:`,
     // `set:of:to:`, `new`, `Class named:`), so its program's main needs a Reflector.
     bool needsReflector = false;

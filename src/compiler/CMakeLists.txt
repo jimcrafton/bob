@@ -11,6 +11,7 @@ add_library(bobCompiler STATIC
     codegen/codegenClosures.cpp
     codegen/codegenReflection.cpp
     codegen/codegenPointers.cpp
+    codegen/codegenHardware.cpp
     codegen/codegenExtern.cpp
     compiletime/evaluator.cpp
     driver/driver.cpp

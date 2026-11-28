@@ -260,6 +260,10 @@ private:
     llvm::Value* emitCFunctionBlock(const sema::BlockInfo* info);
     llvm::Value* emitCFunctionInvoke(const Node* node, const sema::SendInfo& send);
 
+    // I/O port and `Cpu` sends (codegenHardware.cpp); null for those with no value.
+    llvm::Value* emitHardwareSend(const Node* node, const sema::SendInfo& send);
+    // A call to side-effecting inline asm (AT&T syntax) with LLVM constraints.
+    llvm::Value* emitInlineAsm(llvm::Type* result, const char* text, const char* constraints, const std::vector<llvm::Value*>& args);
     // Pointer and slice sends (codegenPointers.cpp); null if not one.
     llvm::Value* emitPointerSend(const Node* node, const sema::SendInfo& send);
     // Whether a field place (`p.x`, `r.a.b`) is reached through a volatilePointer; `align` is its alignment.

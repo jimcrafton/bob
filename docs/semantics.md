@@ -529,12 +529,49 @@ The model is Object Pascal's units (design §11.5).
 - An import is an internal always-inline wrapper with the message's bob symbol that converts and calls the C symbol, so every unit that sees the import (also through a module interface) has its own. An export is a C-named thunk that converts and calls the bob function. An import and an export of the same symbol in one unit are the same function.
 - Interfaces: imports are written `@[static, extern: "C", symbol: "…"]` without a body. Exports are written as ordinary class-side messages.
 
+## I/O ports and processor instructions (phase 9d, design §6.7)
+**`port of: T`**
+- An x86 I/O port number, stored as a `uint16` (port 0 is valid, so a port has a zero default and records hold it directly). `T` is the width it moves: `uint8`, `uint16` or `uint32`, never anything else (`sema.invalidPortType`).
+- It's plain data: a C type, a pointee, a record field, and spelled `port of: T` in interfaces.
+
+| Send | Result | Notes |
+|---|---|---|
+| `n asPort` | the context's port type | Unsafe. An integer literal is a `uint16` (out of range is a compile error). Another integer traps (`value out of range`) outside `0 to: 65535`. Without a port type from context: `sema.portNeedsType` |
+| `n asPort: T`, `p asPort: T` | `port of: T` | Unsafe. From a port: the same number, another width |
+| `p asPort` | the context's port type | Unsafe; the same number, the context's width |
+| `p contents` | `T` | Unsafe. Exactly one `in` of `T`'s width |
+| `p contents: v` | — | Unsafe. Exactly one `out` of `T`'s width |
+| `p advancedBy: n` | the same port type | Unsafe. `n` is an `int64` in port numbers (a device's register bank); traps outside `0 to: 65535` |
+| `p asUInt16` | `uint16` | The number; works in safe code |
+
+**`Cpu`**
+- A built-in name whose class-side messages are single processor instructions. Privileged ones need an unsafe region (`sema.unsafeRequired`, "runs a privileged processor instruction"); `pause`, `timestamp`, `cpuid:` and `cpuid:subleaf:` work in user mode, so they don't. Anything else is `sema.unknownMessage`, listing them.
+
+| Message | Instruction | Arguments → result |
+|---|---|---|
+| `disableInterrupts`, `enableInterrupts`, `halt`, `pause` | `cli`, `sti`, `hlt`, `pause` | — |
+| `timestamp` | `rdtsc` | → `uint64` |
+| `cr0`, `cr2`, `cr3`, `cr4` / `cr0:`, `cr3:`, `cr4:` | `mov` from / to the control register | → `uint64` / `uint64` |
+| `readMsr: n` / `writeMsr: n value: v` | `rdmsr` / `wrmsr` | `uint32` → `uint64` / `uint32`, `uint64` |
+| `invalidatePage: address` | `invlpg` | `uint64` |
+| `loadGdt: base limit: n`, `loadIdt: base limit: n` | `lgdt`, `lidt` | `uint64`, `uint16`; the compiler builds the 10-byte pseudo-descriptor on the stack |
+| `cpuid: leaf`, `cpuid: leaf subleaf: s` | `cpuid` (subleaf 0 by default) | `uint32` (, `uint32`) → `CpuidResult` |
+
+- `CpuidResult` is a built-in record `{ eax; ebx; ecx; edx }` of `uint32`. It can't be named; it comes from type inference (`id := Cpu cpuid: 1;`).
+
+**Code generation**
+- Each send is one LLVM inline asm call, `sideeffect`, with its registers named in the constraints (`{dx}`, `{al}`/`{ax}`/`{eax}`, `{ecx}` …) and a `~{memory}` clobber. So the optimiser never drops one whose result is unused, never merges or repeats one, and never moves a memory access across one (DMA buffers, MMIO set up before an `out`). They're x86-64 only, like the rest of the compiler.
+- Compile-time code can use the user-mode ones; they run on the compiler's own processor.
+
+**More code from assembly**
+- `bobc` takes `.obj` and `.lib` inputs after the `.bob` (or `.ll`) one. A program links them; a module adds `.obj` files to its static library, so its importers link nothing extra (a `.lib` given for a module is an error: link it into the program). `-c` takes none. Their C functions are imported with `@[extern: "C"]` (§ C functions).
+
 ## Overflow and traps
 - `+ - *`, `negated`, `abs` and `shl` follow the overflow mode: `trap` (default), `wrap` or `saturate`. It's set with `@[overflow: …]` on the unit, a message, a statement group or a parenthesised expression, and the innermost wins.
 - Division and remainder by zero always trap. Signed `MIN / -1` traps in `trap` mode, gives `MIN` in `wrap` and `MAX` in `saturate`. `MIN % -1` is `0` in the non-trapping modes.
 - A shift amount below 0 or at least the bit width always traps.
 - `asX` conversions trap when the value doesn't fit (including NaN and out-of-range reals). Real→integer truncates toward zero.
-- A trap calls the runtime's `bobRuntimeTrap(reason)`, which prints `bob: runtime trap: <reason>` to stderr and **exits with code 101** (the code Rust uses for panics). Reasons: `integer overflow`, `division by zero`, `conversion out of range`, `shift amount out of range`, `value out of range` (into a subrange), `no next or previous member` (`succ`/`pred`), `index out of range`, and `invalid pointer (null or misaligned)` (`asPointer`).
+- A trap calls the runtime's `bobRuntimeTrap(reason)`, which prints `bob: runtime trap: <reason>` to stderr and **exits with code 101** (the code Rust uses for panics). Reasons: `integer overflow`, `division by zero`, `conversion out of range`, `shift amount out of range`, `value out of range` (into a subrange, a slice count or a port number), `no next or previous member` (`succ`/`pred`), `index out of range`, and `invalid pointer (null or misaligned)` (`asPointer`).
 
 ## For tools
 `sema::SemanticModel` keeps every result keyed by AST node id:

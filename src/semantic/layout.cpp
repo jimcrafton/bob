@@ -73,6 +73,7 @@ uint64_t sizeOf(const Type* type)
     case TypeKind::enumType:
     case TypeKind::subrange:
     case TypeKind::character:
+    case TypeKind::ioPort:
         return type->bits / 8;
     case TypeKind::set:
         return isBitSet(type) ? type->bits / 8 : 8;
@@ -109,6 +110,7 @@ uint64_t alignmentOf(const Type* type)
     case TypeKind::enumType:
     case TypeKind::subrange:
     case TypeKind::character:
+    case TypeKind::ioPort:
         return type->bits / 8;
     case TypeKind::set:
         return isBitSet(type) ? type->bits / 8 : 8;

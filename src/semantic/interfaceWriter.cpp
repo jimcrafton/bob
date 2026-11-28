@@ -117,6 +117,8 @@ private:
             return std::string(type->isVolatile ? "volatilePointer" : "pointer") + " to: " + spell(type->inner, true);
         case TypeKind::slice:
             return "slice of: " + spell(type->inner, true);
+        case TypeKind::ioPort:
+            return "port of: " + spell(type->inner, true);
         case TypeKind::subrange:
             if (isEnum(type->inner)) {
                 std::string enumName = spell(type->inner, false);

@@ -37,7 +37,7 @@ TypeTable::TypeTable()
     builtins_["set"] = own({TypeKind::set, "set"});
 
     // `pointer`, `volatilePointer` and `slice` are only complete with a type message (`pointer to: T`).
-    const char* placeholders[] = {"slice", "pointer", "volatilePointer", "int128", "uint128"};
+    const char* placeholders[] = {"slice", "pointer", "volatilePointer", "port", "int128", "uint128"};
     for (const char* name : placeholders) {
         builtins_[name] = own({TypeKind::placeholder, name});
     }
@@ -48,6 +48,8 @@ TypeTable::TypeTable()
     builtins_["Class"] = classObject_;
     reflector_ = own({TypeKind::reflector, "Reflector"});
     builtins_["Reflector"] = reflector_;
+    cpu_ = own({TypeKind::cpu, "Cpu"});
+    builtins_["Cpu"] = cpu_;
 
     const char* viewNames[] = {"string bytes", "string codepoints", "string graphemes"};
     const Type* viewElements[] = {integer(8, false), character_, string_};
@@ -160,6 +162,19 @@ const Type* TypeTable::sliceOf(const Type* element)
     }
     Type* type = own({TypeKind::slice, "slice of: " + elementName(element)});
     type->inner = element;
+    containers_[key] = type;
+    return type;
+}
+
+const Type* TypeTable::portOf(const Type* data)
+{
+    auto key = std::make_pair(static_cast<int>(TypeKind::ioPort) * 2, std::make_pair(data, static_cast<const Type*>(nullptr)));
+    auto it = containers_.find(key);
+    if (it != containers_.end()) {
+        return it->second;
+    }
+    Type* type = own({TypeKind::ioPort, "port of: " + elementName(data), 16, false});
+    type->inner = data;
     containers_[key] = type;
     return type;
 }
@@ -510,6 +525,7 @@ bool isCType(const Type* type)
     case TypeKind::enumType:
     case TypeKind::pointer:
     case TypeKind::cFunction:
+    case TypeKind::ioPort:
         return true;
     case TypeKind::record:
         return isPointee(type);
@@ -524,6 +540,12 @@ bool isPointer(const Type* type)
 {
     type = canonical(type);
     return type != nullptr && type->kind == TypeKind::pointer;
+}
+
+bool isPort(const Type* type)
+{
+    type = canonical(type);
+    return type != nullptr && type->kind == TypeKind::ioPort;
 }
 
 bool isSlice(const Type* type)
@@ -554,6 +576,7 @@ bool isPointee(const Type* type)
     case TypeKind::record:
     case TypeKind::pointer:
     case TypeKind::cFunction:
+    case TypeKind::ioPort:
         return true;
     case TypeKind::fixedArray:
         return isPointee(type->inner);
@@ -594,6 +617,7 @@ bool isValueType(const Type* type)
     case TypeKind::pointer:
     case TypeKind::slice:
     case TypeKind::cFunction:
+    case TypeKind::ioPort:
         return true;
     default:
         return false;

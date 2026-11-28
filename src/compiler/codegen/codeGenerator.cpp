@@ -653,6 +653,7 @@ llvm::Type* Generator::llvmType(const Type* type)
     case TypeKind::enumType:
     case TypeKind::subrange:
     case TypeKind::character:
+    case TypeKind::ioPort:
         return builder_.getIntNTy(type->bits);
     case TypeKind::set:
         return sema::isBitSet(type) ? static_cast<llvm::Type*>(builder_.getIntNTy(type->bits)) : builder_.getPtrTy();
@@ -686,6 +687,7 @@ llvm::Type* Generator::llvmType(const Type* type)
     case TypeKind::classType:
     case TypeKind::classObject:
     case TypeKind::reflector:
+    case TypeKind::cpu:
     case TypeKind::pointer:
     case TypeKind::cFunction:
     case TypeKind::nilType:
@@ -1543,6 +1545,14 @@ llvm::Value* Generator::emitSend(const Node* node, const sema::SendInfo& send)
         return emitInlinedIfNil(static_cast<const KeywordSend*>(node), send);
     case SendKind::cFunctionInvoke:
         return emitCFunctionInvoke(node, send);
+    case SendKind::portFromInteger:
+    case SendKind::portCast:
+    case SendKind::portIn:
+    case SendKind::portOut:
+    case SendKind::portAdvance:
+    case SendKind::portToInteger:
+    case SendKind::cpuInstruction:
+        return emitHardwareSend(node, send);
     default:
         if (llvm::Value* value = emitEnumSend(node, send)) {
             return value;

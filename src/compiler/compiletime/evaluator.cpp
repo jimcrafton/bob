@@ -161,6 +161,7 @@ public:
     {
         llvm::InitializeNativeTarget();
         llvm::InitializeNativeTargetAsmPrinter();
+        llvm::InitializeNativeTargetAsmParser();
         for (const auto& item : model_.compileTimeItems) {
             if (!evaluate(item.get())) {
                 return false;

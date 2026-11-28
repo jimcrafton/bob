@@ -3,6 +3,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace bob::driver {
@@ -15,6 +16,9 @@ enum class AstDumpFormat {
 
 struct DriverOptions {
     std::string inputPath;
+    // `.obj` and `.lib` inputs (assembled code, import libraries): linked into a
+    // program, or (objects only) added to a module's static library.
+    std::vector<std::string> linkInputs;
     AstDumpFormat dumpAst = AstDumpFormat::none;
     bool dumpTokens = false;
     bool dumpLlvm = false;
@@ -40,6 +44,9 @@ std::optional<std::string> parseDriverArguments(std::span<const std::string> arg
 std::string defaultOutputPath(const DriverOptions& options);
 
 std::string replaceExtension(const std::string& path, const char* extension);
+
+// Whether `path` ends in `extension` (lower case, with the dot), ignoring case.
+bool hasExtension(std::string_view path, std::string_view extension);
 
 const char* driverUsage();
 

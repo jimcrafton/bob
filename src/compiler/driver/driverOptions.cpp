@@ -17,6 +17,21 @@ bool takeValue(std::string_view arg, std::string_view prefix, std::string& out)
 
 }
 
+bool hasExtension(std::string_view path, std::string_view extension)
+{
+    if (path.size() <= extension.size()) {
+        return false;
+    }
+    std::string_view tail = path.substr(path.size() - extension.size());
+    for (size_t i = 0; i < tail.size(); ++i) {
+        char c = tail[i] >= 'A' && tail[i] <= 'Z' ? static_cast<char>(tail[i] - 'A' + 'a') : tail[i];
+        if (c != extension[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::string replaceExtension(const std::string& path, const char* extension)
 {
     size_t slash = path.find_last_of("/\\");
@@ -88,6 +103,9 @@ std::optional<std::string> parseDriverArguments(std::span<const std::string> arg
         else if (arg.starts_with("-")) {
             return "unknown option '" + std::string(arg) + "'";
         }
+        else if (hasExtension(arg, ".obj") || hasExtension(arg, ".lib")) {
+            options.linkInputs.push_back(std::string(arg));
+        }
         else if (options.inputPath.empty()) {
             options.inputPath = std::string(arg);
         }
@@ -100,7 +118,10 @@ std::optional<std::string> parseDriverArguments(std::span<const std::string> arg
         return std::nullopt;
     }
     if (options.inputPath.empty()) {
-        return std::string("no input file");
+        return std::string(options.linkInputs.empty() ? "no input file" : "no .bob or .ll input file to go with the .obj/.lib inputs");
+    }
+    if (options.compileOnly && !options.linkInputs.empty()) {
+        return "-c doesn't link, so it takes no .obj or .lib inputs (got '" + options.linkInputs.front() + "')";
     }
     return std::nullopt;
 }
@@ -115,12 +136,14 @@ std::string defaultOutputPath(const DriverOptions& options)
 
 const char* driverUsage()
 {
-    return "usage: bobc [options] <input>\n"
+    return "usage: bobc [options] <input> [<file>.obj|<file>.lib ...]\n"
            "\n"
            "inputs:\n"
            "  <file>.bob              bob source: a 'program' is compiled and linked into an executable;\n"
            "                          a 'module' or 'lib' into a static library (.lib) and its interface (.bobi)\n"
            "  <file>.ll               LLVM IR, compiled and linked against the bob runtime\n"
+           "  <file>.obj, <file>.lib  more code to link into a program (assembled .asm, import libraries);\n"
+           "                          a module's static library takes .obj files only\n"
            "\n"
            "options:\n"
            "  -o <path>               output file (default: input name with .exe/.obj)\n"

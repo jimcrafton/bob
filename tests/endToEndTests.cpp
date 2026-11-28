@@ -257,6 +257,47 @@ TEST_F(EndToEnd, DumpLlvmPrintsTheModule)
     EXPECT_NE(output.find("llvm.smul.with.overflow.i32"), std::string::npos) << output;
 }
 
+TEST_F(EndToEnd, PortsAndCpuMessagesAreFixedInlineAsm)
+{
+    for (int optLevel : {0, 2}) {
+        bob::driver::DriverOptions options;
+        options.inputPath = std::string(BOB_TEST_PROGRAMS_DIR) + "/hardwareInstructions.bob";
+        options.dumpLlvm = true;
+        options.optLevel = optLevel;
+        std::string output;
+        std::string diagnostics;
+        llvm::raw_string_ostream out(output);
+        llvm::raw_string_ostream err(diagnostics);
+        bob::driver::Driver driver(out, err);
+        ASSERT_EQ(driver.run(options), 0) << diagnostics;
+        const char* expected[] = {
+            "asm sideeffect \"inb %dx, %al\", \"={al},{dx},~{memory}\"",
+            "asm sideeffect \"outb %al, %dx\", \"{al},{dx},~{memory}\"",
+            "asm sideeffect \"inw %dx, %ax\", \"={ax},{dx},~{memory}\"",
+            "asm sideeffect \"inl %dx, %eax\", \"={eax},{dx},~{memory}\"",
+            "asm sideeffect \"outl %eax, %dx\", \"{eax},{dx},~{memory}\"",
+            "asm sideeffect \"pause\", \"~{memory}\"",
+            "asm sideeffect \"cli\", \"~{memory}\"",
+            "asm sideeffect \"sti\", \"~{memory}\"",
+            "asm sideeffect \"hlt\", \"~{memory}\"",
+            "asm sideeffect \"rdmsr\", \"={eax},={edx},{ecx},~{memory}\"(i32 -1073741696)",
+            "asm sideeffect \"wrmsr\", \"{ecx},{eax},{edx},~{memory}\"",
+            "asm sideeffect \"movq %cr3, $0\", \"=r,~{memory}\"",
+            "asm sideeffect \"movq $0, %cr3\", \"r,~{memory}\"",
+            "asm sideeffect \"movq %cr2, $0\", \"=r,~{memory}\"",
+            "asm sideeffect \"invlpg ($0)\", \"r,~{memory}\"",
+            "asm sideeffect \"lgdt ($0)\", \"r,~{memory}\"",
+            "asm sideeffect \"lidt ($0)\", \"r,~{memory}\"",
+        };
+        for (const char* text : expected) {
+            EXPECT_NE(output.find(text), std::string::npos) << "-O" << optLevel << ": " << text << "\n" << output;
+        }
+    }
+    // The asm text must assemble: build the executable (it is never run, the instructions are privileged).
+    std::string diagnostics;
+    EXPECT_EQ(compile("hardwareInstructions.bob", workPath("hardware.exe"), diagnostics), 0) << diagnostics;
+}
+
 TEST_F(EndToEnd, StackObjectsHaveNoRefcountCalls)
 {
     bob::driver::DriverOptions options;
@@ -354,12 +395,13 @@ protected:
         file << text;
     }
 
-    int build(const std::string& name, std::string& output, bool compileOnly = false)
+    int build(const std::string& name, std::string& output, bool compileOnly = false, std::vector<std::string> linkInputs = {})
     {
         bob::driver::DriverOptions options;
         options.inputPath = workPath(name.c_str());
         options.runtimeDir = BOB_TEST_RUNTIME_DIR;
         options.compileOnly = compileOnly;
+        options.linkInputs = std::move(linkInputs);
         output.clear();
         llvm::raw_string_ostream out(output);
         llvm::raw_string_ostream err(output);
@@ -513,6 +555,42 @@ TEST_F(Modules, CFunctionsInAnInterface)
     ASSERT_EQ(build("useC.bob", output), 0) << output;
     RunResult run = runExe(workPath("useC.exe"));
     EXPECT_EQ(run.exitCode, 0) << run.stdOut;
+}
+
+TEST_F(Modules, AssembledObjectsLinkIntoProgramsAndModules)
+{
+    std::string output;
+    const char* asmClass = "        class Asm { @[extern: \"C\"] msg bobTestAddTwo: a:int64 b:int64 [int64]; }\n";
+    write("asmProgram.bob", std::string("program asmProgram, 1.0.0\n{\n") + asmClass +
+                                "    extends asmProgram {\n"
+                                "        @[static] msg main: args:array [int32] {\n"
+                                "            return @[unsafe] ((Asm bobTestAddTwo: 40 b: 2) = 42) ifTrue: { 0 } ifFalse: { 1 };\n"
+                                "        }\n    }\n}\n");
+    ASSERT_EQ(build("asmProgram.bob", output, false, {BOB_TEST_ASM_OBJECT}), 0) << output;
+    EXPECT_EQ(runExe(workPath("asmProgram.exe")).exitCode, 0);
+
+    // A module carries its assembled code in its static library, so importers link nothing extra.
+    write("asmLib.bob", std::string("module asmLib, 1.0.0\n{\n    interface {\n") + asmClass +
+                            "        record Device { status: port of: uint8; }\n"
+                            "        extends asmLib {\n"
+                            "            @[static] msg addTwo: a:int64 b:int64 [int64] { return @[unsafe] (Asm bobTestAddTwo: a b: b); }\n"
+                            "            @[static] msg statusOf: d:Device [uint16] { return d.status asUInt16; }\n"
+                            "        }\n    }\n}\n");
+    ASSERT_EQ(build("asmLib.bob", output, false, {BOB_TEST_ASM_OBJECT}), 0) << output;
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> written = llvm::MemoryBuffer::getFile(workPath("asmLib.bobi"));
+    ASSERT_TRUE(static_cast<bool>(written));
+    std::string bobi = std::string((*written)->getBuffer());
+    EXPECT_NE(bobi.find("status: port of: uint8;"), std::string::npos) << bobi;
+    write("useAsm.bob", "program useAsm, 1.0.0\nimport asmLib;\n{\n    extends useAsm {\n"
+                        "        @[static] msg main: args:array [int32] {\n"
+                        "            d := asmLib.Device status: @[unsafe] (0x64 asPort);\n"
+                        "            return ((asmLib addTwo: 5 b: 6) = 11 and (asmLib statusOf: d) = 0x64) ifTrue: { 0 } ifFalse: { 1 };\n"
+                        "        }\n    }\n}\n");
+    ASSERT_EQ(build("useAsm.bob", output), 0) << output;
+    EXPECT_EQ(runExe(workPath("useAsm.exe")).exitCode, 0);
+
+    EXPECT_NE(build("asmLib.bob", output, false, {"kernel32.lib"}), 0);
+    EXPECT_NE(output.find("a module's static library takes .obj files only"), std::string::npos) << output;
 }
 
 TEST_F(Modules, PointersInAnInterface)

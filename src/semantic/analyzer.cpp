@@ -1557,13 +1557,13 @@ void Analyzer::checkGroup(const Node* node)
     overflow_.pop_back();
 }
 
-bool Analyzer::requireUnsafe(const Node* site, const std::string& what)
+bool Analyzer::requireUnsafe(const Node* site, const std::string& what, const char* why)
 {
     if (unsafeDepth_ > 0) {
         return true;
     }
     error(site, "sema.unsafeRequired",
-          what + " works with raw memory, so it needs an unsafe region: mark the message, a '{ }' block or a parenthesised "
+          what + " " + why + ", so it needs an unsafe region: mark the message, a '{ }' block or a parenthesised "
                  "expression '@[unsafe]'");
     return false;
 }
@@ -2352,8 +2352,11 @@ const Type* Analyzer::checkUnary(const UnarySend* send, const Type* expected)
         return checkInstanceSend(send, send->receiver, nullptr, send->selector, {}, send->selectorRange);
     }
     // An address literal is a uintptr: `0xFEE00000 asPointer`.
-    bool address = send->selector == "asPointer" && send->receiver->kind == NodeKind::integerLiteral;
-    const Type* receiver = check(send->receiver, address ? types_.integer(64, false) : nullptr);
+    // A port literal is a uint16: `0x3F8 asPort`.
+    bool literal = send->receiver->kind == NodeKind::integerLiteral;
+    bool address = send->selector == "asPointer" && literal;
+    bool portNumber = send->selector == "asPort" && literal;
+    const Type* receiver = check(send->receiver, address ? types_.integer(64, false) : portNumber ? types_.integer(16, false) : nullptr);
     if (receiver == types_.error()) {
         return types_.error();
     }
@@ -2363,6 +2366,9 @@ const Type* Analyzer::checkUnary(const UnarySend* send, const Type* expected)
     }
     if (receiver->kind == TypeKind::metaInfo) {
         return checkMetaQuery(send, receiver);
+    }
+    if (const Type* result = checkPortUnary(send, receiver, expected)) {
+        return result;
     }
     if (const Type* result = checkReflectionUnary(send, receiver, expected)) {
         return result;
@@ -2626,6 +2632,9 @@ const Type* Analyzer::checkKeyword(const KeywordSend* send, const Type* expected
     }
     if (receiver->kind == TypeKind::compilerObject) {
         return checkCompilerSend(send);
+    }
+    if (const Type* result = checkPortKeyword(send, receiver)) {
+        return result;
     }
     if (const Type* result = checkPointerKeyword(send, receiver)) {
         return result;

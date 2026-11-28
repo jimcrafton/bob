@@ -282,7 +282,12 @@ private:
     int unsafeDepth_ = 0;
     const Node* unsafeStatement_ = nullptr;
     // Raw pointer operations need an unsafe region (design §6.5); false (with an error) outside one.
-    bool requireUnsafe(const Node* site, const std::string& what);
+    bool requireUnsafe(const Node* site, const std::string& what, const char* why = "works with raw memory");
+    // I/O port and `Cpu` messages (analyzerHardware.cpp); null when the send isn't one.
+    const Type* checkPortUnary(const UnarySend* send, const Type* receiver, const Type* expected);
+    const Type* checkPortKeyword(const KeywordSend* send, const Type* receiver);
+    const Type* checkCpuSend(const Node* send, const std::string& selector, const std::vector<const Node*>& arguments, SourceRange selectorRange);
+    const Type* cpuidResultType();
     // Pointer and slice messages (analyzerPointers.cpp); null when the send isn't one.
     const Type* checkPointerUnary(const UnarySend* send, const Type* receiver, const Type* expected);
     const Type* checkPointerKeyword(const KeywordSend* send, const Type* receiver);

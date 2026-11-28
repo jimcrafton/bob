@@ -958,6 +958,36 @@ TEST(Semantic, ExternCRules)
     EXPECT_EQ(localNamed(*a, "g")->type->name, "cFunction { int32 [int32] }");
 }
 
+TEST(Semantic, PortAndCpuRules)
+{
+    auto a = analyzeMain("com: port of: uint8 := 0x3F8 asPort;\n"
+                         "@[unsafe] { q: port of: uint16 := 0x1F0 asPort; w := q contents; r := com asPort: uint32; s := com advancedBy: 1; }\n"
+                         "n := com asUInt16;\nv := com contents;\ncom contents: 1;\nt := com advancedBy: 2;\nloose := 5 asPort;\n"
+                         "big: port of: uint16 := @[unsafe] (70000 asPort);\n"
+                         "Cpu halt;\nx := Cpu cr3;\nCpu pause;\nc := Cpu timestamp;\nid := Cpu cpuid: 7 subleaf: 0;\nb := id.ebx;\n"
+                         "Cpu reboot;\nreturn 0;",
+                         "", "record Ports { a: port of: uint8; }\ntype Signed := port of: int16;\ntype Wide := port of: uint64;");
+    auto has = [&](const char* text) { return a->text().find(text) != std::string::npos; };
+    EXPECT_TRUE(has("'asPort' talks to hardware directly, so it needs an unsafe region")) << a->text();
+    EXPECT_TRUE(has("'contents' talks to hardware directly")) << a->text();
+    EXPECT_TRUE(has("'contents:' talks to hardware directly")) << a->text();
+    EXPECT_TRUE(has("'advancedBy:' talks to hardware directly")) << a->text();
+    EXPECT_TRUE(has("'asPort' takes its port type from context")) << a->text();
+    EXPECT_TRUE(has("'Cpu halt' runs a privileged processor instruction, so it needs an unsafe region")) << a->text();
+    EXPECT_TRUE(has("'Cpu cr3' runs a privileged processor instruction")) << a->text();
+    EXPECT_TRUE(has("'Cpu' doesn't understand 'reboot'")) << a->text();
+    EXPECT_TRUE(has("an I/O port moves a uint8, uint16 or uint32 ('in'/'out' have no other widths), not a 'int16'")) << a->text();
+    EXPECT_TRUE(has("not a 'uint64'")) << a->text();
+    EXPECT_TRUE(a->hasCode("sema.literalOutOfRange")) << a->text();
+    EXPECT_EQ(a->diagnostics.errorCount(), 11u) << a->text();
+    EXPECT_EQ(localNamed(*a, "com")->type->name, "port of: uint8");
+    EXPECT_EQ(localNamed(*a, "w")->type->name, "uint16");
+    EXPECT_EQ(localNamed(*a, "r")->type->name, "port of: uint32");
+    EXPECT_EQ(localNamed(*a, "n")->type->name, "uint16");
+    EXPECT_EQ(localNamed(*a, "c")->type->name, "uint64");
+    EXPECT_EQ(localNamed(*a, "b")->type->name, "uint32");
+}
+
 TEST(Semantic, ReflectionLevelDefaultsAndTheBuildCap)
 {
     bob::sema::AnalyzeOptions capped;

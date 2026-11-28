@@ -135,7 +135,7 @@ typeList    = [ [keywordPart] type { ',' [keywordPart] type } ]
 - A block type is written in braces: the parameter types, comma-separated, then optionally the result type in brackets: `{ int32, int32 [bool] }`, `{ int32 }`, `{ [int32] }`, `{ }`. Each part is a full `type`, so `{ array of: int32 [set of: Perm] }` works. It's a `BlockType` node.
 - `cFunction { int32 [int32] }` is a block type with `cFunction` in front: a `BlockType` node with the `cFunction` property set. `cFunction` is only special directly before `{` in a type position.
 - A message declared with `@[extern: "C"]` may end with `;` instead of a body (a C import). The parser accepts `;` on any message; the analyzer decides where it's allowed.
-- Type messages: `array of: Part`, `array of: uint8 by: [0 to: 511]`, `hashtable keys: K values: V`, `set of: Perm`, `pointer to: uint32`, `volatilePointer to: Regs`, `slice of: uint8`, subranges `0 to: 100` and `Day mon to: Day fri`. The parser reads them all the same way; the analyzer tells `pointer to: T` and `volatilePointer to: T` apart from a subrange by the receiver name. A nullable pointer is the optional `[pointer to: T]?`.
+- Type messages: `array of: Part`, `array of: uint8 by: [0 to: 511]`, `hashtable keys: K values: V`, `set of: Perm`, `pointer to: uint32`, `volatilePointer to: Regs`, `slice of: uint8`, `port of: uint8`, subranges `0 to: 100` and `Day mon to: Day fri`. The parser reads them all the same way; the analyzer tells `pointer to: T` and `volatilePointer to: T` apart from a subrange by the receiver name. A nullable pointer is the optional `[pointer to: T]?`.
 - A bare constant (`x: 5;`) is `parse.expectedType`.
 
 ## Attributes

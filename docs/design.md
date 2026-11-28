@@ -691,7 +691,7 @@ Allocator: start on `HeapAlloc` (as scratch-lang does), then replace it with a s
 - Uninitialised reads are impossible (definite-initialisation analysis, or zero init).
 
 ### 6.4 Systems / OS profile
-- `unsafe` gives typed pointers (`p: pointer to: uint32;`, same annotation style as `array of:`; see §6.5), `address`, reinterpret, volatile access through `volatilePointer to: T`, inline asm (via LLVM inline asm), `@[packed]`/`@[align:]` records, `@[extern: "C"]` and `@[callconv: interrupt]`.
+- `unsafe` gives typed pointers (`p: pointer to: uint32;`, same annotation style as `array of:`; see §6.5), `address`, reinterpret, volatile access through `volatilePointer to: T`, I/O ports and processor instructions (`port of: T`, `Cpu`; no free-form inline asm, see §6.7), `@[packed]`/`@[align:]` records, `@[extern: "C"]` and interrupt handlers (`@[interrupt]`, §6.8).
 - **Freestanding profile** (`bobc --profile=freestanding`): no OS layer. The program supplies the page allocator and output hooks. The runtime core (ARC, containers, strings, msgSend) still works.
 
 ### 6.5 Pointers **[Decided 2026-11-27, built in phase 9a]**
@@ -791,7 +791,7 @@ extends hello {
 7. **Nothing unwinds across the boundary**: bob has no exceptions and traps end the process, so Rust's `C-unwind` problem (RFC 2945) doesn't arise.
 8. **Pointers passed to C are assumed not kept**: passing `x address` to a C parameter is allowed (the escape analysis treats C parameters as not keeping it). Keeping it would be the C side's obligation, which the `unsafe` call accepts.
 
-**As built (Windows x64 C ABI).** A record of 1, 2, 4 or 8 bytes crosses as an integer of that size; any other record by reference to a copy, and a returned one through a hidden pointer. `bool` crosses zero-extended. An import compiles to a small internal wrapper around the C call, so bob call sites stay static calls; an export gets a C-named thunk around the bob function. A module's interface keeps its imports (`@[extern: "C", symbol: …]`); exports appear as ordinary messages. Not yet: `void*` (opaque pointers), strings and arrays passed to C, variadic functions, conventions other than the platform's C one (`@[callconv: interrupt]` is 9e), and linking DLLs beyond the runtime's `kernel32.def` (`--import-def`).
+**As built (Windows x64 C ABI).** A record of 1, 2, 4 or 8 bytes crosses as an integer of that size; any other record by reference to a copy, and a returned one through a hidden pointer. `bool` crosses zero-extended. An import compiles to a small internal wrapper around the C call, so bob call sites stay static calls; an export gets a C-named thunk around the bob function. A module's interface keeps its imports (`@[extern: "C", symbol: …]`); exports appear as ordinary messages. Not yet: `void*` (opaque pointers), strings and arrays passed to C, variadic functions, conventions other than the platform's C one (interrupt entry is `@[interrupt]`, §6.8), and linking DLLs beyond the runtime's `kernel32.def` (`--import-def`).
 
 **What other languages do**
 
@@ -817,6 +817,130 @@ extends hello {
 - C#: [function pointers proposal](https://learn.microsoft.com/dotnet/csharp/language-reference/proposals/csharp-9.0/function-pointers), [UnmanagedCallersOnly](https://learn.microsoft.com/dotnet/api/system.runtime.interopservices.unmanagedcallersonlyattribute), [calling conventions](https://learn.microsoft.com/dotnet/standard/native-interop/calling-conventions), [CS8786 example](https://gist.github.com/tannergooding/9d763b4320c3ceeabee3a2d1a722ba01)
 - Ada: [ARM B.1](https://docs.adacore.com/live/wave/arm05/html/arm05/RM-B-1.html), [GNAT calling conventions](https://gcc.gnu.org/onlinedocs/gnat_ugn/Calling-Conventions.html), [comp.lang.ada callback thread](https://groups.google.com/g/comp.lang.ada/c/8J5VAcy5uBQ)
 - Odin and Delphi: [Odin binding to C](https://odin-lang.org/news/binding-to-c/), [Odin wiki](https://github.kxpsado.workers.dev/odin-lang/Odin/wiki/Binding-to-C/597dd16f18e80e3121c934676f07890454af6cb4), [Odin foreign lessons](https://odin-lessons.pages.dev/15-foreign-and-bindings.html), [Delphi procedures and functions](https://docwiki.embarcadero.com/RADStudio/Athens/en/Procedures_and_Functions), [Delphi callbacks](https://www.oreilly.com/library/view/borland-delphitm-6/0672321157/0672321157_ch06lev1sec11.html)
+
+### 6.7 I/O ports, processor instructions and assembly **[Decided 2026-11-27, built in phase 9d]**
+```
+record Uart { data: port of: uint8; lineStatus: port of: uint8; }
+
+@[unsafe] msg put: c:uint8 on:Uart {
+    while ((on.lineStatus contents) and 0x20) = 0 { Cpu pause; }   # one `in al, dx` per test
+    on.data contents: c;                                           # one `out dx, al`
+}
+
+@[unsafe] msg enterKernel {
+    Cpu disableInterrupts;
+    Cpu loadIdt: idt address asUIntPtr limit: 4095;
+    efer := Cpu readMsr: 0xC0000080;
+    Cpu writeMsr: 0xC0000080 value: efer or 1;
+}
+
+features := Cpu cpuid: 1;        # user mode too: no unsafe needed
+```
+Code that needs real assembly (context switch, trampolines, SMP start-up) goes in a `.asm` file, assembled by MASM and passed to bobc: `bobc kernel.bob switch.obj`. Its functions are imported with `@[extern: "C"]` (§6.6).
+
+**Decisions**
+1. **No free-form inline asm.** Three narrow tools instead: typed ports, `Cpu` messages for single privileged instructions, and separate assembly files for everything else. This is what MSVC does on x64 (it has no inline asm, only intrinsics and MASM), and how Go and the Windows kernel are built.
+2. **`port of: T` mirrors `volatilePointer to: T`.** The width (`uint8`, `uint16`, `uint32`) is part of the type, so no single access can get it wrong. `contents`/`contents:` are exactly one `in`/`out`, and `advancedBy:` steps through a register bank. Making a port (`asPort`) and using one need `unsafe`; holding and passing one don't. A port is a plain `uint16`: port 0 exists, so it isn't a non-null type and records hold it directly.
+3. **`Cpu` messages are written once, in the compiler.** Each is fixed LLVM inline asm with exactly named registers and a memory clobber, tested once. Users never write a constraint string. Privileged instructions need `unsafe`. `pause`, `timestamp` (`rdtsc`) and `cpuid:` don't, because they also work in user mode. `loadGdt:limit:` takes a base and a limit, so no one has to build the packed 10-byte pseudo-descriptor by hand.
+4. **Every port and `Cpu` access is a compiler barrier** (`sideeffect` + `~{memory}`). Linux's `inb`/`outb` leave the memory clobber out. bob keeps it so that DMA buffers and MMIO writes before an `out` are never reordered past it, which matters more for reliability than the few cycles it costs.
+5. **Assembly files go through the linker, not the language.** bobc takes `.obj`/`.lib` inputs. A module packs its `.obj` files into its own library, so a module with assembly helpers is used like any other.
+6. **A general `asm` expression may come later**, if a real need shows up that these don't cover. It would follow Rust's `asm!` (named `in`/`out` operands, options such as `nomem`/`nostack`), not GCC's constraint strings. Interrupt entry, the usual reason for inline asm in a kernel, is `@[interrupt]` (§6.8).
+
+Left out for now: `cpuid` on other leaves' records (one `CpuidResult` for all), `xgetbv`, `wbinvd`, `swapgs`, `lgdt` from a pointer, string port I/O (`rep insw`), and other architectures.
+
+**What other languages do**
+
+| | Inline asm | Port I/O |
+|---|---|---|
+| C (GCC/Clang) | extended asm, constraint strings | hand-written `inb`/`outb` asm |
+| MSVC x64 | none | `__inbyte`/`__outbyte` intrinsics |
+| Rust | `asm!` with named operands and options | `Port<T>` (x86_64 crate) on `asm!` |
+| Zig | GCC-style `asm volatile` (output syntax marked unstable) | none built in |
+| D | DMD: its own Intel-syntax assembler; LDC/GDC: GCC style | none built in |
+| Odin | asm templates that behave like intrinsics | none built in |
+| Go | none; separate `.s` files only | none built in |
+| Free Pascal | `asm … end` blocks | `ReadPort`/`WritePort*`; `PORT[]` kept for compatibility only |
+
+**Findings behind the decisions**
+- GCC-style constraint strings are a small language of their own. Missing `"memory"` clobbers are a recurring kernel bug: the i8k driver miscompiled until it was made `asm volatile`, and GCC decided that `volatile` doesn't imply a memory clobber. The kernel's objtool patches prefer memory clobbers over `volatile`.
+- Even good libraries get hand-written constraints wrong: an early `x86_64` crate wrote `outl` with `{al}` instead of `{eax}`. Constraints written once in the compiler and tested remove this class of bug.
+- Rust's RFC 2873 replaced the raw LLVM/GCC-style form because it was "error-prone" with "no safeguards".
+- MSVC dropped inline asm on x64 and points to intrinsics or MASM files. Go never had inline asm. Free Pascal keeps `PORT[]` arrays only for compatibility and recommends its port functions.
+
+**Sources**
+- Rust: [inline assembly reference](https://doc.rust-lang.org/reference/inline-assembly.html), [RFC 2873](https://rust-lang.github.io/rfcs/2873-inline-asm.html), [new asm syntax post](https://blog.rust-lang.org/inside-rust/2020/06/08/new-inline-asm/), [pre-RFC discussion](https://internals.rust-lang.org/t/pre-rfc-inline-assembly/6443), [x86_64 port.rs 0.14.2](https://docs.rs/x86_64/0.14.2/src/x86_64/instructions/port.rs.html), [x86_64 0.2.1 (`{al}` for `outl`)](https://docs.rs/x86_64/0.2.1/src/x86_64/instructions/port.rs.html), [x86::io](https://docs.rs/x86/latest/x86/io/index.html)
+- GCC and Linux: [Extended Asm](https://gcc.gnu.org/onlinedocs/gcc/Extended-Asm.html), [rules to avoid common extended asm mistakes](https://nullprogram.com/blog/2024/12/20/), [i8k thread](https://lore.kernel.org/all/AANLkTim48YSGCdtPLqpPyELA8w-Jo=zMGkDN3omJW1ec@mail.gmail.com/), [i8k analysis](https://lore.kernel.org/all/20101115185848.GI2583@sunsite.ms.mff.cuni.cz/), [objtool: memory clobber vs volatile](https://lore.kernel.org/all/YeQei0xNzMq7bFdg@zn.tnic/T/)
+- MSVC: [inline assembler (x86 only)](https://learn.microsoft.com/en-us/cpp/assembler/inline/inline-assembler?view=msvc-160), [`__inbyte`](https://learn.microsoft.com/en-us/cpp/intrinsics/inbyte?view=msvc-140), [MASM for x64](https://learn.microsoft.com/en-us/cpp/assembler/masm/masm-for-x64-ml64-exe?view=msvc-140)
+- Zig: [Assembly Syntax Explained (langref mirror)](https://git.jakstys.lt/motiejus/zig/file/doc/langref/Assembly%20Syntax%20Explained.zig/)
+- D: [inline assembler spec](https://dlang.org/spec/iasm.html), [GDC inline assembly](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gdc/Inline-Assembly.html)
+- Odin: [inline asm docs](https://odin-lang.org/docs/inline-asm/), [design essay](https://gingerbill.org/article/2026/08/20/designing-odins-inline-asm)
+- Go: [Go assembler guide](https://go.dev/doc/asm)
+- Free Pascal: [I/O port access (go32)](https://www.freepascal.org/daily/doc/rtl/go32/ioports.html), [`ports` unit](https://www.freepascal.org/~michael/docs-demo/ivory/ports/), [Lazarus hardware access](https://wiki.lazarus.freepascal.org/Hardware_Access)
+
+### 6.8 Interrupt handlers **[Decided 2026-11-28, to be built in phase 9e]**
+```
+class Kernel {
+    @[interrupt] msg timer: frame:[pointer to: InterruptFrame] { … }                         # IRQ: no error code
+    @[interrupt: 14] msg pageFault: frame:[pointer to: InterruptFrame] errorCode:uint64 { … } # #PF pushes one
+}
+
+entry := Kernel interruptEntry: "pageFault";    # the uint64 address that goes into the IDT
+```
+
+**Decisions**
+1. **A compiler-generated entry stub, not LLVM's interrupt calling convention.** The handler compiles as an ordinary bob function. For each one the compiler emits a small stub, written once and tested. The stub:
+   - saves the registers the Windows x64 ABI lets a called function change: `rax`, `rcx`, `rdx`, `r8`–`r11` and `xmm0`–`xmm5`. The handler preserves the rest itself, as any function does under the ABI.
+   - runs `cld`, because interrupted code may have left the direction flag set.
+   - aligns the stack to 16 bytes, reserves the 32-byte shadow space and calls the handler.
+   - restores the registers, drops the error code if there is one, and returns with `iretq`.
+
+   This is the Linux structure (assembly entry stubs calling C handlers), but bob users never write the stub. It's the same idea as 9d's `Cpu` messages.
+2. **Reals are allowed in handlers.** bob emits only SSE (no x87, MMX or AVX), so `xmm0`–`xmm5` are all the floating-point state a call can disturb, and the stub saves them. Windows x64 has no red zone, so kernels built for the System V ABI's red-zone problem doesn't arise.
+3. **Spelled `@[interrupt]` and `@[interrupt: n]`**, replacing the earlier plan of `@[callconv: interrupt]`. There's no other convention to choose between: `@[extern: "C"]` already covers C. Interrupt messages are class-side, can't be called from bob code, and can't be in protocols.
+4. **The CPU's frame arrives as `frame:[pointer to: InterruptFrame]`.** `InterruptFrame` is a built-in record of `rip`, `cs`, `rflags`, `rsp` and `ss` (all `uint64`), like `CpuidResult`. A pointer lets a fault handler change `rip` inside `unsafe`.
+5. **The error code is checked against the vector at compile time.** GCC's manual warns that "the system will crash if the wrong kind of handler is used". With `@[interrupt: n]` for n from 0 to 31, the compiler knows whether the CPU pushes an error code (vectors 8, 10–14, 17, 21, 29 and 30 do) and requires or rejects the `errorCode:uint64` parameter to match. A plain `@[interrupt]` (IRQs from 32 up, software interrupts) can't take one.
+6. **The IDT address comes from `X interruptEntry: "name"`.** The string literal must name an `@[interrupt]` message of `X`; anything else is a compile error. The result is the stub's address as a `uint64`.
+7. **Handlers mustn't allocate or touch reference counting, and the compiler infers this rather than asking for an annotation.** The handler and everything it calls statically must not:
+   - allocate.
+   - retain or release: no class instances, strings, containers or closures.
+   - send dynamically or use reflection.
+
+   The allocator and reference counting aren't reentrant, so an interrupt arriving in the middle of either would corrupt the heap or deadlock. The error names the call chain, for example "pageFault → log: makes a string (line 40)". Imported C functions are allowed, because the `unsafe` call already says the programmer vouches for them.
+
+Left out for now: `swapgs` and interrupts from user mode, IST stacks, saving the full register state for context switches (that stays in `.asm` files, §6.7), and turning interrupts back on inside a handler (they stay off for the whole handler).
+
+**What other languages do**
+
+| | How handlers are written | Error code | Registers saved | Allocation and blocking in handlers |
+|---|---|---|---|---|
+| GCC/Clang | `__attribute__((interrupt))` | chosen by the signature; the wrong one crashes | all used ones; SSE/x87 not saved, so `-mgeneral-regs-only` is needed | unchecked |
+| Rust | `extern "x86-interrupt"` (unstable since 2017) | chosen by the signature | all; MMX/x87 not saved | unchecked |
+| Zig | `callconv(.x86_64_interrupt)` | chosen by the signature | LLVM's | unchecked |
+| MSVC | none (assembly) | — | — | — |
+| Linux | assembly `idtentry` stubs + C handlers | the stub handles it | the stub saves them | rule: no sleeping, `GFP_ATOMIC` only |
+| Ada | `Attach_Handler` protected procedure | — | the runtime saves them | potentially blocking calls are a bounded error |
+| **bob** | compiler-generated stub + ordinary bob function | **checked against the vector** | Windows x64 volatile set, `cld` | **checked at compile time, through calls** |
+
+**Findings behind the decisions**
+- **LLVM's `x86_intrcc` has a poor record.**
+  - It mis-aligned the stack when the CPU pushes an error code, so saving XMM registers with `movaps` faulted. That was fixed in r299383 (2017), and the fix was disputed again in bug 45215 (2020).
+  - It doesn't save MMX or x87 state.
+  - Passing the frame by reference broke in LLVM 12.
+  - The first parameter has needed `byval` since 2020.
+- **Rust built `extern "x86-interrupt"` on it**, and that has stayed unstable since 2017 (#40180). The feature's own author said the LLVM implementation was unsuitable for 64-bit kernels at the time.
+- **GCC's attribute has its own pitfalls.** It doesn't save MPX, SSE, MMX or x87 state, so handlers need `-mgeneral-regs-only`. Bug 69575 found that the direction flag may be wrong on entry.
+- **Linux doesn't use a compiler attribute.** Its `idtentry` macros emit assembly entry stubs that call C handlers, so the kernel controls `swapgs`, stack switching and entry/exit order.
+- **Interrupt context forbids blocking and allocation that can block.** Linux bans sleeping locks (even `mutex_trylock`) and `GFP_KERNEL` in IRQ handlers. Ada makes potentially blocking operations in protected actions a bounded error, and `Detect_Blocking` turns them into `Program_Error`.
+- **The Windows x64 ABI makes the stub small and fully specified.** `rax`, `rcx`, `rdx`, `r8`–`r11` and `xmm0`–`xmm5` are volatile, everything else is preserved by the called function, and the direction flag is expected to be clear.
+
+**Sources**
+- GCC: [x86 function attributes](https://gcc.gnu.org/onlinedocs/gcc/x86-Attributes.html), [GCC 13 x86 function attributes](https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/x86-Function-Attributes.html), [2016 commit adding the interrupt attribute](https://gcc.gnu.org/pipermail/gcc-cvs/2016-June/215510.html), [bug 69575: direction flag in handlers](https://gcc.gnu.org/pipermail/gcc-bugs/2016-June/547463.html), [bug 68661: no_caller_saved_registers trashes stack](https://gcc.gnu.org/pipermail/gcc-bugs/2016-June/547465.html), [bug 66960: add interrupt attribute](https://gcc.gnu.org/pipermail/gcc-bugs/2016-February/535198.html), [RFC: x86 interrupt and exception handlers](https://gcc.gnu.org/pipermail/gcc/2015-September/219054.html)
+- Rust: [tracking issue #40180](https://github.com/rust-lang/rust/issues/40180), [unstable book: abi_x86_interrupt](https://doc.rust-lang.org/unstable-book/language-features/abi-x86-interrupt.html), [PR #39832](https://github.com/rust-lang/rust/pull/39832), [Phil Opp: CPU exceptions](https://os.phil-opp.com/cpu-exceptions), [x86_64 crate IDT](https://docs.rs/x86_64/0.14.9/src/x86_64/structures/idt.rs.html)
+- LLVM: [r299383: re-align the stack when an error code is pushed](https://lists.llvm.org/pipermail/llvm-commits/Week-of-Mon-20170403/442414.html), [bug 45215: breaks stack alignment with an error code](https://lists.llvm.org/pipermail/llvm-bugs/2020-March/082188.html), [byval required on x86_intrcc parameter 0](https://lists.llvm.org/pipermail/llvm-commits/Week-of-Mon-20201214/862575.html), [x86-64-intrcc.ll tests](https://sources.debian.org/src/llvm-toolchain-19/1%3A19.1.7-3/llvm/test/CodeGen/X86/x86-64-intrcc.ll), [issue 41189](https://github.com/llvm/llvm-project/issues/41189)
+- Zig: [PR #3977: interrupt calling conventions](https://gh.hhj520.top/ziglang/zig/pull/3977/{{ revealButtonHref }}), [a Zig microkernel using `.x86_64_interrupt`](https://tangled.org/pci.express/frostium/commit/329ce7f4cf2949e21fab34302ad97c58f2e35024)
+- Linux: [idtentry.h](https://sources.debian.org/src/linux/6.1.4-1/arch/x86/include/asm/idtentry.h), [x86 kernel entries](https://kernel.org/doc/html/v6.6/arch/x86/entry_64.html), [sleeping things (kernel locking)](https://kernel.org/doc/htmldocs/kernel-locking/sleeping-things.html), [mutex in an IRQ handler review](https://lore.kernel.org/all/YeSRUVmrdmlUXHDn@lunn.ch)
+- Ada: [ARM C.3.1 (Attach_Handler)](https://docs.adacore.com/live/wave/arm05/html/arm05/arm22-C-3-1.html), [ARM 9.5.1 (potentially blocking operations)](https://ada-rapporteur-group.github.io/ARM/Ada_202Y/AA-9-5-1.html)
+- Windows x64 ABI: [x64 calling convention](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention), [x64 software conventions](https://learn.microsoft.com/cpp/build/x64-software-conventions), [Old New Thing: x64 register table](https://devblogs.microsoft.com/oldnewthing/20220831-00/?p=107077)
 
 ---
 
@@ -1088,7 +1212,7 @@ Runtime unit tests: gtest needs the CRT, so `bobTests` compiles the runtime sour
 | 6 ✅ | Compile-time execution via ORC; `compiler` object; `meta`; static asserts; constant tables. Revisit type-returning compile-time messages under the §4.5 leash rules | Compile-time CRC table and layout asserts work; decision made on `RingBuffer of: T`. **Done 2026-11-27:** unit-level constants (always compile-time, dependency-ordered, embedded as read-only data), `@[compiletime]` messages, expressions and blocks, the `compiler` object (`error:`/`warning:`/`note:` at the sending line), `meta` (size, alignment, typeName, name, type, count, members, elementType, fields), compile-time code JIT compiled with ORC against the hosted runtime (`bobrtHosted`), traps and endless loops reported as compile errors, layout rules shared by `meta` and checked against LLVM. A CRC-32 table generated at compile time checks `"123456789"`, and record layout asserts fail compilation at the asserting line. `RingBuffer of: T`: leash rules confirmed, built as a separate step after this phase. Not yet: compile-time unrolling and splicing over `meta fields`, `compiler target`/`readFile:`, synthesising messages and classes |
 | 7 ✅ | Modules/libraries: interface files, imports, separate compilation, versioning | Multi-module program with a static lib. **Done 2026-11-27:** the Object Pascal unit model (§11.5): `interface { }` / `implementation { }` sections, `bobc` builds a module or lib into a `.lib` (or `-c` `.obj`) plus a generated `.bobi` interface (bob syntax, no bodies, types and constants written out, escape summaries), imports found next to the source or on `--module-path=`, transitive, with semver checks and Pascal-style interface fingerprints (`recompile X`), unqualified names with module qualification on a clash, cross-module direct, vtable and protocol dispatch, stack placement and compile-time code through imported code. A program built from a module and a static lib passes; implementation-only changes keep the fingerprint. Not yet: `extends` on imported classes, dictionary constants in interfaces, dynamic libraries |
 | 8 ✅ | Reflection levels + Reflector capability; escaping closures; `weak`/`unowned`; a runtime query for whether an object is on the stack or the heap (a separate header flag bit, since string literals are immortal too) | Reflection tests per level, including denied access. **Done 2026-11-27, part 1:** escaping closures (inferred escape, stack environments vs ARC heap closures, shared boxes for mutable captures, block fields/results/optionals; block types later rewritten as `{ T [R] }`), `@[weak]`/`@[unowned]` fields and variables (zeroing weak, trapping unowned, weak counts in the header), the header's stack flag and `bobObjectIsOnStack`, all across modules; 195/195 tests in Debug and Release. **Part 2:** itable dispatch for protocol sends (`docs/proposals.md` §2, Stage 1): read-only witness tables per class and protocol, protocol messages may return records, `bob_msgSend` kept for reflection only, reaching messages through selector-dropping thunks (§2 Stage 2: instance messages take `(self, args…)`); as fast as a vtable send with one receiver, a tie with `bob_msgSend` when polymorphic; 200/200 tests. **Part 3 (8a):** reflection levels (`none`, `identity`, `introspect` default, `invoke`) per class, per unit and capped by `--reflect-max`; `Class` values (`obj class`, `Button class`, `name`, `superclass`, `isKindOf:`, `respondsTo:`, `=`); `obj isOnStack`; method-table thunks only at `invoke`; 204/204 tests. **Part 4 (8b):** per-class introspection tables (`BobClassMeta`) from `introspect`; `c fields` (the same `FieldMeta` as `T meta fields`, which now also works outside compile-time code), `c messages` (`MessageMeta` with signatures), `c protocols`, `c get:of:` typed by context and checked at compile time or at runtime (trap `reflection mismatch`); 207/207 tests. **Part 5 (8c):** `perform:on:with:…` (signature-checked, dispatched from the object's own class through the `.msgSend` thunks), `set:of:to:`, `c new`, `Class named:` (qualified or unique bare names; a program-wide registry built by the linker from the `.bobcls$m` COFF section), `c qualifiedName`, the `Reflector` on `main` (`sema.reflectorRequired`; modules record `reflector: "needed"` in their interface); 216/216 tests. **Part 6:** containers of blocks (array elements, dictionary/hashtable values; parameter types from the element type; one element type per block shape; not keys, set elements or fixed-array elements); 220/220 tests. Phase 8's planned work is complete |
-| 9 (in progress) | Systems profile: `unsafe`, pointers, volatile, packed/align, inline asm, freestanding target | Boots a UEFI "hello" or a minimal kernel under QEMU. **Part 1 (9a), 2026-11-27:** pointers per §6.5: non-null `pointer to: T`, `volatilePointer to: T`, optional `[pointer to: T]?`, bounds-checked `slice of: T`, `@[unsafe]` regions, `address`/`contents`/`p.x`/`advancedBy:`/`asPointer`/`slice:`, checked conversions (trap `invalid pointer`), frame-bound pointers checked by the escape analysis (`sema.pointerEscapes`); 229/229 tests. **Part 2 (9b):** `@[align: n]` (powers of two up to 4096) on records, record fields and variables; C layout, checked against LLVM; more than 16 bytes rejected where storage is heap (`sema.alignTooLarge`); not combined with `@[packed]` yet; 233/233 tests. **Bracketed block parameters** `{ [a, b] … }` replace `{ :a :b | … }` (§3.5); 235 tests. **Part 3 (9c):** `@[extern: "C"]` imports (bodiless messages, calls need `unsafe`) and exports, `@[symbol:]`, C types only, `cFunction { T [R] }` from capture-free block literals, Windows x64 C ABI for records (§6.6); 239/239 tests. Next: 9d inline asm and port I/O, 9e `@[callconv: interrupt]`, 9f freestanding/UEFI |
+| 9 (in progress) | Systems profile: `unsafe`, pointers, volatile, packed/align, inline asm, freestanding target | Boots a UEFI "hello" or a minimal kernel under QEMU. **Part 1 (9a), 2026-11-27:** pointers per §6.5: non-null `pointer to: T`, `volatilePointer to: T`, optional `[pointer to: T]?`, bounds-checked `slice of: T`, `@[unsafe]` regions, `address`/`contents`/`p.x`/`advancedBy:`/`asPointer`/`slice:`, checked conversions (trap `invalid pointer`), frame-bound pointers checked by the escape analysis (`sema.pointerEscapes`); 229/229 tests. **Part 2 (9b):** `@[align: n]` (powers of two up to 4096) on records, record fields and variables; C layout, checked against LLVM; more than 16 bytes rejected where storage is heap (`sema.alignTooLarge`); not combined with `@[packed]` yet; 233/233 tests. **Bracketed block parameters** `{ [a, b] … }` replace `{ :a :b | … }` (§3.5); 235 tests. **Part 3 (9c):** `@[extern: "C"]` imports (bodiless messages, calls need `unsafe`) and exports, `@[symbol:]`, C types only, `cFunction { T [R] }` from capture-free block literals, Windows x64 C ABI for records (§6.6); 239/239 tests. **Part 4 (9d):** no free-form inline asm (§6.7): `port of: uint8|uint16|uint32` (one `in`/`out` per access), `Cpu` messages for single instructions (`cli`/`sti`/`hlt`/`pause`, `rdtsc`, control registers, MSRs, `invlpg`, `lgdt`/`lidt`, `cpuid`) as fixed inline asm with memory clobbers, and `.obj`/`.lib` inputs to bobc for assembly files (modules pack their `.obj`s); 247/247 tests. **Part 5 (9e), decided 2026-11-28, not built yet:** `@[interrupt]` / `@[interrupt: n]` handlers behind a compiler-generated entry stub, vector-checked error codes, `interruptEntry:` for the IDT address, and an inferred no-allocation/no-ARC check through calls (§6.8). Next: build 9e, then 9f freestanding/UEFI |
 | 10 | Python bindings over the semantic model | Script enumerates classes/sends in a module |
 
 ---

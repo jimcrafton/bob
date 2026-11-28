@@ -180,6 +180,11 @@ std::string describe(const SendInfo& send, const SemanticModel& model)
         return send.operandType != nullptr && (send.operandType->kind == TypeKind::array || send.operandType->kind == TypeKind::fixedArray)
                    ? "tier 0, intrinsic " + std::string(send.operandType->kind == TypeKind::fixedArray ? "unchecked index (the index type is the range)" : "bounds-checked index")
                    : "tier 1, runtime hash lookup";
+    case SendKind::portIn:
+    case SendKind::portOut:
+        return std::string("tier 0, one '") + (send.kind == SendKind::portIn ? "in" : "out") + "' instruction (" + type + ")";
+    case SendKind::cpuInstruction:
+        return "tier 0, the processor instruction for 'Cpu " + send.op + "'";
     default:
         return "tier 0, intrinsic";
     }

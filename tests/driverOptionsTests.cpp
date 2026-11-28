@@ -27,6 +27,24 @@ TEST(DriverOptions, ParsesInputAndOutput)
     EXPECT_FALSE(options.compileOnly);
 }
 
+TEST(DriverOptions, ObjectsAndLibrariesAreLinkInputs)
+{
+    DriverOptions options;
+    EXPECT_FALSE(parse({"switch.OBJ", "kernel.bob", "user32.lib"}, options));
+    EXPECT_EQ(options.inputPath, "kernel.bob");
+    EXPECT_EQ(options.linkInputs, (std::vector<std::string>{"switch.OBJ", "user32.lib"}));
+
+    DriverOptions compileOnly;
+    std::optional<std::string> error = parse({"-c", "kernel.bob", "switch.obj"}, compileOnly);
+    ASSERT_TRUE(error);
+    EXPECT_NE(error->find("-c doesn't link"), std::string::npos) << *error;
+
+    DriverOptions alone;
+    error = parse({"switch.obj"}, alone);
+    ASSERT_TRUE(error);
+    EXPECT_NE(error->find("no .bob or .ll input"), std::string::npos) << *error;
+}
+
 TEST(DriverOptions, ParsesValueOptions)
 {
     DriverOptions options;

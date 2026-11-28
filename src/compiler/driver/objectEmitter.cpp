@@ -30,6 +30,8 @@ void initializeTargets()
     std::call_once(once, []() {
         llvm::InitializeNativeTarget();
         llvm::InitializeNativeTargetAsmPrinter();
+        // Port and `Cpu` sends are inline asm, which the object streamer parses.
+        llvm::InitializeNativeTargetAsmParser();
     });
 }
 
@@ -161,15 +163,17 @@ std::optional<std::string> emitObjectFromIrFile(const std::string& irPath, const
 
 namespace bob::driver {
 
-std::optional<std::string> writeStaticLibrary(const std::string& libraryPath, const std::string& objectPath, const std::string& memberName)
+std::optional<std::string> writeStaticLibrary(const std::string& libraryPath, const std::vector<std::pair<std::string, std::string>>& objects)
 {
-    llvm::Expected<llvm::NewArchiveMember> member = llvm::NewArchiveMember::getFile(objectPath, true);
-    if (!member) {
-        return "cannot read '" + objectPath + "': " + llvm::toString(member.takeError());
-    }
-    member->MemberName = memberName;
     std::vector<llvm::NewArchiveMember> members;
-    members.push_back(std::move(*member));
+    for (const auto& [objectPath, memberName] : objects) {
+        llvm::Expected<llvm::NewArchiveMember> member = llvm::NewArchiveMember::getFile(objectPath, true);
+        if (!member) {
+            return "cannot read '" + objectPath + "': " + llvm::toString(member.takeError());
+        }
+        member->MemberName = memberName;
+        members.push_back(std::move(*member));
+    }
     if (llvm::Error error = llvm::writeArchive(libraryPath, members, llvm::SymtabWritingMode::NormalSymtab, llvm::object::Archive::K_COFF, true, false)) {
         return "cannot write '" + libraryPath + "': " + llvm::toString(std::move(error));
     }

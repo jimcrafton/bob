@@ -2,6 +2,8 @@
 
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace llvm {
 class Module;
@@ -23,7 +25,7 @@ std::optional<std::string> prepareModule(llvm::Module& module);
 // The x86-64 Windows data layout string; empty on failure with `error` set.
 std::string targetDataLayout(std::string& error);
 
-// Writes a COFF static library holding one object file (stored as `memberName`).
-std::optional<std::string> writeStaticLibrary(const std::string& libraryPath, const std::string& objectPath, const std::string& memberName);
+// Writes a COFF static library holding the object files, each a (path, member name) pair.
+std::optional<std::string> writeStaticLibrary(const std::string& libraryPath, const std::vector<std::pair<std::string, std::string>>& objects);
 
 }
